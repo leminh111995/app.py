@@ -7,7 +7,9 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# ==========================================
 # 1. BẢO MẬT & DARK MODE
+# ==========================================
 def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
@@ -24,7 +26,6 @@ if check_password():
     st.markdown("""<style> .stApp { background-color: #0E1117; color: white; } </style>""", unsafe_allow_html=True)
     st.title("🛡️ Hệ Thống Chiến Thuật & Quản Trị Rủi Ro")
 
-    # Khởi tạo Vnstock
     s = Vnstock()
 
     # --- HÀM LẤY DỮ LIỆU ---
@@ -57,12 +58,51 @@ if check_password():
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         return df
 
-    # --- TÍNH TỶ LỆ THẮNG ---
+    # --- TÍNH TỶ LỆ THẮNG (ĐÃ VIẾT LẠI CHỐNG LỖI COPY) ---
     def tinh_ty_le_thang(df):
-        win, total = 0, 0
+        win = 0
+        total = 0
         for i in range(200, len(df)-10):
             if df['rsi'].iloc[i] < 45 and df['macd'].iloc[i] > df['signal'].iloc[i] and df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]:
                 total += 1
                 buy_p = df['close'].iloc[i]
-                if any(df['close'].iloc[i+1:i+11] > buy_p * 1.05): win += 1
-        return round((win/total)*100, 1
+                if any(df['close'].iloc[i+1:i+11] > buy_p * 1.05): 
+                    win += 1
+        
+        # Tách hẳn ra nhiều dòng cho an toàn
+        if total > 0:
+            return round((win/total)*100, 1)
+        else:
+            return 0
+
+    # --- LẤY DANH SÁCH MÃ ---
+    @st.cache_data(ttl=3600)
+    def lay_danh_sach_ma():
+        try:
+            return s.market.listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
+        except:
+            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN"]
+
+    all_tickers = lay_danh_sach_ma()
+    st.sidebar.header("🕹️ Điều khiển")
+    selected = st.sidebar.selectbox("Chọn mã cổ phiếu:", all_tickers)
+    manual = st.sidebar.text_input("Nhập mã thủ công:").upper()
+    final_ticker = manual if manual else selected
+
+    tab1, tab2, tab3 = st.tabs(["📊 CHIẾN THUẬT LIVE", "🏢 CƠ BẢN", "🔍 TRUY QUÉT"])
+
+    with tab1:
+        if st.button(f"⚡ PHÂN TÍCH {final_ticker}"):
+            df = lay_du_lieu(final_ticker)
+            if df is not None and not df.empty:
+                df = tinh_toan_chien_thuat(df)
+                last = df.iloc[-1]
+                wr = tinh_ty_le_thang(df)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Giá", f"{last['close']:,.0f}")
+                c2.metric("Tỷ lệ thắng", f"{wr}%")
+                c3.success(f"🎯 Mục tiêu: {last['close']*1.1:,.0f}")
+                c4.error(f"🛑 Cắt lỗ: {last['close']*0.93:,.0f}")
+
+                fig = make_subplots(rows=2, cols=1,
