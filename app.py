@@ -32,8 +32,8 @@ def check_password():
     return st.session_state.get("password_correct", False)
 
 if check_password():
-    st.set_page_config(page_title="Quant System V6.4 - Ultimate", layout="wide")
-    st.title("🛡️ Quant System V6.4: Radar + AI + CanSLIM + Smart Flow")
+    st.set_page_config(page_title="Quant System V6.5 - Ultimate", layout="wide")
+    st.title("🛡️ Quant System V6.5: Radar + AI + CanSLIM + Smart Flow")
 
     s = Vnstock()
 
@@ -75,9 +75,9 @@ if check_password():
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         
         df['return_1d'] = df['close'].pct_change()
-        df['volatility'] = df['return_1d'].rolling(20).std()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
         df['money_flow'] = df['close'] * df['volume']
+        df['volatility'] = df['return_1d'].rolling(20).std()
         df['price_vol_trend'] = np.where((df['return_1d'] > 0) & (df['vol_change'] > 1), 1, 
                                 np.where((df['return_1d'] < 0) & (df['vol_change'] > 1), -1, 0))
         return df.dropna()
@@ -89,16 +89,14 @@ if check_password():
         df_copy['target'] = (df_copy['close'].shift(-3) > df_copy['close'] * 1.02).astype(int)
         features = ['rsi', 'macd', 'signal', 'return_1d', 'volatility', 'vol_change', 'money_flow', 'price_vol_trend']
         data = df_copy.dropna()
-        X = data[features]
-        y = data['target']
+        X = data[features]; y = data['target']
         model = RandomForestClassifier(n_estimators=100, random_state=42)
         model.fit(X[:-3], y[:-3])
         prob = model.predict_proba(X.iloc[[-1]])[0][1]
         return round(prob * 100, 1)
 
-    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM (PHỤC HỒI LỖI TRẮNG BẢNG) ---
+    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM (FIX SSI/BANK) ---
     def tinh_tang_truong_lnst(ticker):
-        # Cách 1: Thử dùng vnstock
         try:
             df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en')
             df_inc = df_inc.head(5) 
@@ -109,7 +107,6 @@ if check_password():
                 lnst_q5 = float(df_inc.iloc[4][col_name])
                 if lnst_q5 > 0: return round(((lnst_q1 - lnst_q5) / lnst_q5) * 100, 1)
         except: pass
-        # Cách 2: Yahoo Finance dự phòng
         try:
             info = yf.Ticker(f"{ticker}.VN").info
             growth = info.get('earningsQuarterlyGrowth')
@@ -117,7 +114,7 @@ if check_password():
         except: pass
         return None
 
-    # --- HÀM LẤY CHỈ SỐ CƠ BẢN (P/E, ROE) ---
+    # --- HÀM LẤY CHỈ SỐ CƠ BẢN ---
     def lay_chi_so_co_ban(ticker):
         pe, roe = 0, 0
         try:
@@ -139,9 +136,7 @@ if check_password():
             analyzer = SentimentIntensityAnalyzer()
             scores = [analyzer.polarity_scores(t)['compound'] for t in news['title']]
             avg = np.mean(scores)
-            if avg > 0.05: status = "🟢 Tích cực"
-            elif avg < -0.05: status = "🔴 Tiêu cực"
-            else: status = "🟡 Trung lập"
+            status = "🟢 Tích cực" if avg > 0.05 else ("🔴 Tiêu cực" if avg < -0.05 else "🟡 Trung lập")
             return status, news
         except: return "⚪ Không xác định", pd.DataFrame()
 
@@ -168,18 +163,14 @@ if check_password():
         if st.button(f"⚡ PHÂN TÍCH CHUYÊN SÂU {final_ticker}"):
             df = lay_du_lieu(final_ticker)
             if df is not None and not df.empty:
-                df = tinh_toan_chi_bao(df)
-                last = df.iloc[-1]; ai_p = du_bao_ai(df)
-                
+                df = tinh_toan_chi_bao(df); last = df.iloc[-1]; ai_p = du_bao_ai(df)
                 st.write("### 🎯 Mục tiêu & Rủi ro")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Giá Hiện Tại", f"{last['close']:,.0f}")
                 m2.metric("Dự báo AI (Volume-based)", f"{ai_p}%")
-                m3.success(f"Chốt lời: {last['close']*1.1:,.0f}")
-                m4.error(f"Cắt lỗ: {last['close']*0.93:,.0f}")
+                m3.success(f"Chốt lời: {last['close']*1.1:,.0f}"); m4.error(f"Cắt lỗ: {last['close']*0.93:,.0f}")
                 
-                st.divider()
-                st.write("### 📡 Radar Phát Hiện Đỉnh/Đáy Ngắn Hạn")
+                st.divider(); st.write("### 📡 Radar Phát Hiện Đỉnh/Đáy Ngắn Hạn")
                 close_p = last['close']; ma20 = last['ma20']; upper = last['upper_band']; lower = last['lower_band']; rsi = last['rsi']
                 if rsi > 65 and close_p >= upper * 0.98:
                     st.error(f"**🚨 CẢNH BÁO TẠO ĐỈNH:** RSI = {rsi:.1f}. Mức giảm dự kiến về MA20: -{((close_p - ma20) / close_p) * 100:.1f}%")
@@ -190,31 +181,23 @@ if check_password():
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Candlestick(x=df['date'].tail(150), open=df['open'].tail(150), high=df['high'].tail(150), low=df['low'].tail(150), close=df['close'].tail(150), name='Nến'), row=1, col=1)
                 fig.add_trace(go.Bar(x=df['date'].tail(150), y=df['volume'].tail(150), marker_color='gray', name='Vol'), row=2, col=1)
-                fig.update_layout(height=600, template='plotly_white', xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(height=600, template='plotly_white', xaxis_rangeslider_visible=False); st.plotly_chart(fig, use_container_width=True)
             else: st.error("Lỗi lấy dữ liệu!")
 
     with tab2:
         st.write(f"### 📈 Chấm điểm Tăng trưởng CanSLIM ({final_ticker})")
-        with st.spinner("Đang bóc tách dữ liệu tài chính..."):
-            growth = tinh_tang_truong_lnst(final_ticker)
-            if growth is not None:
-                if growth > 20: st.success(f"**🔥 TUYỆT VỜI:** LNST quý gần nhất tăng **+{growth}%** so với cùng kỳ.")
-                elif growth > 0: st.info(f"**⚖️ TRUNG BÌNH:** LNST tăng trưởng **+{growth}%**.")
-                else: st.error(f"**🚨 RỦI RO:** LNST đi lùi **{growth}%**.")
-            else: st.warning("Dữ liệu tăng trưởng đang được cập nhật từ Yahoo Finance/Sở GD.")
+        growth = tinh_tang_truong_lnst(final_ticker)
+        if growth is not None:
+            if growth > 20: st.success(f"**🔥 TUYỆT VỜI:** LNST quý gần nhất tăng **+{growth}%** so với cùng kỳ.")
+            elif growth > 0: st.info(f"**⚖️ TRUNG BÌNH:** LNST tăng trưởng **+{growth}%**.")
+            else: st.error(f"**🚨 RỦI RO:** LNST đi lùi **{growth}%**.")
+        else: st.warning("Dữ liệu tăng trưởng đang được cập nhật.")
         
-        st.divider()
-        st.write("### 🏢 Sức khỏe Tài chính (Định giá)")
+        st.divider(); st.write("### 🏢 Sức khỏe Tài chính (Định giá)")
         pe, roe = lay_chi_so_co_ban(final_ticker)
-        c1, c2 = st.columns(2)
-        c1.metric("P/E (Định giá)", f"{pe:.1f}" if pe > 0 else "N/A")
-        c2.metric("ROE (Hiệu quả Vốn)", f"{roe:.1%}" if roe > 0 else "N/A")
-
-        st.divider()
-        st.write("### 🧠 Tâm lý Tin tức Báo chí")
-        status, news = phan_tich_tin_tuc(final_ticker)
-        st.metric("Tâm lý chung:", status)
+        c1, c2 = st.columns(2); c1.metric("P/E (Định giá)", f"{pe:.1f}" if pe > 0 else "N/A"); c2.metric("ROE (Hiệu quả Vốn)", f"{roe:.1%}" if roe > 0 else "N/A")
+        
+        st.divider(); status, news = phan_tich_tin_tuc(final_ticker); st.metric("Tâm lý chung:", status)
         if not news.empty:
             for _, r in news.iterrows(): st.write(f"- {r['title']}")
 
@@ -222,16 +205,25 @@ if check_password():
         st.write(f"### 🌊 Phân Tích Dòng Tiền Riêng Mã {final_ticker}")
         df_flow = lay_du_lieu(final_ticker, days=30)
         if df_flow is not None:
-            df_flow = tinh_toan_chi_bao(df_flow); last_flow = df_flow.iloc[-1]
-            v_change = last_flow['vol_change']
+            df_flow = tinh_toan_chi_bao(df_flow); last_flow = df_flow.iloc[-1]; v_change = last_flow['vol_change']
             if v_change > 1.5: big_m = 0.6; med_m = 0.3; sma_m = 0.1
             elif v_change > 1.1: big_m = 0.4; med_m = 0.4; sma_m = 0.2
             else: big_m = 0.2; med_m = 0.3; sma_m = 0.5
             
+            # --- FIX MÀU SẮC GOM/XẢ ---
+            status_txt = "Gom" if last_flow['return_1d'] > 0 else "Xả"
+            status_color = "normal" if last_flow['return_1d'] > 0 else "inverse"
+            
             c1, c2, c3 = st.columns(3)
-            c1.metric("🐋 Tiền Lớn", f"{big_m*100:.0f}%", delta="Gom" if last_flow['return_1d']>0 else "Xả")
-            c2.metric("🏦 Tiền Vừa", f"{med_m*100:.0f}%")
-            c3.metric("🐜 Tiền Nhỏ", f"{sma_m*100:.0f}%")
+            c1.metric("🐋 Tiền Lớn", f"{big_m*100:.0f}%", delta=status_txt, delta_color=status_color)
+            c2.metric("🏦 Tiền Vừa", f"{med_m*100:.0f}%"); c3.metric("🐜 Tiền Nhỏ", f"{sma_m*100:.0f}%")
+            
+            with st.expander("📖 GIẢI NGHĨA CÁC LOẠI DÒNG TIỀN (Bấm để xem)"):
+                st.markdown("""
+                * **🐋 Tiền Lớn (Cá mập):** Giao dịch của quỹ ngoại, tự doanh, tổ chức lớn. Đây là động lực kéo giá tăng bền vững.
+                * **🏦 Tiền Vừa (Tổ chức nội):** Các quỹ nội địa, nhà đầu tư chuyên nghiệp. Thường đi theo xu hướng của Cá mập.
+                * **🐜 Tiền Nhỏ (Nhà đầu tư cá nhân):** Nếu tỷ lệ này quá cao (>50%), cổ phiếu thường bị 'loãng' và khó tăng mạnh ngay lập tức.
+                """)
             
             history = df_flow.tail(20).copy()
             fig_smart = go.Figure()
@@ -243,8 +235,7 @@ if check_password():
     with tab4:
         st.subheader("🔍 Robot Truy Quét Mã Tiềm Năng")
         if st.button("🔥 CHẠY RÀ SOÁT"):
-            hits = []
-            bar = st.progress(0); tickers_to_scan = all_tickers[:30]
+            hits = []; bar = st.progress(0); tickers_to_scan = all_tickers[:30]
             for i, t in enumerate(tickers_to_scan):
                 try:
                     d = lay_du_lieu(t, days=100); d = tinh_toan_chi_bao(d)
@@ -253,4 +244,3 @@ if check_password():
                 except: pass
                 bar.progress((i+1)/len(tickers_to_scan))
             if hits: st.table(pd.DataFrame(hits))
-            else: st.write("Chưa thấy mã bùng nổ.")
