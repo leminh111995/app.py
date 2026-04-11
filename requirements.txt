@@ -1,3 +1,4 @@
 vnstock
 streamlit
+pandas
 yfinance
