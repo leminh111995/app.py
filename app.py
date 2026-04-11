@@ -12,7 +12,6 @@ from sklearn.ensemble import RandomForestClassifier
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import nltk
 
-# Dòng "mồi" tải bộ từ điển cho nltk (KHẮC PHỤC LỖI TẬN GỐC)
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
@@ -58,24 +57,23 @@ if check_password():
     # --- TÍNH TOÁN CHỈ BÁO KỸ THUẬT ---
     def tinh_toan_chi_bao(df):
         df = df.copy()
-        # MA & Bollinger
         df['ma20'] = df['close'].rolling(20).mean()
         df['ma50'] = df['close'].rolling(50).mean()
         df['ma200'] = df['close'].rolling(200).mean()
         df['std'] = df['close'].rolling(20).std()
         df['upper_band'] = df['ma20'] + (df['std'] * 2)
         df['lower_band'] = df['ma20'] - (df['std'] * 2)
-        # RSI
+        
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         df['rsi'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
-        # MACD
+        
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        # Features cho AI
+        
         df['return_1d'] = df['close'].pct_change()
         df['volatility'] = df['return_1d'].rolling(20).std()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
@@ -136,7 +134,6 @@ if check_password():
                 last = df.iloc[-1]
                 ai_p = du_bao_ai(df)
                 
-                # Metrics Hàng 1
                 st.write("### 🎯 Mục tiêu & Rủi ro")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Giá Hiện Tại", f"{last['close']:,.0f}")
@@ -144,7 +141,6 @@ if check_password():
                 m3.success(f"Chốt lời: {last['close']*1.1:,.0f}")
                 m4.error(f"Cắt lỗ: {last['close']*0.93:,.0f}")
                 
-                # Metrics Hàng 2 - Chỉ số Kỹ thuật phục hồi
                 st.divider()
                 st.write("### 🎛️ Chỉ số Kỹ thuật Chi tiết")
                 k1, k2, k3, k4 = st.columns(4)
@@ -154,6 +150,31 @@ if check_password():
                 k3.write(f"**Bollinger Lower:** {last['lower_band']:,.0f}")
                 k4.write(f"**MA50:** {last['ma50']:,.0f}")
                 k4.write(f"**MA200:** {last['ma200']:,.0f}")
+
+                # --- BỔ SUNG CẨM NANG GIẢI THÍCH CHỈ BÁO VÀ RỦI RO ---
+                with st.expander("📖 CẨM NANG ĐỌC TÍN HIỆU & PHÒNG VỆ RỦI RO BẤT KHẢ KHÁNG (Bấm để mở)"):
+                    st.markdown(f"""
+                    **1. Khối lượng (Volume) & Dòng tiền:**
+                    * **Bản chất:** "Giá là sự kỳ vọng, Khối lượng là sự thật". Giá tăng phải đi kèm khối lượng (cột xám) vượt trung bình thì xu hướng mới bền vững.
+                    * **Rủi ro:** Nếu giá tăng nhưng khối lượng teo tóp -> Dấu hiệu kéo xả, tuyệt đối không mua đuổi.
+                    
+                    **2. Chỉ số RSI (Đo lường Sức mạnh):**
+                    * **Bản chất:** RSI của {final_ticker} đang là **{round(last['rsi'], 1)}**. Dao động từ 0-100.
+                    * **Nguyên tắc:** Dưới 30 là vùng "Quá bán" (hết người bán, chuẩn bị bật tăng). Trên 70 là "Quá mua" (dễ bị chốt lời diện rộng).
+                    * **Phòng vệ:** Không bao giờ mua "tất tay" khi RSI > 70 dù tin tức có tốt đến đâu.
+                    
+                    **3. Chỉ báo MACD (Xu hướng cốt lõi):**
+                    * **Bản chất:** Khi MACD cao hơn đường Signal -> Dòng tiền mua chủ động đang thắng thế. 
+                    * **Rủi ro:** Giao cắt cắt xuống (MACD < Signal) là dấu hiệu dòng tiền lớn bắt đầu rút ra. Cần hạ tỷ trọng ngay.
+                    
+                    **4. Dải Bollinger Bands (Biên độ dao động):**
+                    * **Bản chất:** 95% thời gian giá sẽ chạy trong ống Bollinger (Upper và Lower).
+                    * **Nguyên tắc:** Giá chạm Upper Band thường bị dội xuống. Giá chạm Lower Band thường nảy lên. 
+                    
+                    **🚨 NGUYÊN TẮC BẤT KHẢ KHÁNG (THIÊN NGA ĐEN):**
+                    * Khi thị trường dính tin đồn bắt bớ, chiến tranh, hoặc khủng hoảng vĩ mô đột ngột... **toàn bộ phân tích kỹ thuật sẽ vô tác dụng trong 1-3 phiên đầu tiên.**
+                    * **Hành động duy nhất đúng:** Tuân thủ Kỷ luật Mức Cắt Lỗ (SL) là **{last['close']*0.93:,.0f}**. Bán không tiếc nuối để bảo toàn vốn, chờ thị trường cân bằng mới dùng lại Robot.
+                    """)
 
                 # Biểu đồ nến
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
@@ -196,7 +217,7 @@ if check_password():
                         d = tinh_toan_chi_bao(d)
                         prob = du_bao_ai(d)
                         vol_avg = d['volume'].tail(10).mean()
-                        if d['volume'].iloc[-1] > vol_avg * 1.3: # Vol nổ
+                        if d['volume'].iloc[-1] > vol_avg * 1.3:
                             hits.append({
                                 'Mã': t, 
                                 'Giá': d['close'].iloc[-1], 
