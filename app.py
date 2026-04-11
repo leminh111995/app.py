@@ -6,9 +6,7 @@ import time
 from datetime import datetime, timedelta
 import yfinance as yf
 
-# ==========================================
-# 1. HỆ THỐNG BẢO MẬT
-# ==========================================
+# 1. Bảo mật
 def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
@@ -28,17 +26,14 @@ if check_password():
 
     # --- HÀM TÍNH TOÁN KỸ THUẬT ---
     def tinh_toan_ky_thuat(df):
-        # Tính BB
         df['MA20'] = df['close'].rolling(20).mean()
         df['STD'] = df['close'].rolling(20).std()
         df['Upper'] = df['MA20'] + (df['STD'] * 2)
         df['Lower'] = df['MA20'] - (df['STD'] * 2)
-        # Tính RSI
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         df['RSI'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
-        # Tính MACD
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp1 - exp2
@@ -49,42 +44,62 @@ if check_password():
     def lay_du_lieu_thong_minh(ticker):
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        # Cách 1: Vnstock
         try:
             df = stock_historical_data(symbol=ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
             if df is not None and not df.empty: 
                 df.columns = [col.lower() for col in df.columns]
                 return df
         except: pass
-        # Cách 2: Yfinance dự phòng
         try:
             yt = yf.download(f"{ticker}.VN", period="1y", progress=False)
             yt = yt.reset_index()
-            # Xử lý tên cột yfinance cho đồng nhất
             yt.columns = [col[0].lower() if isinstance(col, tuple) else col.lower() for col in yt.columns]
             return yt
         except: return None
 
+    # --- DANH SÁCH DỰ PHÒNG 50 MÃ TOP HOSE ---
+    fallback_tickers = [
+        "FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN","DGC","VND","HCM","VCI","HSG",
+        "MBB","VPB","ACB","VRE","POW","GAS","SAB","PLX","VJC","BID","CTG","HDB","TPB","GVR","SHB",
+        "NKG","PVD","PVT","DIG","DXG","PDR","NLG","KDH","KBC","IDC","REE","SAM","GEX","VIX","ORS",
+        "ANV","VHC","IDI","HHV","LCG"
+    ]
+
     @st.cache_data(ttl=3600)
     def get_all_tickers():
         try:
-            return stock_listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
+            ls = stock_listing()
+            hose_list = ls[ls['comGroupCode'] == 'HOSE']['ticker'].tolist()
+            return hose_list if len(hose_list) > 10 else fallback_tickers
         except:
-            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN"]
+            return fallback_tickers
 
     all_tickers = get_all_tickers()
-    st.sidebar.header("🎯 Danh mục theo dõi")
-    selected_ticker = st.sidebar.selectbox("Chọn mã muốn soi:", all_tickers, index=0)
 
-    if st.button(f'🚀 BẮT ĐẦU CHẨN ĐOÁN MÃ {selected_ticker}'):
-        with st.spinner(f'Đang quét dữ liệu {selected_ticker}...'):
-            raw_data = lay_du_lieu_thong_minh(selected_ticker)
+    # --- SIDEBAR: CHỌN MÃ HOẶC NHẬP MÃ ---
+    st.sidebar.header("🎯 Cài đặt danh mục")
+    
+    # 1. Chọn từ danh sách có sẵn
+    selected_ticker = st.sidebar.selectbox("Chọn từ danh sách:", all_tickers, index=0)
+    
+    # 2. Hoặc nhập mã thủ công
+    st.sidebar.write("--- HOẶC ---")
+    manual_ticker = st.sidebar.text_input("Nhập mã thủ công (VD: VCB, AAA...):").upper()
+    
+    # Ưu tiên mã nhập thủ công nếu có
+    final_ticker = manual_ticker if manual_ticker else selected_ticker
+
+    # --- PHẦN HIỂN THỊ CHÍNH ---
+    st.subheader(f"🔍 Đang chuẩn bị chẩn đoán mã: {final_ticker}")
+
+    if st.button(f'🚀 BẤT ĐẦU PHÂN TÍCH {final_ticker}'):
+        with st.spinner(f'Đang quét dữ liệu chuyên sâu...'):
+            raw_data = lay_du_lieu_thong_minh(final_ticker)
             
             if raw_data is not None and not raw_data.empty:
                 df = tinh_toan_ky_thuat(raw_data)
                 last_row = df.iloc[-1]
                 
-                # Hiển thị số liệu
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     st.metric("Giá Hiện Tại", f"{last_row['close']:,.0f}")
@@ -105,25 +120,17 @@ if check_password():
                 
                 if score == 3:
                     st.balloons()
-                    st.success(f"🌟 **MUA TÍCH LŨY**: {selected_ticker} đang có tín hiệu rất tốt.")
+                    st.success(f"🌟 **MUA TÍCH LŨY**: {final_ticker} đang hội tụ các chỉ số bùng nổ.")
                 elif score == 2:
-                    st.info(f"⚖️ **THEO DÕI**: {selected_ticker} đang ổn định.")
+                    st.info(f"⚖️ **THEO DÕI**: {final_ticker} đang ở trạng thái tích lũy ổn định.")
                 else:
-                    st.warning(f"⚠️ **TẠM ĐỨNG NGOÀI**: Xung lực đang yếu.")
+                    st.warning(f"⚠️ **TẠM ĐỨNG NGOÀI**: Xung lực của {final_ticker} đang yếu.")
 
-                # --- PHẦN VẼ BIỂU ĐỒ MỚI (CHỐNG LỖI) ---
-                st.write(f"### 📈 Biểu đồ biến động giá {selected_ticker}")
-                try:
-                    # Lấy 60 phiên gần nhất, chỉ lấy cột giá đóng cửa
-                    chart_data = df.tail(60)[['close']].copy()
-                    # Vẽ biểu đồ dạng vùng (Area chart) nhìn sẽ đẹp và chuyên nghiệp hơn
-                    st.area_chart(chart_data)
-                except:
-                    st.write("Đang nạp dữ liệu biểu đồ, bạn hãy đợi vài giây...")
-                # ---------------------------------------
+                st.write(f"### 📈 Biểu đồ biến động giá {final_ticker}")
+                st.area_chart(df.tail(60)[['close']])
                 
             else:
-                st.error("Không lấy được dữ liệu. Hãy thử lại sau!")
+                st.error(f"Không tìm thấy dữ liệu cho mã '{final_ticker}'. Hãy kiểm tra lại mã có thuộc sàn HOSE không!")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"Hệ thống vận hành 24/7")
+    st.sidebar.write(f"Số lượng mã đang quản lý: {len(all_tickers)}")
