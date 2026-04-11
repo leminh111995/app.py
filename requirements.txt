@@ -2,3 +2,4 @@ vnstock
 streamlit
 pandas
 yfinance
+plotly
