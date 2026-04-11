@@ -100,18 +100,32 @@ if check_password():
         prob = model.predict_proba(X.iloc[[-1]])[0][1]
         return round(prob * 100, 1)
 
-    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM ---
+    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM (ĐÃ FIX LỖI TÌM CỘT) ---
     def tinh_tang_truong_lnst(ticker):
         try:
-            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='vi')
+            # Ép dùng tiếng Anh để tên cột chuẩn hóa, dễ tìm hơn
+            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en')
             df_inc = df_inc.head(5) 
-            col_name = [c for c in df_inc.columns if 'sau thuế' in c.lower() or 'posttax' in c.lower()][0]
-            lnst_q1 = df_inc.iloc[0][col_name]
-            lnst_q5 = df_inc.iloc[4][col_name]
-            if lnst_q5 <= 0: return None
+            
+            # Tìm cột có chứa 'posttax' (Lợi nhuận sau thuế)
+            target_cols = [c for c in df_inc.columns if isinstance(c, str) and 'posttax' in c.lower()]
+            
+            if not target_cols:
+                return None # Không tìm thấy cột lợi nhuận
+                
+            col_name = target_cols[0]
+            
+            lnst_q1 = float(df_inc.iloc[0][col_name])
+            lnst_q5 = float(df_inc.iloc[4][col_name])
+            
+            # Nếu quý cùng kỳ năm trước lỗ (<=0), tỷ lệ tăng trưởng vô nghĩa
+            if pd.isna(lnst_q5) or lnst_q5 <= 0: 
+                return None
+                
             growth = ((lnst_q1 - lnst_q5) / lnst_q5) * 100
             return round(growth, 1)
-        except: return None
+        except Exception as e: 
+            return None
 
     # --- PHÂN TÍCH TÂM LÝ TIN TỨC ---
     def phan_tich_tin_tuc(ticker):
@@ -164,7 +178,7 @@ if check_password():
                 
                 st.divider()
 
-                # --- RADAR ĐỈNH / ĐÁY NGẮN HẠN (ĐÃ TÍCH HỢP LẠI) ---
+                # --- RADAR ĐỈNH / ĐÁY NGẮN HẠN ---
                 st.write("### 📡 Radar Phát Hiện Đỉnh/Đáy Ngắn Hạn")
                 close_p = last['close']
                 ma20 = last['ma20']
@@ -198,7 +212,7 @@ if check_password():
 
                 st.divider()
 
-                # --- CHỈ SỐ KỸ THUẬT & CẨM NANG (BỔ SUNG NÉ TÍN HIỆU GIẢ) ---
+                # --- CHỈ SỐ KỸ THUẬT & CẨM NANG ---
                 st.write("### 🎛️ Chỉ số Kỹ thuật Chi tiết")
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("RSI (14)", round(last['rsi'], 1), delta="Quá mua" if last['rsi']>70 else "Quá bán" if last['rsi']<30 else None, delta_color="inverse")
