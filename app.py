@@ -74,14 +74,12 @@ if check_password():
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         
-        # FEATURE CHO AI
         df['return_1d'] = df['close'].pct_change()
         df['volatility'] = df['return_1d'].rolling(20).std()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
         df['money_flow'] = df['close'] * df['volume']
         df['price_vol_trend'] = np.where((df['return_1d'] > 0) & (df['vol_change'] > 1), 1, 
                                 np.where((df['return_1d'] < 0) & (df['vol_change'] > 1), -1, 0))
-        
         return df.dropna()
 
     # --- MÔ HÌNH DỰ BÁO AI ---
@@ -313,10 +311,13 @@ if check_password():
                 vol_ratio = flow_10['volume'].iloc[-1] / flow_10['volume'].mean()
                 if vol_ratio > 1.2:
                     c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Nổ Volume", delta_color="normal")
+                    st.info("**💡 Nổ Volume (Dòng tiền lớn):** Dòng tiền lớn (Cá mập) đang nhập cuộc gom hàng (nếu giá tăng) hoặc xả hàng quyết liệt (nếu giá giảm).")
                 elif vol_ratio < 0.8:
                     c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Dòng tiền cạn", delta_color="inverse")
+                    st.info("**💡 Dòng tiền cạn:** Lực mua bán trên thị trường đang cạn kiệt. Cổ phiếu có thể đang trong pha tích lũy chờ xu hướng mới, hoặc thiếu lực cầu đỡ giá.")
                 else:
                     c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Bình thường", delta_color="off")
+                    st.info("**💡 Bình thường:** Giao dịch ở mức ổn định, không có sự can thiệp đột biến từ dòng tiền lớn.")
             else:
                 st.warning("Không thể tải dữ liệu dòng tiền lúc này.")
 
