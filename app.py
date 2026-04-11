@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==========================================
-# 1. BẢO MẬT & DARK MODE
+# 1. BẢO MẬT (GIAO DIỆN SÁNG MẶC ĐỊNH)
 # ==========================================
 def check_password():
     def password_entered():
@@ -30,10 +30,6 @@ def check_password():
 
 if check_password():
     st.set_page_config(page_title="Robot Siêu Cấp 2026", layout="wide")
-    st.markdown(
-        """<style> .stApp { background-color: #0E1117; color: white; } </style>""", 
-        unsafe_allow_html=True
-    )
     st.title("🛡️ Hệ Thống Chiến Thuật & Quản Trị Rủi Ro")
 
     s = Vnstock()
@@ -41,10 +37,12 @@ if check_password():
     # --- HÀM LẤY DỮ LIỆU ---
     def lay_du_lieu(ticker):
         try:
+            start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            end_date = datetime.now().strftime('%Y-%m-%d')
             df = s.stock.quote.history(
                 symbol=ticker, 
-                start='2024-01-01', 
-                end=datetime.now().strftime('%Y-%m-%d')
+                start=start_date, 
+                end=end_date
             )
             if df is not None and not df.empty:
                 df.columns = [col.lower() for col in df.columns]
@@ -104,7 +102,8 @@ if check_password():
     @st.cache_data(ttl=3600)
     def lay_danh_sach_ma():
         try:
-            return s.market.listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
+            ls = s.market.listing()
+            return ls[ls['comGroupCode'] == 'HOSE']['ticker'].tolist()
         except:
             return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN"]
 
@@ -114,8 +113,122 @@ if check_password():
     manual = st.sidebar.text_input("Nhập mã thủ công:").upper()
     final_ticker = manual if manual else selected
 
-    tab1, tab2, tab3 = st.tabs(["📊 CHIẾN THUẬT LIVE", "🏢 CƠ BẢN", "🔍 TRUY QUÉT"])
+    # 4 TAB CHỨC NĂNG
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 CHIẾN THUẬT LIVE", 
+        "🏢 CƠ BẢN & TIN TỨC", 
+        "🌊 DÒNG TIỀN & NGÀNH", 
+        "🔍 TRUY QUÉT TOÀN SÀN"
+    ])
 
     with tab1:
         if st.button(f"⚡ PHÂN TÍCH {final_ticker}"):
             df = lay_du_lieu(final_ticker)
+            if df is not None and not df.empty:
+                df = tinh_toan_chien_thuat(df)
+                last = df.iloc[-1]
+                wr = tinh_ty_le_thang(df)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Giá Hiện Tại", f"{last['close']:,.0f}")
+                c2.metric("Tỷ lệ thắng", f"{wr}%")
+                c3.success(f"🎯 Mục tiêu (TP): {last['close']*1.1:,.0f}")
+                c4.error(f"🛑 Cắt lỗ (SL): {last['close']*0.93:,.0f}")
+
+                fig = make_subplots(
+                    rows=2, cols=1, shared_xaxes=True, 
+                    vertical_spacing=0.03, row_heights=[0.7, 0.3]
+                )
+                
+                fig.add_trace(go.Candlestick(
+                    x=df['date'], open=df['open'], high=df['high'], 
+                    low=df['low'], close=df['close'], name='Nến'), row=1, col=1)
+                
+                fig.add_trace(go.Scatter(
+                    x=df['date'], y=df['ma50'], 
+                    line=dict(color='orange', width=1.5), name='MA50'), row=1, col=1) # Đổi màu cho dễ nhìn trên nền trắng
+                
+                fig.add_trace(go.Scatter(
+                    x=df['date'], y=df['ma200'], 
+                    line=dict(color='purple', width=2), name='MA200'), row=1, col=1) # Đổi màu cho dễ nhìn trên nền trắng
+                
+                fig.add_trace(go.Bar(
+                    x=df['date'], y=df['volume'], 
+                    marker_color='gray', name='Vol'), row=2, col=1)
+                
+                # Đổi nền biểu đồ thành màu trắng (plotly_white)
+                fig.update_layout(
+                    height=600, template='plotly_white', xaxis_rangeslider_visible=False
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                st.write(f"### 💬 Nhận định xu hướng: {'🌟 GIAO CẮT VÀNG (UPTREND)' if last['ma50'] > last['ma200'] else '⏳ CHỜ ĐỢI TÍN HIỆU RÕ RÀNG'}")
+            else: 
+                st.error("Lỗi lấy dữ liệu kỹ thuật!")
+
+    with tab2:
+        st.subheader(f"🏢 Sức khỏe doanh nghiệp & Tin tức: {final_ticker}")
+        try:
+            ratio = s.stock.finance.ratio(final_ticker, report_range='quarterly').iloc[-1]
+            c1, c2 = st.columns(2)
+            c1.metric("ROE (Hiệu quả vốn)", f"{ratio.get('roe', 0):.1%}")
+            c2.metric("P/E (Định giá)", f"{ratio.get('ticker_pe', 0):.1f}")
+            st.divider()
+            
+            news = s.stock.news(final_ticker)
+            for _, n in news.head(5).iterrows():
+                st.write(f"🔔 **{n['title']}** (*{n['publishDate']}*)")
+        except: 
+            st.warning("Dữ liệu cơ bản đang được cập nhật (Server có thể đang bảo trì cuối tuần).")
+
+    with tab3:
+        st.subheader("🌊 Phân tích Dòng tiền & Khối lượng")
+        try:
+            flow = s.stock.finance.flow(final_ticker, report_type='net_flow', report_range='daily').tail(10)
+            st.write("**Biến động dòng tiền Tự doanh & Nước ngoài (10 phiên):**")
+            st.bar_chart(flow[['foreign', 'prop']])
+            
+            ls = s.market.listing()
+            industry = ls[ls['ticker'] == final_ticker]['en_icb_name_lv4'].values[0]
+            st.info(f"🚩 Nhóm ngành: **{industry}**")
+            
+            peers = ls[ls['en_icb_name_lv4'] == industry]['ticker'].head(8).tolist()
+            st.write(f"**So sánh Sức mạnh Vol trong ngành {industry}:**")
+            p_res = []
+            for t in peers:
+                try:
+                    d = s.stock.quote.history(symbol=t, start=(datetime.now()-timedelta(days=15)).strftime('%Y-%m-%d'), end=datetime.now().strftime('%Y-%m-%d'))
+                    p_res.append({'Mã': t, 'Sức mạnh Vol': round(d['volume'].iloc[-1]/d['volume'].mean(), 2)})
+                except: 
+                    pass
+            if p_res:
+                st.table(pd.DataFrame(p_res).sort_values(by='Sức mạnh Vol', ascending=False))
+        except: 
+            st.warning("Dữ liệu dòng tiền ngành chưa sẵn sàng ngoài giờ giao dịch.")
+
+    with tab4:
+        st.subheader("🕵️ Robot quét mã tiềm năng")
+        if st.button("🔥 BẮT ĐẦU TRUY QUÉT (TOP 30)"):
+            hits = []
+            scan_list = all_tickers[:30]
+            progress = st.progress(0)
+            for i, t in enumerate(scan_list):
+                try:
+                    d = lay_du_lieu(t)
+                    if d is not None:
+                        d = tinh_toan_chien_thuat(d)
+                        vol_avg = d['volume'].tail(10).mean()
+                        if d['volume'].iloc[-1] > vol_avg * 1.3:
+                            hits.append({
+                                'Mã': t, 
+                                'Giá': d['close'].iloc[-1], 
+                                'Tỷ lệ thắng': f"{tinh_ty_le_thang(d)}%"
+                            })
+                except: 
+                    pass
+                progress.progress((i+1)/len(scan_list))
+                
+            if hits: 
+                st.table(pd.DataFrame(hits))
+            else: 
+                st.write("Hiện chưa tìm thấy mã đạt chuẩn bùng nổ khối lượng.")
