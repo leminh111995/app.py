@@ -32,12 +32,12 @@ def check_password():
     return st.session_state.get("password_correct", False)
 
 if check_password():
-    st.set_page_config(page_title="Quant System V5 - Full", layout="wide")
-    st.title("🛡️ Hệ Thống Chiến Thuật AI & Truy Quét Toàn Diện")
+    st.set_page_config(page_title="Quant System V6 - Trùm Cuối", layout="wide")
+    st.title("🛡️ Hệ Thống Chiến Thuật V6: Radar + AI + CanSLIM")
 
     s = Vnstock()
 
-    # --- HÀM LẤY DỮ LIỆU ---
+    # --- HÀM LẤY DỮ LIỆU KỸ THUẬT ---
     def lay_du_lieu(ticker, days=1000):
         try:
             start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -54,7 +54,7 @@ if check_password():
             return yt
         except: return None
 
-    # --- TÍNH TOÁN CHỈ BÁO KỸ THUẬT ---
+    # --- TÍNH TOÁN CHỈ BÁO & FEATURE CHO AI ---
     def tinh_toan_chi_bao(df):
         df = df.copy()
         df['ma20'] = df['close'].rolling(20).mean()
@@ -74,9 +74,14 @@ if check_password():
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         
+        # FEATURE CHO AI
         df['return_1d'] = df['close'].pct_change()
         df['volatility'] = df['return_1d'].rolling(20).std()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
+        df['money_flow'] = df['close'] * df['volume']
+        df['price_vol_trend'] = np.where((df['return_1d'] > 0) & (df['vol_change'] > 1), 1, 
+                                np.where((df['return_1d'] < 0) & (df['vol_change'] > 1), -1, 0))
+        
         return df.dropna()
 
     # --- MÔ HÌNH DỰ BÁO AI ---
@@ -84,14 +89,29 @@ if check_password():
         if len(df) < 200: return "N/A"
         df_copy = df.copy()
         df_copy['target'] = (df_copy['close'].shift(-3) > df_copy['close'] * 1.02).astype(int)
-        features = ['rsi', 'macd', 'signal', 'return_1d', 'volatility', 'vol_change']
+        
+        features = ['rsi', 'macd', 'signal', 'return_1d', 'volatility', 'vol_change', 'money_flow', 'price_vol_trend']
         data = df_copy.dropna()
         X = data[features]
         y = data['target']
+        
         model = RandomForestClassifier(n_estimators=100, random_state=42)
         model.fit(X[:-3], y[:-3])
         prob = model.predict_proba(X.iloc[[-1]])[0][1]
         return round(prob * 100, 1)
+
+    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM ---
+    def tinh_tang_truong_lnst(ticker):
+        try:
+            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='vi')
+            df_inc = df_inc.head(5) 
+            col_name = [c for c in df_inc.columns if 'sau thuế' in c.lower() or 'posttax' in c.lower()][0]
+            lnst_q1 = df_inc.iloc[0][col_name]
+            lnst_q5 = df_inc.iloc[4][col_name]
+            if lnst_q5 <= 0: return None
+            growth = ((lnst_q1 - lnst_q5) / lnst_q5) * 100
+            return round(growth, 1)
+        except: return None
 
     # --- PHÂN TÍCH TÂM LÝ TIN TỨC ---
     def phan_tich_tin_tuc(ticker):
@@ -120,8 +140,8 @@ if check_password():
 
     # 4 TAB HOÀN CHỈNH
     tab1, tab2, tab3, tab4 = st.tabs([
-        "🤖 KỸ THUẬT & AI", 
-        "🏢 CƠ BẢN & TIN TỨC", 
+        "🤖 KỸ THUẬT & RADAR", 
+        "🏢 CƠ BẢN & CANSLIM", 
         "🌊 DÒNG TIỀN", 
         "🔍 TRUY QUÉT TOÀN SÀN"
     ])
@@ -134,14 +154,51 @@ if check_password():
                 last = df.iloc[-1]
                 ai_p = du_bao_ai(df)
                 
+                # --- METRICS CƠ BẢN ---
                 st.write("### 🎯 Mục tiêu & Rủi ro")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Giá Hiện Tại", f"{last['close']:,.0f}")
-                m2.metric("Dự báo AI (3 phiên)", f"{ai_p}%" if isinstance(ai_p, float) else "N/A")
+                m2.metric("Dự báo AI (Đã tích hợp Vol)", f"{ai_p}%" if isinstance(ai_p, float) else "N/A")
                 m3.success(f"Chốt lời: {last['close']*1.1:,.0f}")
                 m4.error(f"Cắt lỗ: {last['close']*0.93:,.0f}")
                 
                 st.divider()
+
+                # --- RADAR ĐỈNH / ĐÁY NGẮN HẠN (ĐÃ TÍCH HỢP LẠI) ---
+                st.write("### 📡 Radar Phát Hiện Đỉnh/Đáy Ngắn Hạn")
+                close_p = last['close']
+                ma20 = last['ma20']
+                upper = last['upper_band']
+                lower = last['lower_band']
+                rsi = last['rsi']
+                vol_change = last['vol_change']
+                
+                if rsi > 65 and close_p >= upper * 0.98:
+                    drop_to_ma20 = ((close_p - ma20) / close_p) * 100
+                    drop_to_lower = ((close_p - lower) / close_p) * 100
+                    st.error(f"**🚨 CẢNH BÁO TẠO ĐỈNH NGẮN HẠN:** Giá đang rướn quá mức dải trên Bollinger và bị kéo căng (RSI = {rsi:.1f}).")
+                    st.write(f"- **Kịch bản điều chỉnh 1:** Rơi về hỗ trợ MA20 ({ma20:,.0f}đ) ➔ **Mức giảm dự kiến: -{drop_to_ma20:.1f}%**")
+                    st.write(f"- **Kịch bản điều chỉnh 2:** Rơi thẳng về dải dưới ({lower:,.0f}đ) ➔ **Mức giảm tối đa: -{drop_to_lower:.1f}%**")
+                    if vol_change > 1.5: st.warning("⚠️ LƯU Ý MỞ RỘNG ĐỈNH: Khối lượng xả đang rất lớn, đây là đỉnh thật, tuyệt đối không bắt dao rơi!")
+                
+                elif rsi < 35 and close_p <= lower * 1.02:
+                    rise_to_ma20 = ((ma20 - close_p) / close_p) * 100
+                    rise_to_upper = ((upper - close_p) / close_p) * 100
+                    st.success(f"**🌟 TÍN HIỆU TẠO ĐÁY NGẮN HẠN:** Lực bán đã cạn kiệt, giá đâm thủng dải dưới và RSI rớt vùng quá bán ({rsi:.1f}).")
+                    st.write(f"- **Kịch bản hồi phục 1:** Bật lên trạm giữa MA20 ({ma20:,.0f}đ) ➔ **Mức tăng dự kiến: +{rise_to_ma20:.1f}%**")
+                    st.write(f"- **Kịch bản hồi phục 2:** Sóng hồi mạnh lên dải trên ({upper:,.0f}đ) ➔ **Mức tăng tối đa: +{rise_to_upper:.1f}%**")
+                    if vol_change < 0.8: st.warning("⚠️ LƯU Ý ĐÁY GIẢ (BULL TRAP): Khối lượng bắt đáy quá thấp (< 0.8), có nguy cơ đây chỉ là hồi kỹ thuật rồi rơi tiếp. Cần chờ thêm 1 phiên xác nhận Vol!")
+                
+                else:
+                    dist_upper = ((upper - close_p) / close_p) * 100
+                    dist_lower = ((close_p - lower) / close_p) * 100
+                    st.info(f"**⚖️ TRẠNG THÁI CÂN BẰNG:** Chưa có dấu hiệu Đỉnh hay Đáy cực đoan. Cổ phiếu đang tích lũy.")
+                    st.write(f"- Dư địa tăng lên vùng đỉnh cũ (Upper Band): **+{dist_upper:.1f}%**")
+                    st.write(f"- Khoảng lùi về vùng đáy cũ (Lower Band): **-{dist_lower:.1f}%**")
+
+                st.divider()
+
+                # --- CHỈ SỐ KỸ THUẬT & CẨM NANG (BỔ SUNG NÉ TÍN HIỆU GIẢ) ---
                 st.write("### 🎛️ Chỉ số Kỹ thuật Chi tiết")
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("RSI (14)", round(last['rsi'], 1), delta="Quá mua" if last['rsi']>70 else "Quá bán" if last['rsi']<30 else None, delta_color="inverse")
@@ -151,34 +208,26 @@ if check_password():
                 k4.write(f"**MA50:** {last['ma50']:,.0f}")
                 k4.write(f"**MA200:** {last['ma200']:,.0f}")
 
-                # --- BỔ SUNG CẨM NANG GIẢI THÍCH CHỈ BÁO VÀ RỦI RO ---
                 vol_avg = df['volume'].tail(10).mean()
                 vol_ratio = last['volume'] / vol_avg if vol_avg > 0 else 0
                 macd_status = "TÍCH CỰC (Dòng tiền mua chủ động)" if last['macd'] > last['signal'] else "TIÊU CỰC (Dòng tiền rút ra)"
-                bollinger_pos = "NỬA TRÊN (Xu hướng khỏe)" if last['close'] > last['ma20'] else "NỬA DƯỚI (Xu hướng yếu)"
 
-                with st.expander("📖 CẨM NANG ĐỌC TÍN HIỆU & PHÒNG VỆ RỦI RO BẤT KHẢ KHÁNG (Bấm để mở)"):
+                with st.expander("📖 CẨM NANG ĐỌC TÍN HIỆU & NÉ FALSE BREAKOUT (Bấm để mở)"):
                     st.markdown(f"""
 **1. Khối lượng (Volume) & Dòng tiền:**
-* **Bản chất:** "Giá là sự kỳ vọng, Khối lượng là sự thật". Giá tăng phải đi kèm khối lượng vượt trung bình thì mới bền vững.
-* **Thực tế mã {final_ticker}:** Khối lượng phiên gần nhất là **{last['volume']:,.0f}** cổ phiếu, bằng **{vol_ratio:.1f} lần** trung bình 10 phiên. {'🔥 CÓ SỰ BÙNG NỔ DÒNG TIỀN' if vol_ratio > 1.2 else '❄️ KHỐI LƯỢNG BÌNH THƯỜNG'}.
+* **Thực tế mã {final_ticker}:** Khối lượng bằng **{vol_ratio:.1f} lần** trung bình 10 phiên. {'🔥 CÓ SỰ BÙNG NỔ DÒNG TIỀN' if vol_ratio > 1.2 else '❄️ KHỐI LƯỢNG BÌNH THƯỜNG'}.
 
-**2. Chỉ số RSI (Đo lường Sức mạnh):**
-* **Bản chất:** Dưới 30 là "Quá bán" (chuẩn bị bật tăng). Trên 70 là "Quá mua" (dễ bị chốt lời diện rộng).
-* **Thực tế mã {final_ticker}:** RSI đang ở mức **{round(last['rsi'], 1)}**. {'⚠️ Rủi ro đu đỉnh (Quá mua).' if last['rsi'] > 70 else '✅ Vùng giá an toàn (Quá bán).' if last['rsi'] < 30 else '⚖️ Đang ở vùng trung tính.'}
+**2. CÁCH NÉ TÍN HIỆU GIẢ (FALSE BREAKOUT / BULL TRAP):**
+* **Né Đỉnh Giả (Breakout hụt):** Giá vượt đỉnh cũ nhưng Khối lượng < Trung bình 10 phiên (Tỷ lệ < 1.0). Đây là kéo xả, tuyệt đối không mua đuổi.
+* **Né Đáy Giả (Bắt dao rơi):** Giá chạm đáy dưới Bollinger, RSI quá bán nhưng Khối lượng xả vẫn đỏ lòm và cao hơn trung bình (Tỷ lệ > 1.0). Đừng bắt đáy, dòng tiền to vẫn đang tháo chạy!
+* **Quy tắc vàng:** Chỉ mua khi Radar báo Đáy + Nến hôm sau là nến XANH rút chân + Khối lượng Vol tăng dần.
 
 **3. Chỉ báo MACD (Xu hướng cốt lõi):**
-* **Bản chất:** Khi MACD cao hơn đường Signal ➔ Dòng tiền mua chủ động đang thắng thế. 
-* **Thực tế mã {final_ticker}:** MACD ({last['macd']:.2f}) đang {'nằm TRÊN' if last['macd'] > last['signal'] else 'nằm DƯỚI'} đường Signal ({last['signal']:.2f}) ➔ **{macd_status}**.
-
-**4. Dải Bollinger Bands (Biên độ dao động):**
-* **Bản chất:** 95% thời gian giá sẽ chạy trong ống Bollinger. Chạm dải trên (Upper) dễ bị dội xuống, chạm dải dưới (Lower) dễ bật lên.
-* **Thực tế mã {final_ticker}:** Giá hiện tại (**{last['close']:,.0f}**) đang ở **{bollinger_pos}** của ống. Cách dải trên khoảng {last['upper_band'] - last['close']:,.0f}đ và cách dải dưới {last['close'] - last['lower_band']:,.0f}đ.
+* **Thực tế mã {final_ticker}:** MACD ({last['macd']:.2f}) đang {'nằm TRÊN' if last['macd'] > last['signal'] else 'nằm DƯỚI'} đường Signal ➔ **{macd_status}**.
 
 ---
 🚨 **NGUYÊN TẮC BẤT KHẢ KHÁNG (THIÊN NGA ĐEN):**
-* Khi thị trường dính tin đồn bắt bớ, chiến tranh... **toàn bộ phân tích kỹ thuật sẽ vô tác dụng trong 1-3 phiên đầu tiên.**
-* **Hành động duy nhất đúng:** Tuân thủ Kỷ luật Mức Cắt Lỗ (SL) là **{last['close']*0.93:,.0f}**. Bán không tiếc nuối để bảo toàn vốn!
+* Khi dính tin đồn bắt bớ, chiến tranh... phân tích kỹ thuật sẽ vô tác dụng. Tuân thủ Cắt Lỗ (SL) là **{last['close']*0.93:,.0f}**.
                     """)
 
                 # Biểu đồ nến
@@ -192,16 +241,35 @@ if check_password():
             else: st.error("Lỗi lấy dữ liệu!")
 
     with tab2:
-        st.write("### 🧠 Tâm lý Tin tức & Cơ bản")
-        status, news = phan_tich_tin_tuc(final_ticker)
-        st.metric("Tâm lý báo chí:", status)
-        if not news.empty:
-            for _, r in news.iterrows(): st.write(f"- {r['title']}")
+        # --- BỘ LỌC CANSLIM HIỂN THỊ TẠI ĐÂY ---
+        st.write(f"### 📈 Chấm điểm Tăng trưởng CanSLIM ({final_ticker})")
+        with st.spinner("Đang phân tích Báo cáo Tài chính..."):
+            growth = tinh_tang_truong_lnst(final_ticker)
+            if growth is not None:
+                if growth > 20:
+                    st.success(f"**🔥 TUYỆT VỜI:** Lợi nhuận sau thuế quý gần nhất tăng **+{growth}%** so với cùng kỳ. Đạt tiêu chuẩn chữ C trong CanSLIM!")
+                elif growth > 0:
+                    st.info(f"**⚖️ TRUNG BÌNH:** Lợi nhuận tăng nhẹ **+{growth}%** so với cùng kỳ. Doanh nghiệp làm ăn ổn định nhưng chưa có sự bùng nổ.")
+                else:
+                    st.error(f"**🚨 RỦI RO:** Lợi nhuận ĐI LÙI **{growth}%** so với cùng kỳ. Thận trọng nếu giá đang ở vùng đỉnh (phân phối).")
+            else:
+                st.warning("Không đủ dữ liệu Báo cáo Tài chính (hoặc doanh nghiệp mới lên sàn/lỗ năm trước).")
+        
         st.divider()
+        st.write("### 🏢 Sức khỏe Tài chính (Định giá)")
         try:
             ratio = s.stock.finance.ratio(final_ticker, 'quarterly').iloc[-1]
-            st.write(f"**ROE:** {ratio.get('roe', 0):.1%} | **P/E:** {ratio.get('ticker_pe', 0):.1f}")
+            c1, c2 = st.columns(2)
+            c1.metric("P/E (Định giá)", f"{ratio.get('ticker_pe', 0):.1f}")
+            c2.metric("ROE (Hiệu quả Vốn)", f"{ratio.get('roe', 0):.1%}")
         except: st.warning("Dữ liệu tài chính đang cập nhật.")
+
+        st.divider()
+        st.write("### 🧠 Tâm lý Tin tức Báo chí")
+        status, news = phan_tich_tin_tuc(final_ticker)
+        st.metric("Tâm lý chung:", status)
+        if not news.empty:
+            for _, r in news.iterrows(): st.write(f"- {r['title']}")
 
     with tab3:
         st.write("### 🌊 Dòng tiền Tự doanh & Khối ngoại")
