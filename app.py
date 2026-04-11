@@ -30,8 +30,7 @@ if check_password():
     # --- HÀM LẤY DỮ LIỆU ---
     def lay_du_lieu(ticker):
         try:
-            # Lấy dữ liệu 2 năm để tính MA200 chính xác
-            df = s.stock.historical_data(symbol=ticker, start='2024-01-01', end=datetime.now().strftime('%Y-%m-%d'), resolution='1D', type='stock')
+            df = s.stock.quote.history(symbol=ticker, start='2024-01-01', end=datetime.now().strftime('%Y-%m-%d'))
             if df is not None and not df.empty:
                 df.columns = [col.lower() for col in df.columns]
                 return df
@@ -58,8 +57,12 @@ if check_password():
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         return df
 
-    # --- TÍNH TỶ LỆ THẮNG (SỬA LỖI DÒNG 68) ---
+    # --- TÍNH TỶ LỆ THẮNG ---
     def tinh_ty_le_thang(df):
         win, total = 0, 0
-        # Duyệt từ phiên thứ 200 để có đủ dữ liệu MA200
-        for i in range(200, len(df)-1
+        for i in range(200, len(df)-10):
+            if df['rsi'].iloc[i] < 45 and df['macd'].iloc[i] > df['signal'].iloc[i] and df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]:
+                total += 1
+                buy_p = df['close'].iloc[i]
+                if any(df['close'].iloc[i+1:i+11] > buy_p * 1.05): win += 1
+        return round((win/total)*100, 1
