@@ -144,19 +144,20 @@ if check_password():
                     x=df['date'], open=df['open'], high=df['high'], 
                     low=df['low'], close=df['close'], name='Nến'), row=1, col=1)
                 
+                # Đổi màu MA50 thành Cam đậm và MA200 thành Tím đậm để dễ nhìn trên nền trắng
                 fig.add_trace(go.Scatter(
                     x=df['date'], y=df['ma50'], 
-                    line=dict(color='orange', width=1.5), name='MA50'), row=1, col=1) # Đổi màu cho dễ nhìn trên nền trắng
+                    line=dict(color='#FF8C00', width=1.5), name='MA50'), row=1, col=1)
                 
                 fig.add_trace(go.Scatter(
                     x=df['date'], y=df['ma200'], 
-                    line=dict(color='purple', width=2), name='MA200'), row=1, col=1) # Đổi màu cho dễ nhìn trên nền trắng
+                    line=dict(color='#800080', width=2), name='MA200'), row=1, col=1)
                 
                 fig.add_trace(go.Bar(
                     x=df['date'], y=df['volume'], 
-                    marker_color='gray', name='Vol'), row=2, col=1)
+                    marker_color='#555555', name='Vol'), row=2, col=1)
                 
-                # Đổi nền biểu đồ thành màu trắng (plotly_white)
+                # Đổi template biểu đồ sang nền trắng
                 fig.update_layout(
                     height=600, template='plotly_white', xaxis_rangeslider_visible=False
                 )
