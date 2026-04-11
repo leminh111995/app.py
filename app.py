@@ -32,8 +32,8 @@ def check_password():
     return st.session_state.get("password_correct", False)
 
 if check_password():
-    st.set_page_config(page_title="Quant System V6.5 - Ultimate", layout="wide")
-    st.title("🛡️ Quant System V6.5: Radar + AI + CanSLIM + Smart Flow")
+    st.set_page_config(page_title="Quant System V6.6 - Ultimate", layout="wide")
+    st.title("🛡️ Quant System V6.6: Hệ Thống Chẩn Đoán Toàn Diện")
 
     s = Vnstock()
 
@@ -63,17 +63,14 @@ if check_password():
         df['std'] = df['close'].rolling(20).std()
         df['upper_band'] = df['ma20'] + (df['std'] * 2)
         df['lower_band'] = df['ma20'] - (df['std'] * 2)
-        
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         df['rsi'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
-        
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        
         df['return_1d'] = df['close'].pct_change()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
         df['money_flow'] = df['close'] * df['volume']
@@ -95,7 +92,7 @@ if check_password():
         prob = model.predict_proba(X.iloc[[-1]])[0][1]
         return round(prob * 100, 1)
 
-    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM (FIX SSI/BANK) ---
+    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM ---
     def tinh_tang_truong_lnst(ticker):
         try:
             df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en')
@@ -188,16 +185,26 @@ if check_password():
         st.write(f"### 📈 Chấm điểm Tăng trưởng CanSLIM ({final_ticker})")
         growth = tinh_tang_truong_lnst(final_ticker)
         if growth is not None:
-            if growth > 20: st.success(f"**🔥 TUYỆT VỜI:** LNST quý gần nhất tăng **+{growth}%** so với cùng kỳ.")
+            if growth > 20: st.success(f"**🔥 TUYỆT VỜI:** LNST quý gần nhất tăng **+{growth}%** so với cùng kỳ. Đạt chuẩn CanSLIM.")
             elif growth > 0: st.info(f"**⚖️ TRUNG BÌNH:** LNST tăng trưởng **+{growth}%**.")
-            else: st.error(f"**🚨 RỦI RO:** LNST đi lùi **{growth}%**.")
+            else: st.error(f"**🚨 RỦI RO:** LNST đi lùi **{growth}%**. Cần kiểm tra kỹ lý do.")
         else: st.warning("Dữ liệu tăng trưởng đang được cập nhật.")
         
-        st.divider(); st.write("### 🏢 Sức khỏe Tài chính (Định giá)")
+        st.divider(); st.write("### 🏢 Sức khỏe Tài chính (Chẩn đoán Định giá)")
         pe, roe = lay_chi_so_co_ban(final_ticker)
-        c1, c2 = st.columns(2); c1.metric("P/E (Định giá)", f"{pe:.1f}" if pe > 0 else "N/A"); c2.metric("ROE (Hiệu quả Vốn)", f"{roe:.1%}" if roe > 0 else "N/A")
+        c1, c2 = st.columns(2)
         
-        st.divider(); status, news = phan_tich_tin_tuc(final_ticker); st.metric("Tâm lý chung:", status)
+        # --- LOGIC CHẨN ĐOÁN P/E ---
+        pe_status = "Tốt (Định giá Rẻ)" if 0 < pe < 10 else ("Hợp lý" if 10 <= pe < 20 else ("Đắt (Cần thận trọng)" if pe >= 20 else "N/A"))
+        c1.metric("P/E (Price to Earnings)", f"{pe:.1f}" if pe > 0 else "N/A", delta=pe_status, delta_color="normal" if pe < 20 else "inverse")
+        st.info(f"💡 **Ý nghĩa P/E:** Cho biết bạn mất bao nhiêu năm để thu hồi vốn. P/E thấp chứng tỏ cổ phiếu đang rẻ so với lợi nhuận nó tạo ra.")
+
+        # --- LOGIC CHẨN ĐOÁN ROE ---
+        roe_status = "Xuất sắc" if roe >= 0.25 else ("Tốt" if 0.15 <= roe < 0.25 else ("Trung bình" if 0.1 <= roe < 0.15 else "Thấp"))
+        c2.metric("ROE (Return on Equity)", f"{roe:.1%}" if roe > 0 else "N/A", delta=roe_status, delta_color="normal" if roe >= 0.15 else "inverse")
+        st.info(f"💡 **Ý nghĩa ROE:** Đo lường hiệu quả sử dụng vốn của doanh nghiệp. ROE càng cao (>15%) chứng tỏ doanh nghiệp làm ăn cực kỳ hiệu quả.")
+        
+        st.divider(); status, news = phan_tich_tin_tuc(final_ticker); st.metric("Tâm lý chung từ tin tức:", status)
         if not news.empty:
             for _, r in news.iterrows(): st.write(f"- {r['title']}")
 
@@ -206,24 +213,16 @@ if check_password():
         df_flow = lay_du_lieu(final_ticker, days=30)
         if df_flow is not None:
             df_flow = tinh_toan_chi_bao(df_flow); last_flow = df_flow.iloc[-1]; v_change = last_flow['vol_change']
-            if v_change > 1.5: big_m = 0.6; med_m = 0.3; sma_m = 0.1
-            elif v_change > 1.1: big_m = 0.4; med_m = 0.4; sma_m = 0.2
-            else: big_m = 0.2; med_m = 0.3; sma_m = 0.5
+            big_m = 0.6 if v_change > 1.5 else (0.4 if v_change > 1.1 else 0.2)
+            med_m = 0.3 if v_change > 1.5 else (0.4 if v_change > 1.1 else 0.3)
+            sma_m = 0.1 if v_change > 1.5 else (0.2 if v_change > 1.1 else 0.5)
             
-            # --- FIX MÀU SẮC GOM/XẢ ---
-            status_txt = "Gom" if last_flow['return_1d'] > 0 else "Xả"
+            status_txt = "Gom (Tích cực)" if last_flow['return_1d'] > 0 else "Xả (Rủi ro)"
             status_color = "normal" if last_flow['return_1d'] > 0 else "inverse"
             
             c1, c2, c3 = st.columns(3)
             c1.metric("🐋 Tiền Lớn", f"{big_m*100:.0f}%", delta=status_txt, delta_color=status_color)
             c2.metric("🏦 Tiền Vừa", f"{med_m*100:.0f}%"); c3.metric("🐜 Tiền Nhỏ", f"{sma_m*100:.0f}%")
-            
-            with st.expander("📖 GIẢI NGHĨA CÁC LOẠI DÒNG TIỀN (Bấm để xem)"):
-                st.markdown("""
-                * **🐋 Tiền Lớn (Cá mập):** Giao dịch của quỹ ngoại, tự doanh, tổ chức lớn. Đây là động lực kéo giá tăng bền vững.
-                * **🏦 Tiền Vừa (Tổ chức nội):** Các quỹ nội địa, nhà đầu tư chuyên nghiệp. Thường đi theo xu hướng của Cá mập.
-                * **🐜 Tiền Nhỏ (Nhà đầu tư cá nhân):** Nếu tỷ lệ này quá cao (>50%), cổ phiếu thường bị 'loãng' và khó tăng mạnh ngay lập tức.
-                """)
             
             history = df_flow.tail(20).copy()
             fig_smart = go.Figure()
