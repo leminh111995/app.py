@@ -74,12 +74,14 @@ if check_password():
         df['macd'] = exp1 - exp2
         df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         
+        # FEATURE CHO AI
         df['return_1d'] = df['close'].pct_change()
         df['volatility'] = df['return_1d'].rolling(20).std()
         df['vol_change'] = df['volume'] / df['volume'].rolling(10).mean()
         df['money_flow'] = df['close'] * df['volume']
         df['price_vol_trend'] = np.where((df['return_1d'] > 0) & (df['vol_change'] > 1), 1, 
                                 np.where((df['return_1d'] < 0) & (df['vol_change'] > 1), -1, 0))
+        
         return df.dropna()
 
     # --- MÔ HÌNH DỰ BÁO AI ---
@@ -98,32 +100,22 @@ if check_password():
         prob = model.predict_proba(X.iloc[[-1]])[0][1]
         return round(prob * 100, 1)
 
-    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM (TÍCH HỢP DỰ PHÒNG YFINANCE) ---
+    # --- HÀM TÍNH TĂNG TRƯỞNG CANSLIM ---
     def tinh_tang_truong_lnst(ticker):
-        # Cách 1: Thử dùng vnstock (Tốt cho công ty sản xuất)
         try:
-            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='vi')
+            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en')
             df_inc = df_inc.head(5) 
-            target_cols = [c for c in df_inc.columns if any(kw in str(c).lower() for kw in ['sau thuế', 'posttax', 'net profit', 'lãi ròng'])]
-            if target_cols:
-                col_name = target_cols[0]
-                lnst_q1 = float(df_inc.iloc[0][col_name])
-                lnst_q5 = float(df_inc.iloc[4][col_name])
-                if lnst_q5 > 0: 
-                    return round(((lnst_q1 - lnst_q5) / lnst_q5) * 100, 1)
-        except: pass
-        
-        # Cách 2: Dự phòng Yahoo Finance (Tốt cho công ty Tài chính, Bank, Chứng khoán)
-        try:
-            info = yf.Ticker(f"{ticker}.VN").info
-            growth = info.get('earningsQuarterlyGrowth')
-            if growth is not None:
-                return round(growth * 100, 1)
-        except: pass
-        
-        return None
+            target_cols = [c for c in df_inc.columns if isinstance(c, str) and 'posttax' in c.lower()]
+            if not target_cols: return None
+            col_name = target_cols[0]
+            lnst_q1 = float(df_inc.iloc[0][col_name])
+            lnst_q5 = float(df_inc.iloc[4][col_name])
+            if pd.isna(lnst_q5) or lnst_q5 <= 0: return None
+            growth = ((lnst_q1 - lnst_q5) / lnst_q5) * 100
+            return round(growth, 1)
+        except: return None
 
-    # --- HÀM LẤY CHỈ SỐ CƠ BẢN (P/E, ROE) DỰ PHÒNG ---
+    # --- HÀM LẤY CHỈ SỐ CƠ BẢN ---
     def lay_chi_so_co_ban(ticker):
         pe, roe = 0, 0
         try:
@@ -132,7 +124,6 @@ if check_password():
             roe = ratio.get('roe', 0)
             if pe > 0: return pe, roe
         except: pass
-        
         try:
             info = yf.Ticker(f"{ticker}.VN").info
             pe = info.get('trailingPE', 0)
@@ -295,11 +286,39 @@ if check_password():
             for _, r in news.iterrows(): st.write(f"- {r['title']}")
 
     with tab3:
-        st.write("### 🌊 Dòng tiền Tự doanh & Khối ngoại")
-        try:
-            flow = s.stock.finance.flow(final_ticker, 'net_flow', 'daily').tail(10)
-            st.bar_chart(flow[['foreign', 'prop']])
-        except: st.warning("Dòng tiền đang cập nhật...")
+        st.write("### 🌊 Dòng tiền Toàn Thị Trường (Đến phiên mở cửa cuối cùng)")
+        with st.spinner("Đang tải dữ liệu dòng tiền..."):
+            df_flow = lay_du_lieu(final_ticker, days=30)
+            if df_flow is not None and not df_flow.empty:
+                df_flow = tinh_toan_chi_bao(df_flow)
+                flow_10 = df_flow.tail(10).copy()
+                
+                st.write(f"**Biến động Giá trị Giao dịch (10 phiên gần nhất):**")
+                
+                fig_flow = go.Figure()
+                colors = ['#2ca02c' if val > 0 else '#d62728' for val in flow_10['return_1d']]
+                fig_flow.add_trace(go.Bar(
+                    x=flow_10['date'], 
+                    y=flow_10['money_flow'],
+                    marker_color=colors,
+                    name='Giá trị GD'
+                ))
+                fig_flow.update_layout(height=400, template='plotly_white', margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_flow, use_container_width=True)
+                
+                st.write("**Thống kê Dòng tiền:**")
+                c1, c2 = st.columns(2)
+                c1.metric("Giá trị GD phiên cuối", f"{flow_10['money_flow'].iloc[-1]:,.0f} VND")
+                
+                vol_ratio = flow_10['volume'].iloc[-1] / flow_10['volume'].mean()
+                if vol_ratio > 1.2:
+                    c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Nổ Volume", delta_color="normal")
+                elif vol_ratio < 0.8:
+                    c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Dòng tiền cạn", delta_color="inverse")
+                else:
+                    c2.metric("Sức mạnh Dòng tiền", f"{vol_ratio:.1f}x", delta="Bình thường", delta_color="off")
+            else:
+                st.warning("Không thể tải dữ liệu dòng tiền lúc này.")
 
     with tab4:
         st.subheader("🔍 Truy quét Toàn sàn & Lọc mã Tiềm năng")
