@@ -32,8 +32,8 @@ def check_password():
     return st.session_state.get("password_correct", False)
 
 if check_password():
-    st.set_page_config(page_title="Quant System V6.8 - Final", layout="wide")
-    st.title("🛡️ Quant System V6.8: Hệ Thống Chiến Thuật Toàn Diện")
+    st.set_page_config(page_title="Quant System V6.9 - Full Option", layout="wide")
+    st.title("🛡️ Quant System V6.9: Radar + AI + CanSLIM + Smart Flow")
 
     s = Vnstock()
 
@@ -128,17 +128,6 @@ if check_password():
         except: pass
         return pe, roe
 
-    # --- PHÂN TÍCH TÂM LÝ TIN TỨC ---
-    def phan_tich_tin_tuc(ticker):
-        try:
-            news = s.stock.news(ticker).head(5)
-            analyzer = SentimentIntensityAnalyzer()
-            scores = [analyzer.polarity_scores(t)['compound'] for t in news['title']]
-            avg = np.mean(scores)
-            status = "🟢 Tích cực" if avg > 0.05 else ("🔴 Tiêu cực" if avg < -0.05 else "🟡 Trung lập")
-            return status, news
-        except: return "⚪ Không xác định", pd.DataFrame()
-
     # --- DANH SÁCH MÃ ---
     @st.cache_data(ttl=3600)
     def lay_danh_sach_ma():
@@ -163,7 +152,6 @@ if check_password():
             df = lay_du_lieu(final_ticker)
             if df is not None and not df.empty:
                 df = tinh_toan_chi_bao(df); last = df.iloc[-1]; ai_p = du_bao_ai(df)
-                
                 st.write("### 🎯 Mục tiêu & Rủi ro")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Giá Hiện Tại", f"{last['close']:,.0f}")
@@ -179,11 +167,11 @@ if check_password():
                 else: st.info(f"**⚖️ CÂN BẰNG:** Cổ phiếu đang tích lũy.")
 
                 vol_avg = df['volume'].tail(10).mean(); vol_ratio = last['volume'] / vol_avg if vol_avg > 0 else 0
-                with st.expander("📖 CẨM NANG ĐỌC TÍN HIỆU & NÉ FALSE BREAKOUT (Bấm để xem)"):
+                with st.expander("📖 CẨM NANG GIẢI THÍCH SỐ LIỆU (Bấm để xem)"):
                     st.markdown(f"""
-                    **1. Khối lượng (Volume):** Vol đang bằng **{vol_ratio:.1f} lần** trung bình.
-                    **2. Chỉ báo MACD:** MACD đang {'nằm TRÊN (Tích cực)' if last['macd'] > last['signal'] else 'nằm DƯỚI (Thận trọng)'}.
-                    **3. NÉ BẪY GIÁ:** Chỉ mua khi Radar báo Đáy + Vol cạn kiệt. Né Đỉnh khi Radar báo Đỉnh + Vol xả cực lớn.
+                    **1. Khối lượng (Volume):** Vol đang bằng **{vol_ratio:.1f} lần** trung bình. Nếu Giá tăng + Vol cao ➔ Tiền lớn vào. Giá giảm + Vol cao ➔ Tiền lớn thoát.
+                    **2. Chỉ báo MACD:** MACD {'nằm TRÊN (Tăng)' if last['macd'] > last['signal'] else 'nằm DƯỚI (Giảm)'} đường Signal.
+                    **3. Né Bẫy Giá:** Tránh mua khi Radar báo Đỉnh. Ưu tiên mua khi Radar báo Đáy + Vol thấp (Cạn cung).
                     """)
 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
@@ -196,60 +184,56 @@ if check_password():
         st.write(f"### 📈 Chẩn Đoán Tài Chính & CanSLIM ({final_ticker})")
         growth = tinh_tang_truong_lnst(final_ticker)
         if growth is not None:
-            if growth > 20: st.success(f"**🔥 CanSLIM:** LNST tăng **+{growth}%** (Đạt chuẩn).")
-            elif growth > 0: st.info(f"**⚖️ Tăng trưởng:** LNST tăng **+{growth}%**.")
-            else: st.error(f"**🚨 Rủi ro:** LNST đi lùi **{growth}%**.")
+            if growth > 20: st.success(f"**🔥 CanSLIM:** LNST quý gần nhất tăng **+{growth}%** (Tăng trưởng mạnh - Tốt).")
+            elif growth > 0: st.info(f"**⚖️ Tăng trưởng:** LNST tăng **+{growth}%** (Ổn định).")
+            else: st.error(f"**🚨 Rủi ro:** LNST đi lùi **{growth}%** (Làm ăn sụt giảm).")
         
         st.divider(); pe, roe = lay_chi_so_co_ban(final_ticker); c1, c2 = st.columns(2)
-        pe_status = "Tốt (Rẻ)" if 0 < pe < 12 else ("Hợp lý" if 12 <= pe < 20 else "Đắt")
+        # Chẩn đoán P/E
+        pe_status = "Tốt (Định giá Rẻ)" if 0 < pe < 12 else ("Hợp lý" if 12 <= pe < 20 else "Đắt (Thận trọng)")
         c1.metric("P/E (Định giá)", f"{pe:.1f}", delta=pe_status, delta_color="normal" if pe < 20 else "inverse")
-        roe_status = "Xuất sắc" if roe >= 0.2 else ("Tốt" if 0.15 <= roe < 0.2 else "Trung bình")
-        c2.metric("ROE (Hiệu quả)", f"{roe:.1%}", delta=roe_status, delta_color="normal" if roe >= 0.15 else "inverse")
+        st.write("> **P/E:** Thấp có nghĩa là bạn đang mua cổ phiếu với giá rẻ so với lợi nhuận. P/E > 20 là vùng rủi ro.")
         
-        st.divider(); status, news = phan_tich_tin_tuc(final_ticker); st.metric("Tâm lý báo chí:", status)
-        if not news.empty:
-            for _, r in news.iterrows(): st.write(f"- {r['title']}")
+        # Chẩn đoán ROE
+        roe_status = "Xuất sắc" if roe >= 0.2 else ("Tốt" if 0.15 <= roe < 0.2 else "Trung bình/Thấp")
+        c2.metric("ROE (Hiệu quả)", f"{roe:.1%}", delta=roe_status, delta_color="normal" if roe >= 0.15 else "inverse")
+        st.write("> **ROE:** Càng cao chứng tỏ công ty sử dụng vốn cực giỏi. Tiêu chuẩn vàng là > 15%.")
 
     with tab3:
-        st.write(f"### 🌊 Phân Tích Dòng Tiền Riêng Mã {final_ticker}")
+        st.write(f"### 🌊 Phân Tích Dòng Tiền Smart Flow Mã {final_ticker}")
         df_flow = lay_du_lieu(final_ticker, days=30)
         if df_flow is not None:
-            df_flow = tinh_toan_chi_bao(df_flow); last_flow = df_flow.iloc[-1]; v_change = last_flow['vol_change']
+            df_flow = tinh_toan_chi_bao(df_flow); last_f = df_flow.iloc[-1]; v_c = last_f['vol_change']
+            big_m = 0.6 if v_c > 1.5 else (0.4 if v_c > 1.1 else 0.2)
+            med_m = 0.3 if v_c > 1.5 else (0.4 if v_c > 1.1 else 0.3)
+            sma_m = 0.1 if v_c > 1.5 else (0.2 if v_c > 1.1 else 0.5)
             
-            # --- TÍNH TOÁN CƠ CẤU DÒNG TIỀN (SMART FLOW) ---
-            if v_change > 1.5: big_m = 0.6; med_m = 0.3; sma_m = 0.1
-            elif v_change > 1.1: big_m = 0.4; med_m = 0.4; sma_m = 0.2
-            else: big_m = 0.2; med_m = 0.3; sma_m = 0.5
-            
-            status_txt = "Gom" if last_flow['return_1d'] > 0 else "Xả"
-            status_color = "normal" if last_flow['return_1d'] > 0 else "inverse"
-            
+            s_txt = "Gom" if last_f['return_1d'] > 0 else "Xả"; s_col = "normal" if last_f['return_1d'] > 0 else "inverse"
             c1, c2, c3 = st.columns(3)
-            c1.metric("🐋 Tiền Lớn (🐋)", f"{big_m*100:.0f}%", delta=status_txt, delta_color=status_color)
+            c1.metric("🐋 Tiền Lớn", f"{big_m*100:.0f}%", delta=s_txt, delta_color=s_col)
             c2.metric("🏦 Tiền Vừa", f"{med_m*100:.0f}%"); c3.metric("🐜 Tiền Nhỏ", f"{sma_m*100:.0f}%")
             
-            with st.expander("📖 Ý NGHĨA DÒNG TIỀN"):
+            with st.expander("📖 GIẢI NGHĨA DÒNG TIỀN (Smart Flow)"):
                 st.markdown("""
-                * **🐋 Tiền Lớn:** Tiền của tay to, quỹ ngoại. Nếu Gom (Xanh) là cực tốt. Nếu Xả (Đỏ) là nguy hiểm.
-                * **🐜 Tiền Nhỏ:** Tiền của nhỏ lẻ. Tỷ lệ này cao (>50%) thì cổ phiếu thường rất nặng mông.
+                * **🐋 Tiền Lớn (Cá mập):** Tiền của Quỹ, Tổ chức ngoại. Nếu họ 'Gom', cổ phiếu dễ tăng bằng lần.
+                * **🏦 Tiền Vừa (Tổ chức nội):** Tiền của các quỹ nội, nhà đầu tư chuyên nghiệp. Đây là nhóm duy trì xu hướng.
+                * **🐜 Tiền Nhỏ (Nhỏ lẻ):** Nhà đầu tư cá nhân. Tỷ lệ này cao chứng tỏ cổ phiếu đang bị đu bám nhiều, khó tăng mạnh.
                 """)
             
             history = df_flow.tail(20).copy()
-            fig_smart = go.Figure()
-            fig_smart.add_trace(go.Scatter(x=history['date'], y=history['close'], name='Giá', yaxis='y2', line=dict(color='black', width=2)))
-            fig_smart.add_trace(go.Bar(x=history['date'], y=history['money_flow'], marker_color=['#2ca02c' if r > 0 else '#d62728' for r in history['return_1d']], name='Dòng tiền'))
-            fig_smart.update_layout(height=450, template='plotly_white', yaxis2=dict(overlaying='y', side='right'), legend=dict(orientation="h", y=1.1))
-            st.plotly_chart(fig_smart, use_container_width=True)
+            fig_f = go.Figure()
+            fig_f.add_trace(go.Bar(x=history['date'], y=history['money_flow'], marker_color=['#2ca02c' if r > 0 else '#d62728' for r in history['return_1d']]))
+            fig_f.update_layout(height=400, template='plotly_white'); st.plotly_chart(fig_f, use_container_width=True)
 
     with tab4:
-        st.subheader("🔍 Robot Truy Quét Toàn Sàn")
-        if st.button("🔥 BẮT ĐẦU TRUY QUÉT"):
+        st.subheader("🔍 Robot Truy Quét")
+        if st.button("🔥 CHẠY RÀ SOÁT"):
             hits = []; bar = st.progress(0); tickers = all_tickers[:30]
             for i, t in enumerate(tickers):
                 try:
                     d = lay_du_lieu(t, days=100); d = tinh_toan_chi_bao(d)
                     if d.iloc[-1]['vol_change'] > 1.3:
-                        hits.append({'Mã': t, 'Giá': d.iloc[-1]['close'], 'Sức mạnh Vol': round(d.iloc[-1]['vol_change'], 2), 'AI Dự báo': f"{du_bao_ai(d)}%"})
+                        hits.append({'Mã': t, 'Giá': d.iloc[-1]['close'], 'AI Dự báo': f"{du_bao_ai(d)}%"})
                 except: pass
                 bar.progress((i+1)/len(tickers))
             if hits: st.table(pd.DataFrame(hits))
