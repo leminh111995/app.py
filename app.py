@@ -3,18 +3,17 @@ from vnstock import Vnstock
 import pandas as pd
 import time
 
-# 1. Cấu hình bảo mật đơn giản
+# 1. Cấu hình bảo mật
 def check_password():
-    """Trả về True nếu người dùng nhập đúng mật khẩu."""
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Xóa mật khẩu khỏi bộ nhớ tạm
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("Vui lòng nhập mật mã để mở Robot:", type="password", on_change=password_entered, key="password")
+        st.text_input("Vui lòng nhập mật mã của Minh:", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("Sai mật mã! Nhập lại:", type="password", on_change=password_entered, key="password")
@@ -23,20 +22,39 @@ def check_password():
     else:
         return True
 
-# 2. Giao diện chính sau khi đã đăng nhập thành công
 if check_password():
     st.set_page_config(page_title="Robot Cá Nhân - HOSE", layout="wide")
-    st.title("🚀 Robot Riêng Của Minh")
+    st.title("🚀 Robot Phân Tích Siêu Cổ Phiếu")
 
     s = Vnstock()
 
-    # Tối ưu hóa: Dùng Cache để không quét lại mã cũ trong vòng 30 phút
+    # --- TỰ ĐỘNG LẤY DANH SÁCH MÃ TỪ SÀN ---
+    @st.cache_data
+    def get_all_tickers():
+        try:
+            df_ls = s.market.listing()
+            # Chỉ lấy các mã trên sàn HOSE
+            return df_ls[df_ls['comGroupCode'] == 'HOSE']['ticker'].tolist()
+        except:
+            return ["FPT","HPG","SSI","VNM","TCB","MWG","VIC","VHM","STB","MSN"]
+
+    all_tickers = get_all_tickers()
+
+    # Tạo ô chọn mã đa năng trên giao diện
+    st.sidebar.header("Cài đặt danh mục")
+    selected_list = st.sidebar.multiselect(
+        "Chọn các mã bạn muốn quét:",
+        options=all_tickers,
+        default=["FPT","HPG","SSI","TCB","MWG"] # Các mã mặc định hiện ra
+    )
+    # ---------------------------------------
+
     @st.cache_data(ttl=1800)
     def lay_du_lieu_safe(ticker):
         try:
-            time.sleep(0.2) # Nghỉ một chút để an toàn cho IP của bạn
+            time.sleep(0.2) 
             df = s.stock_price.khop_lenh_history(symbol=ticker, period='1y')
-            if df.empty: return None
+            if df.empty or len(df) < 5: return None
             
             curr_price = df['close'].iloc[-1]
             vol_avg = df['volume'].tail(20).mean()
@@ -51,20 +69,24 @@ if check_password():
         except:
             return None
 
-    # Danh sách các mã bạn quan tâm (Có thể lên đến 50-100 mã mà vẫn an toàn)
-    my_list = ["FPT","HPG","SSI","VNM","TCB","MWG","VHM","STB","MSN","VCI","DGC","VND","PVD","NKG","HSG"]
-
     if st.button('🎯 QUÉT DÒNG TIỀN NGAY'):
-        progress_bar = st.progress(0)
-        results = []
-        
-        for i, t in enumerate(my_list):
-            res = lay_du_lieu_safe(t)
-            if res: results.append(res)
-            progress_bar.progress((i + 1) / len(my_list))
-        
-        st.success("Đã quét xong danh sách cá nhân!")
-        df = pd.DataFrame(results)
-        st.dataframe(df.sort_values(by='Sức mạnh Vol', ascending=False), use_container_width=True)
+        if not selected_list:
+            st.warning("Bạn chưa chọn mã nào để quét cả!")
+        else:
+            progress_bar = st.progress(0)
+            results = []
+            
+            for i, t in enumerate(selected_list):
+                res = lay_du_lieu_safe(t)
+                if res: results.append(res)
+                progress_bar.progress((i + 1) / len(selected_list))
+            
+            if results:
+                st.success(f"Đã quét xong {len(results)} mã bạn chọn!")
+                df = pd.DataFrame(results)
+                st.dataframe(df.sort_values(by='Sức mạnh Vol', ascending=False), use_container_width=True)
+            else:
+                st.warning("⚠️ Hiện tại server không trả về dữ liệu (Thị trường đang nghỉ).")
 
-    st.sidebar.write("Chúc bạn một ngày giao dịch thành công!")
+    st.sidebar.markdown("---")
+    st.sidebar.write(f"Tổng số mã HOSE khả dụng: {len(all_tickers)}")
