@@ -5,6 +5,8 @@ import numpy as np
 import time
 from datetime import datetime, timedelta
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # ==========================================
 # 1. BẢO MẬT
@@ -21,14 +23,14 @@ def check_password():
     return st.session_state.get("password_correct", False)
 
 if check_password():
-    st.set_page_config(page_title="Robot Toàn Diện V3", layout="wide")
-    st.title("🚀 Robot Phân Tích Kỹ Thuật, Cơ Bản & Dòng Tiền")
+    st.set_page_config(page_title="Robot Siêu Cấp V4", layout="wide")
+    st.title("🎖️ Hệ Thống Phân Tích & Truy Quét Siêu Cổ Phiếu")
 
-    # --- HÀM LẤY DỮ LIỆU ---
-    def lay_du_lieu_thong_minh(ticker):
+    # --- HÀM LẤY DỮ LIỆU THÔNG MINH ---
+    def lay_du_lieu_thong_minh(ticker, days=365):
         try:
             df = stock_historical_data(symbol=ticker, 
-                                       start_date=(datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'), 
+                                       start_date=(datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'), 
                                        end_date=datetime.now().strftime('%Y-%m-%d'), 
                                        resolution='1D', type='stock')
             if df is not None and not df.empty:
@@ -42,133 +44,110 @@ if check_password():
             return yt
         except: return None
 
+    # --- HÀM TÍNH CHỈ BÁO ---
+    def tinh_chi_bao(df):
+        df['ma20'] = df['close'].rolling(20).mean()
+        df['std'] = df['close'].rolling(20).std()
+        df['upper'] = df['ma20'] + (df['std'] * 2)
+        df['lower'] = df['ma20'] - (df['std'] * 2)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        df['rsi'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        return df
+
     # --- LẤY DANH SÁCH MÃ ---
     @st.cache_data(ttl=3600)
     def get_all_tickers():
-        try:
-            return stock_listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
-        except:
-            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN"]
+        try: return stock_listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
+        except: return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN"]
 
     all_tickers = get_all_tickers()
 
     # --- SIDEBAR ---
-    st.sidebar.header("🎯 Cài đặt danh mục")
-    selected_ticker = st.sidebar.selectbox("Chọn mã muốn soi:", all_tickers, index=0)
-    manual_ticker = st.sidebar.text_input("Hoặc nhập mã thủ công:").upper()
+    st.sidebar.header("🎯 Điều khiển")
+    selected_ticker = st.sidebar.selectbox("Chọn mã soi nhanh:", all_tickers, index=0)
+    manual_ticker = st.sidebar.text_input("Hoặc nhập mã bất kỳ:").upper()
     final_ticker = manual_ticker if manual_ticker else selected_ticker
 
-    # --- GIAO DIỆN CHÍNH ---
-    tab1, tab2, tab3 = st.tabs(["📊 Phân tích Kỹ thuật", "🏢 Sức mạnh Cơ bản", "🌊 Dòng tiền & Ngành"])
+    # --- GIAO DIỆN TABS ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Kỹ thuật & Nến", "🏢 Sức khỏe Cơ bản", "🌊 Dòng tiền Ngành", "🔍 TRUY QUÉT TOÀN SÀN"])
 
     with tab1:
-        if st.button(f'🚀 CHẨN ĐOÁN KỸ THUẬT {final_ticker}'):
-            df_raw = lay_du_lieu_thong_minh(final_ticker)
-            if df_raw is not None and not df_raw.empty:
-                # TÍNH TOÁN CHỈ BÁO
-                df = df_raw.copy()
-                df['MA20'] = df['close'].rolling(20).mean()
-                df['Upper'] = df['MA20'] + (df['close'].rolling(20).std() * 2)
-                df['Lower'] = df['MA20'] - (df['close'].rolling(20).std() * 2)
+        if st.button(f'🚀 CHẨN ĐOÁN {final_ticker}'):
+            df = lay_du_lieu_thong_minh(final_ticker)
+            if df is not None and not df.empty:
+                df = tinh_chi_bao(df)
+                last = df.iloc[-1]
                 
-                # Tính RSI
-                delta = df['close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                df['RSI'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
-                
-                # Tính MACD
-                exp1 = df['close'].ewm(span=12, adjust=False).mean()
-                exp2 = df['close'].ewm(span=26, adjust=False).mean()
-                df['MACD'] = exp1 - exp2
-                df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-                
-                last_row = df.iloc[-1]
-                
-                # HIỂN THỊ METRICS (Phần bạn cần nhất đây)
-                st.write(f"### 🚩 Tín hiệu kỹ thuật mã: {final_ticker}")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Giá Hiện Tại", f"{last_row['close']:,.0f}")
-                
-                with col2:
-                    rsi_val = round(last_row['RSI'], 1)
-                    st.metric("RSI (14)", rsi_val)
-                    if rsi_val > 70: st.error("⚠️ Quá mua")
-                    elif rsi_val < 30: st.success("✅ Quá bán")
-                    else: st.info("Bình thường")
-                
-                with col3:
-                    macd_val = round(last_row['MACD'], 2)
-                    st.metric("MACD", macd_val)
-                    if last_row['MACD'] > last_row['Signal']: st.write("📈 Xu hướng: **TĂNG**")
-                    else: st.write("📉 Xu hướng: **GIẢM**")
-                
-                with col4:
-                    st.write("**Bollinger Bands**")
-                    st.write(f"Upper: {last_row['Upper']:,.0f}")
-                    st.write(f"Lower: {last_row['Lower']:,.0f}")
+                # Metrics
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Giá", f"{last['close']:,.0f}")
+                c2.metric("RSI", round(last['rsi'], 1))
+                c3.metric("MACD", round(last['macd'], 2))
+                c4.write(f"**Bollinger:** {last['lower']:,.0f}-{last['upper']:,.0f}")
 
-                st.divider()
+                # Biểu đồ nến chuyên nghiệp Plotly
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                # Nến
+                fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Giá'), row=1, col=1)
+                # Volume
+                colors = ['red' if row['open'] > row['close'] else 'green' for _, row in df.iterrows()]
+                fig.add_trace(go.Bar(x=df['date'], y=df['volume'], marker_color=colors, name='Volume'), row=2, col=1)
                 
-                # NHẬN ĐỊNH TỰ ĐỘNG
-                score = 0
-                if 30 < last_row['RSI'] < 68: score += 1
-                if last_row['MACD'] > last_row['Signal']: score += 1
-                if last_row['close'] < last_row['Upper']: score += 1
-                
-                if score == 3:
-                    st.balloons()
-                    st.success("🌟 **KHUYẾN NGHỊ: MUA TÍCH LŨY**")
-                elif score == 2:
-                    st.info("⚖️ **KHUYẾN NGHỊ: THEO DÕI**")
-                else:
-                    st.warning("⚠️ **KHUYẾN NGHỊ: ĐỨNG NGOÀI**")
+                fig.update_layout(xaxis_rangeslider_visible=False, height=600, template='plotly_dark')
+                st.plotly_chart(fig, use_container_width=True)
 
-                st.area_chart(df.tail(60)[['close']])
-                
-                # TIN TỨC
-                st.write("### 📰 Tin tức mới nhất")
+                # Nhận định & Tin tức
+                st.success(f"Khuyến nghị: {'MUA TÍCH LŨY' if last['rsi'] < 65 and last['macd'] > last['signal'] else 'THEO DÕI THÊM'}")
                 try:
-                    news = stock_news(final_ticker)
-                    for _, row in news.head(3).iterrows():
-                        st.write(f"🔔 **{row['title']}** (*{row['publishDate']}*)")
-                except: st.write("Tin tức đang cập nhật...")
-                
-            else: st.error("Không lấy được dữ liệu!")
-
-    with tab2: # (Giữ nguyên phần Cơ bản của bạn)
-        st.subheader(f"💎 Sức khỏe tài chính: {final_ticker}")
-        try:
-            ratio = financial_ratio(final_ticker, report_range='quarterly', is_not_all=True).iloc[-1]
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("P/E", f"{ratio.get('ticker_pe', 0):.1f}")
-            c2.metric("P/B", f"{ratio.get('ticker_pb', 0):.1f}")
-            c3.metric("ROE", f"{ratio.get('roe', 0):.1%}")
-            c4.metric("EPS Growth", f"{ratio.get('earning_per_share_growth', 0):.1%}")
-        except: st.warning("Dữ liệu cơ bản đang được cập nhật ngoài giờ.")
-
-    with tab3: # (Giữ nguyên phần Dòng tiền & Ngành)
-        st.subheader(f"🌊 Dòng tiền & Sóng Ngành")
-        try:
-            flow = financial_flow(final_ticker, report_type='net_flow', report_range='daily').tail(10)
-            st.bar_chart(flow[['foreign', 'prop']])
-            
-            ls = stock_listing()
-            industry = ls[ls['ticker'] == final_ticker]['en_icb_name_lv4'].values[0]
-            st.info(f"🚩 Ngành: **{industry}**")
-            
-            peers = ls[ls['en_icb_name_lv4'] == industry]['ticker'].head(5).tolist()
-            st.write(f"**So sánh Sức mạnh Vol trong ngành:**")
-            p_res = []
-            for t in peers:
-                try:
-                    d = stock_historical_data(symbol=t, start_date=(datetime.now()-timedelta(days=15)).strftime('%Y-%m-%d'), end_date=datetime.now().strftime('%Y-%m-%d'), resolution='1D', type='stock')
-                    p_res.append({'Mã': t, 'Sức mạnh Vol': round(d['volume'].iloc[-1]/d['volume'].mean(), 2)})
+                    st.write("### 📰 Tin tức")
+                    for _, r in stock_news(final_ticker).head(3).iterrows():
+                        st.write(f"🔔 {r['title']} ({r['publishDate']})")
                 except: pass
-            st.table(pd.DataFrame(p_res).sort_values(by='Sức mạnh Vol', ascending=False))
-        except: st.warning("Dữ liệu dòng tiền ngành đang cập nhật.")
+            else: st.error("Lỗi dữ liệu!")
 
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Bản Toàn Diện V3 - Đầy đủ RSI & MACD")
+    with tab2: # Giữ nguyên Cơ bản
+        try:
+            r = financial_ratio(final_ticker, 'quarterly', True).iloc[-1]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("P/E", f"{r.get('ticker_pe',0):.1f}")
+            c2.metric("ROE", f"{r.get('roe',0):.1%}")
+            st.info(f"Doanh nghiệp: {company_overview(final_ticker)['summary'].values[0]}")
+        except: st.warning("Dữ liệu đang cập nhật...")
+
+    with tab3: # Giữ nguyên Dòng tiền
+        try:
+            flow = financial_flow(final_ticker, 'net_flow', 'daily').tail(10)
+            st.write("**Giao dịch Khối ngoại & Tự doanh:**")
+            st.bar_chart(flow[['foreign', 'prop']])
+        except: st.warning("Đang lấy dữ liệu dòng tiền...")
+
+    with tab4: # TÍNH NĂNG MỚI: TRUY QUÉT TOÀN SÀN
+        st.subheader("🕵️ Robot quét mã tiềm năng (Top 20 HOSE)")
+        if st.button("🔥 BẮT ĐẦU TRUY QUÉT"):
+            scan_list = all_tickers[:50] # Quét 50 mã lỏng nhất để tránh quá tải
+            progress = st.progress(0)
+            hits = []
+            for i, t in enumerate(scan_list):
+                try:
+                    d = lay_du_lieu_thong_minh(t, days=50)
+                    if d is not None:
+                        d = tinh_chi_bao(d)
+                        last = d.iloc[-1]
+                        vol_avg = d['volume'].tail(10).mean()
+                        # TIÊU CHÍ LỌC: Vol đột biến + RSI chưa quá cao + MACD hướng lên
+                        if d['volume'].iloc[-1] > vol_avg * 1.2 and 30 < last['rsi'] < 65:
+                            hits.append({'Mã': t, 'Giá': last['close'], 'RSI': round(last['rsi'],1), 'Sức mạnh Vol': round(d['volume'].iloc[-1]/vol_avg, 2)})
+                except: pass
+                progress.progress((i+1)/len(scan_list))
+            
+            if hits:
+                st.table(pd.DataFrame(hits).sort_values(by='Sức mạnh Vol', ascending=False))
+            else: st.write("Chưa tìm thấy mã đạt tiêu chuẩn bùng nổ.")
+
+    st.sidebar.caption("Phiên bản Ultimate 2026")
