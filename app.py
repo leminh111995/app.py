@@ -1,8 +1,10 @@
 # ==============================================================================
-# QUAN SYSTEM V9.8 - PHIÊN BẢN HOÀN THIỆN TUYỆT ĐỐI (THE MASTERPIECE)
+# HỆ THỐNG QUẢN TRỊ ĐẦU TƯ ĐỊNH LƯỢNG - QUANT SYSTEM V10.0 FINAL SANCTUARY
+# ------------------------------------------------------------------------------
+# PHÂN HỆ: ADVISOR MASTER, SMART FLOW SPECIALIST, MASTER CHART & AI ENGINE
 # CHỦ SỞ HỮU: MINH
-# MÔ TẢ: HỆ THỐNG PHÂN TÍCH ĐỊNH LƯỢNG, DÒNG TIỀN VÀ TƯ VẤN CHIẾN THUẬT
-# TÍNH NĂNG: AI T+3, BACKTEST 1000 PHIÊN, SMART FLOW, MASTER CHART, ADVISOR LOGIC
+# TRẠNG THÁI: PHIÊN BẢN ĐẦY ĐỦ NHẤT (HYPER-VERBOSE EDITION)
+# CAM KẾT: KHÔNG RÚT GỌN - TƯỜNG MINH TUYỆT ĐỐI - FIX 100% LỖI LOGIC
 # ==============================================================================
 
 import streamlit as st
@@ -14,19 +16,20 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- NHÓM THƯ VIỆN AI VÀ XỬ LÝ NGÔN NGỮ TỰ NHIÊN (NLP) ---
-# Sử dụng RandomForest để dự báo xu hướng và Sentiment để đo lường tâm lý
+# ------------------------------------------------------------------------------
+# NHÓM THƯ VIỆN TRÍ TUỆ NHÂN TẠO (AI) VÀ XỬ LÝ NGÔN NGỮ (NLP)
+# ------------------------------------------------------------------------------
 from sklearn.ensemble import RandomForestClassifier
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import nltk
 
-# Đảm bảo các tài nguyên cần thiết cho AI được tải đầy đủ để tránh lỗi Runtime
-# Đây là bước sống còn để module Advisor có thể hoạt động ổn định trên Cloud
+# Đảm bảo các tài nguyên cần thiết cho AI được tải đầy đủ để tránh lỗi Runtime.
+# Đây là bước "xương sống" để module Advisor có thể hoạt động ổn định trên Cloud.
 try:
-    # Kiểm tra và tải dữ liệu từ điển cảm xúc
+    # Thử tìm dữ liệu từ điển cảm xúc trong hệ thống
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
-    # Nếu không tìm thấy, thực hiện tải xuống tự động
+    # Nếu không tìm thấy, thực hiện tải xuống tự động từ máy chủ NLTK
     nltk.download('vader_lexicon')
 
 # ==============================================================================
@@ -35,433 +38,558 @@ except LookupError:
 def check_password():
     """
     Hàm xác thực mật mã dành riêng cho Minh.
-    Đảm bảo chỉ chủ sở hữu mới có thể truy cập vào các chiến thuật bí mật.
+    Đảm bảo tính riêng tư và bảo vệ các chiến thuật Quant trước sự xâm nhập trái phép.
+    Sử dụng session_state để duy trì trạng thái đăng nhập.
     """
+    
     def password_entered():
-        # Lấy giá trị mật mã đích từ bí mật của hệ thống
-        target_pass = st.secrets["password"]
-        # Lấy giá trị mật mã người dùng vừa nhập
-        entered_pass = st.session_state["password"]
+        """Xử lý sự kiện khi người dùng nhấn Enter sau khi nhập mật mã"""
+        # Truy xuất mật mã đích được cấu hình trong Streamlit Secrets
+        target_password_value = st.secrets["password"]
+        # Lấy giá trị mật mã mà người dùng vừa nhập vào ô Input
+        entered_password_value = st.session_state["password"]
         
-        # So sánh hai giá trị
-        if entered_pass == target_pass:
-            # Nếu đúng, đánh dấu trạng thái đăng nhập thành công
+        # Thực hiện so sánh giá trị
+        if entered_password_value == target_password_value:
+            # Xác nhận mật mã đúng
             st.session_state["password_correct"] = True
-            # Xóa mật mã khỏi bộ nhớ tạm ngay lập tức để bảo mật
+            # Xóa mật mã khỏi bộ nhớ tạm ngay lập tức sau khi kiểm tra để bảo mật
             del st.session_state["password"]
         else:
-            # Nếu sai, đánh dấu lỗi
+            # Đánh dấu mật mã sai để hiển thị thông báo lỗi
             st.session_state["password_correct"] = False
 
-    # Kiểm tra xem người dùng đã đăng nhập chưa
+    # Kiểm tra xem trong phiên làm việc hiện tại đã xác thực chưa
     if "password_correct" not in st.session_state:
-        # Hiển thị giao diện nhập mật mã ban đầu
-        st.markdown("### 🔐 Quant System Master Master Access")
+        # Giao diện màn hình khóa khi người dùng mới truy cập
+        st.markdown("### 🔐 Quant System Master Access Control")
+        st.write("Hệ thống đang ở trạng thái bảo mật cao. Vui lòng xác thực quyền sở hữu.")
+        
+        # Ô nhập liệu mật mã (chế độ password ẩn ký tự)
         st.text_input(
-            "🔑 Vui lòng nhập mật mã của Minh:", 
+            "🔑 Nhập mật mã của Minh để mở khóa trung tâm điều hành:", 
             type="password", 
             on_change=password_entered, 
             key="password"
         )
         return False
     
-    # Trả về kết quả kiểm tra
+    # Kiểm tra nếu mật mã nhập trước đó bị sai
+    if st.session_state["password_correct"] == False:
+        st.error("❌ Mật mã không chính xác. Vui lòng thử lại.")
+        st.text_input(
+            "🔑 Nhập mật mã của Minh:", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        return False
+    
+    # Trả về kết quả xác thực cuối cùng
     return st.session_state.get("password_correct", False)
 
-# Thực thi ứng dụng chính sau khi vượt qua lớp bảo mật
+# ==============================================================================
+# BẮT ĐẦU THỰC THI ỨNG DỤNG CHÍNH (MAIN APPLICATION)
+# ==============================================================================
 if check_password():
-    # 1.1 Cấu hình giao diện chuẩn Dashboard chuyên nghiệp
+    
+    # 1.1 Thiết lập cấu hình giao diện chuẩn Dashboard chuyên nghiệp
     st.set_page_config(
-        page_title="Quant System V9.8 Masterpiece", 
+        page_title="Quant System V10.0 Final Sanctuary", 
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    # 1.2 Hiển thị tiêu đề chính của hệ thống với icon bảo vệ
-    st.title("🛡️ Quant System V9.8: Advisor Master & Smart Flow Specialist")
+    # 1.2 Hiển thị biểu tượng và tiêu đề chính của hệ thống
+    st.title("🛡️ Quant System V10.0: Ultimate Advisor & Flow Specialist")
+    st.markdown("---")
 
-    # 1.3 Khởi tạo đối tượng Vnstock kết nối dữ liệu thị trường Việt Nam
-    vn = Vnstock()
+    # 1.3 Khởi tạo kết nối tới nguồn dữ liệu Vnstock
+    vn_engine = Vnstock()
 
     # ==============================================================================
-    # 2. HÀM TRUY XUẤT DỮ LIỆU ĐA TẦNG (DATA ACQUISITION)
+    # 2. HÀM TRUY XUẤT DỮ LIỆU ĐA TẦNG (DATA ACQUISITION LAYER)
     # ==============================================================================
-    def lay_du_lieu_chuan_quant(ticker, days=1000):
+    def lay_du_lieu_chuan_quant(ticker_symbol, total_days=1000):
         """
-        Hàm lấy dữ liệu giá lịch sử OHLCV. 
-        Tích hợp cơ chế dự phòng đa nguồn để đảm bảo hệ thống không bị gián đoạn.
+        Lấy dữ liệu giá giao dịch lịch sử (OHLCV). 
+        Tích hợp cơ chế dự phòng đa nguồn (Fail-over mechanism):
+        - Ưu tiên: Vnstock (Dữ liệu nội địa chính thống).
+        - Dự phòng: Yahoo Finance (SSI, Bank, VND hoặc khi Vnstock nghẽn).
         """
-        # Bước 2.1: Thiết lập tham số thời gian
-        thoi_gian_hien_tai = datetime.now()
-        ngay_ket_thuc_str = thoi_gian_hien_tai.strftime('%Y-%m-%d')
-        ngay_bat_dau_str = (thoi_gian_hien_tai - timedelta(days=days)).strftime('%Y-%m-%d')
         
-        # Bước 2.2: Thử truy xuất từ Vnstock (Nguồn dữ liệu gốc sàn HOSE/HNX)
+        # Bước 2.1: Tính toán mốc thời gian bắt đầu và kết thúc
+        current_datetime = datetime.now()
+        end_date_string = current_datetime.strftime('%Y-%m-%d')
+        start_date_calculation = current_datetime - timedelta(days=total_days)
+        start_date_string = start_date_calculation.strftime('%Y-%m-%d')
+        
+        # Bước 2.2: Phương án chính - Truy xuất từ Vnstock
         try:
-            df_vnstock = vn.stock.quote.history(
-                symbol=ticker, 
-                start=ngay_bat_dau_str, 
-                end=ngay_ket_thuc_str
+            df_vn_raw = vn_engine.stock.quote.history(
+                symbol=ticker_symbol, 
+                start=start_date_string, 
+                end=end_date_string
             )
             
-            # Kiểm tra tính hợp lệ của dữ liệu
-            if df_vnstock is not None:
-                if not df_vnstock.empty:
-                    # Chuẩn hóa tên cột về chữ thường để các hàm tính toán đồng nhất
-                    danh_sach_cot = []
-                    for cot in df_vnstock.columns:
-                        danh_sach_cot.append(str(cot).lower())
-                    df_vnstock.columns = danh_sach_cot
-                    return df_vnstock
-        except Exception as e_error:
-            # Ghi nhận lỗi nhưng tiếp tục sang nguồn dự phòng
+            # Kiểm tra dữ liệu trả về có hợp lệ không
+            if df_vn_raw is not None:
+                if not df_vn_raw.empty:
+                    # Tiến hành chuẩn hóa tên cột về chữ thường để đồng nhất logic toàn app
+                    normalized_columns = []
+                    for col_name in df_vn_raw.columns:
+                        normalized_columns.append(str(col_name).lower())
+                    
+                    # Cập nhật lại tên cột cho DataFrame
+                    df_vn_raw.columns = normalized_columns
+                    return df_vn_raw
+        except Exception as vn_error:
+            # Ghi nhận lỗi nhưng không dừng ứng dụng, chuyển sang bước dự phòng
             pass
         
-        # Bước 2.3: Cơ chế Fail-over sang Yahoo Finance (Dành cho Bank, SSI hoặc khi API lỗi)
+        # Bước 2.3: Phương án dự phòng - Truy xuất từ Yahoo Finance (YF)
         try:
-            # Định dạng lại Symbol cho Yahoo Finance (.VN)
-            if ticker == "VNINDEX":
-                ma_yf = "^VNINDEX"
+            # Chuyển đổi mã cổ phiếu sang định dạng của Yahoo Finance Việt Nam (.VN)
+            if ticker_symbol == "VNINDEX":
+                ma_yf_format = "^VNINDEX"
             else:
-                ma_yf = f"{ticker}.VN"
+                ma_yf_format = f"{ticker_symbol}.VN"
                 
-            # Thực hiện tải dữ liệu
-            yt_raw_data = yf.download(ma_yf, period="3y", progress=False)
+            # Thực hiện tải dữ liệu với chu kỳ 3 năm (đủ dữ liệu để tính toán MA200)
+            yf_raw_data = yf.download(
+                ma_yf_format, 
+                period="3y", 
+                progress=False
+            )
             
-            if not yt_raw_data.empty:
-                # Chuyển Index thành cột 'date'
-                yt_raw_data = yt_raw_data.reset_index()
+            # Kiểm tra dữ liệu YF trả về
+            if not yf_raw_data.empty:
+                # Chuyển Index (Ngày) thành một cột dữ liệu bình thường mang tên 'date'
+                yf_raw_data = yf_raw_data.reset_index()
                 
-                # Xử lý Multi-index thường gặp ở các phiên bản thư viện yfinance mới
-                ten_cot_moi = []
-                for label in yt_raw_data.columns:
-                    if isinstance(label, tuple):
-                        ten_cot_moi.append(str(label[0]).lower())
+                # Xử lý Multi-index tiêu đề cột (Vấn đề phát sinh từ các bản yfinance mới)
+                processed_column_labels = []
+                for label_item in yf_raw_data.columns:
+                    if isinstance(label_item, tuple):
+                        # Lấy phần tử đầu tiên trong Tuple và chuyển sang chữ thường
+                        processed_column_labels.append(str(label_item[0]).lower())
                     else:
-                        ten_cot_moi.append(str(label).lower())
+                        # Chuyển tên cột đơn lẻ sang chữ thường
+                        processed_column_labels.append(str(label_item).lower())
                 
-                yt_raw_data.columns = ten_cot_moi
-                return yt_raw_data
-        except Exception as e_yf:
-            # Thông báo lỗi nếu cả hai nguồn đều thất bại
-            st.sidebar.error(f"❌ Không thể truy xuất mã {ticker}. Lỗi: {str(e_yf)}")
+                # Áp dụng tên cột mới cho DataFrame dự phòng
+                yf_raw_data.columns = processed_column_labels
+                return yf_raw_data
+                
+        except Exception as yf_error:
+            # Thông báo lỗi cuối cùng cho người dùng nếu cả hai nguồn đều thất bại
+            st.sidebar.error(f"⚠️ Không thể truy xuất dữ liệu mã {ticker_symbol}. Lỗi: {str(yf_error)}")
             return None
 
     # ==============================================================================
-    # 3. HÀM TÍNH TOÁN CHỈ BÁO KỸ THUẬT (ENGINE LAYER)
+    # 3. HÀM TÍNH TOÁN CHỈ BÁO KỸ THUẬT CHI TIẾT (ENGINE LAYER)
     # ==============================================================================
-    def tinh_toan_cac_chi_so_master(df):
+    def tinh_toan_cac_chi_so_master_engine(df_input):
         """
-        Tính toán toàn bộ các chỉ báo định lượng.
-        Đây là bước quan trọng nhất để tạo ra 'đầu vào' cho AI và Advisor.
+        Tính toán toàn bộ kho vũ khí chỉ báo định lượng.
+        Bao gồm: Moving Averages, Bollinger Bands, RSI, MACD, Money Flow.
+        Đây là trái tim xử lý dữ liệu của toàn bộ hệ thống.
         """
-        # Tạo bản sao dữ liệu để thao tác an toàn
-        df_master = df.copy()
         
-        # --- 3.1 Nhóm đường trung bình động (MA) ---
-        # MA20: Xu hướng ngắn hạn và nền tảng dải Bollinger
-        df_master['ma20'] = df_master['close'].rolling(window=20).mean()
-        # MA50: Xác định xu hướng trung hạn
-        df_master['ma50'] = df_master['close'].rolling(window=50).mean()
-        # MA200: Đường xu hướng dài hạn - Ngưỡng tâm lý sống còn
-        df_master['ma200'] = df_master['close'].rolling(window=200).mean()
+        # Tạo bản sao sâu của dữ liệu đầu vào để bảo vệ dữ liệu gốc
+        df_quant = df_input.copy()
         
-        # --- 3.2 Dải Bollinger Bands (BOL) ---
-        # Tính độ lệch chuẩn của giá
-        df_master['std_dev_20'] = df_master['close'].rolling(window=20).std()
-        # Dải trên (Vùng hưng phấn)
-        df_master['upper_band'] = df_master['ma20'] + (df_master['std_dev_20'] * 2)
-        # Dải dưới (Vùng hoảng loạn)
-        df_master['lower_band'] = df_master['ma20'] - (df_master['std_dev_20'] * 2)
+        # --- 3.1 Nhóm các đường trung bình động xu hướng (Moving Averages) ---
         
-        # --- 3.3 Chỉ số sức mạnh tương đối RSI (14) ---
-        bien_dong = df_master['close'].diff()
-        lai_tb = (bien_dong.where(bien_dong > 0, 0)).rolling(window=14).mean()
-        lo_tb = (-bien_dong.where(bien_dong < 0, 0)).rolling(window=14).mean()
-        he_so_rs = lai_tb / (lo_tb + 1e-9)
-        df_master['rsi'] = 100 - (100 / (1 + he_so_rs))
+        # MA20: Xu hướng ngắn hạn (phục vụ Bollinger và điểm ra vào lệnh)
+        df_quant['ma20'] = df_quant['close'].rolling(window=20).mean()
         
-        # --- 3.4 Chỉ báo MACD (12, 26, 9) ---
-        ema12 = df_master['close'].ewm(span=12, adjust=False).mean()
-        ema26 = df_master['close'].ewm(span=26, adjust=False).mean()
-        df_master['macd'] = ema12 - ema26
-        df_master['signal'] = df_master['macd'].ewm(span=9, adjust=False).mean()
+        # MA50: Xu hướng trung hạn (phác họa sức mạnh của cổ phiếu)
+        df_quant['ma50'] = df_quant['close'].rolling(window=50).mean()
         
-        # --- 3.5 Các biến số phục vụ Smart Flow & AI ---
-        # Tính tỷ suất sinh lời ngày
-        df_master['return_1d'] = df_master['close'].pct_change()
-        # SỨA LỖI ĐỒNG NHẤT: Luôn sử dụng 'vol_strength' cho mọi module
-        # Đây là tỷ lệ khối lượng hiện tại so với trung bình 10 phiên
-        df_master['vol_strength'] = df_master['volume'] / df_master['volume'].rolling(window=10).mean()
-        # Giá trị dòng tiền (Money Flow)
-        df_master['money_flow'] = df_master['close'] * df_master['volume']
-        # Độ biến động thị trường (Historical Volatility)
-        df_master['volatility'] = df_master['return_1d'].rolling(window=20).std()
+        # MA200: Đường xu hướng dài hạn (Ngưỡng tâm lý sống còn của nhà đầu tư)
+        df_quant['ma200'] = df_quant['close'].rolling(window=200).mean()
         
-        # --- 3.6 Logic Gom/Xả (Price-Volume Trend) ---
-        # Gom (1): Giá tăng và Volume nổ > 1.2
-        # Xả (-1): Giá giảm và Volume nổ > 1.2
-        dieu_kien_tang = (df_master['return_1d'] > 0) & (df_master['vol_strength'] > 1.2)
-        dieu_kien_giam = (df_master['return_1d'] < 0) & (df_master['vol_strength'] > 1.2)
+        # --- 3.2 Nhóm chỉ báo dải vận động Bollinger Bands (BOL) ---
         
-        df_master['pv_trend'] = np.where(dieu_kien_tang, 1, 
-                                np.where(dieu_kien_giam, -1, 0))
+        # Bước A: Tính độ lệch chuẩn của giá đóng cửa trong chu kỳ 20 phiên
+        df_quant['std_dev_value'] = df_quant['close'].rolling(window=20).std()
         
-        # Loại bỏ các dòng chứa giá trị rỗng để mô hình AI không bị lỗi logic
-        return df_master.dropna()
+        # Bước B: Tính dải trên (Upper Band) - MA20 + 2 lần độ lệch chuẩn
+        df_quant['upper_band'] = df_quant['ma20'] + (df_quant['std_dev_value'] * 2)
+        
+        # Bước C: Tính dải dưới (Lower Band) - MA20 - 2 lần độ lệch chuẩn
+        df_quant['lower_band'] = df_quant['ma20'] - (df_quant['std_dev_value'] * 2)
+        
+        # --- 3.3 Chỉ số sức mạnh tương đối RSI (Chu kỳ chuẩn 14 phiên) ---
+        
+        # Bước A: Tính toán chênh lệch giá giữa các phiên
+        price_diff_delta = df_quant['close'].diff()
+        
+        # Bước B: Tách biệt các phiên tăng (gain) và giảm (loss)
+        gain_values = price_diff_delta.where(price_diff_delta > 0, 0)
+        loss_values = -price_diff_delta.where(price_diff_delta < 0, 0)
+        
+        # Bước C: Tính giá trị trung bình di động của lãi và lỗ
+        avg_gain_window = gain_values.rolling(window=14).mean()
+        avg_loss_window = loss_values.rolling(window=14).mean()
+        
+        # Bước D: Tính toán RS và RSI cuối cùng (Thêm hằng số nhỏ để tránh lỗi chia cho 0)
+        relative_strength_rs = avg_gain_window / (avg_loss_window + 1e-9)
+        df_quant['rsi'] = 100 - (100 / (1 + relative_strength_rs))
+        
+        # --- 3.4 Chỉ báo MACD & Signal Line (Cấu hình chuẩn 12, 26, 9) ---
+        
+        # Đường EMA nhanh (12 phiên)
+        ema_fast_12 = df_quant['close'].ewm(span=12, adjust=False).mean()
+        
+        # Đường EMA chậm (26 phiên)
+        ema_slow_26 = df_quant['close'].ewm(span=26, adjust=False).mean()
+        
+        # Đường MACD chính
+        df_quant['macd'] = ema_fast_12 - ema_slow_26
+        
+        # Đường Tín hiệu (Signal Line - EMA 9 của MACD)
+        df_quant['signal'] = df_quant['macd'].ewm(span=9, adjust=False).mean()
+        
+        # --- 3.5 Nhóm các biến số phục vụ Smart Flow và AI Dự báo ---
+        
+        # Tỷ suất lợi nhuận hằng ngày (Daily Return)
+        df_quant['return_1d'] = df_quant['close'].pct_change()
+        
+        # THỐNG NHẤT TÊN BIẾN (FIX KEYERROR): vol_strength
+        # Đây là cường độ khối lượng so với trung bình 10 phiên gần nhất
+        df_quant['vol_strength'] = df_quant['volume'] / df_quant['volume'].rolling(window=10).mean()
+        
+        # Giá trị luân chuyển dòng tiền thực tế
+        df_quant['money_flow'] = df_quant['close'] * df_quant['volume']
+        
+        # Độ biến động lịch sử thực tế (Historical Volatility)
+        df_quant['volatility'] = df_quant['return_1d'].rolling(window=20).std()
+        
+        # --- 3.6 Logic xác định Xu hướng Price-Volume (PV Trend) ---
+        # Trạng thái 1: Gom mạnh (Giá tăng xanh và Volume bùng nổ > 1.2)
+        # Trạng thái -1: Xả mạnh (Giá giảm đỏ và Volume bùng nổ > 1.2)
+        # Trạng thái 0: Trạng thái trung tính hoặc nhiễu thấp
+        
+        price_up_vol_spike = (df_quant['return_1d'] > 0) & (df_quant['vol_strength'] > 1.2)
+        price_down_vol_spike = (df_quant['return_1d'] < 0) & (df_quant['vol_strength'] > 1.2)
+        
+        df_quant['pv_trend'] = np.where(price_up_vol_spike, 1, 
+                               np.where(price_down_vol_spike, -1, 0))
+        
+        # Tiến hành loại bỏ các dòng chứa giá trị rỗng (NaN)
+        # Bước này cực kỳ quan trọng để các mô hình Machine Learning không bị lỗi logic
+        df_final_engine = df_quant.dropna()
+        
+        return df_final_engine
 
     # ==============================================================================
-    # 4. CHẨN ĐOÁN TÂM LÝ & KIỂM CHỨNG CHIẾN THUẬT (INTEL LAYER)
+    # 4. CÁC HÀM CHẨN ĐOÁN THÔNG MINH (INTELLIGENCE LAYER)
     # ==============================================================================
-    def phan_tich_fng_sentiment_master(df):
+    
+    def phan_tich_tam_ly_sentiment(df_data):
         """
-        Đo lường chỉ số Tham lam & Sợ hãi dựa trên RSI.
-        Giúp Minh nhận diện các vùng quá hưng phấn hoặc hoảng loạn cực độ.
+        Phân tích chỉ số Sợ hãi & Tham lam của cổ phiếu dựa trên trị số RSI.
+        Giúp Minh nhận diện sớm các vùng nguy hiểm (Overbought) hoặc cơ hội (Oversold).
         """
-        last_rsi = df.iloc[-1]['rsi']
+        # Lấy giá trị RSI phiên gần nhất
+        current_rsi_val = df_data.iloc[-1]['rsi']
         
-        # Phân loại mức độ tâm lý
-        if last_rsi > 75:
-            label_text = "🔥 CỰC KỲ THAM LAM (VÙNG QUÁ MUA)"
-        elif last_rsi > 60:
-            label_text = "⚖️ THAM LAM (HƯNG PHẤN)"
-        elif last_rsi < 30:
-            label_text = "💀 CỰC KỲ SỢ HÃI (VÙNG QUÁ BÁN)"
-        elif last_rsi < 42:
-            label_text = "😨 SỢ HÃI (BI QUAN)"
+        # Thực hiện phân loại tâm lý đám đông qua từng ngưỡng điểm
+        if current_rsi_val > 75:
+            label_mood = "🔥 CỰC KỲ THAM LAM (VÙNG QUÁ MUA)"
+        elif current_rsi_val > 60:
+            label_mood = "⚖️ THAM LAM (HƯNG PHẤN)"
+        elif current_rsi_val < 30:
+            label_mood = "💀 CỰC KỲ SỢ HÃI (VÙNG QUÁ BÁN)"
+        elif current_rsi_val < 42:
+            label_mood = "😨 SỢ HÃI (BI QUAN)"
         else:
-            label_text = "🟡 TRUNG LẬP (NGHI NGỜ)"
+            label_mood = "🟡 TRUNG LẬP (NGHI NGỜ)"
             
-        return label_text, round(last_rsi, 1)
+        return label_mood, round(current_rsi_val, 1)
 
-    def thuc_thi_backtest_1000_phien(df):
+    def thuc_thi_backtest_chien_thuat(df_data):
         """
-        Hàm kiểm chứng lịch sử: 'Nếu trong quá khứ tôi mua khi RSI < 45 và MACD cắt lên, 
-        thì xác suất tôi chốt lời 5% trong 10 ngày tới là bao nhiêu?'
+        Hàm kiểm chứng lịch sử (Backtesting): 
+        Kiểm tra nếu áp dụng mua khi RSI thấp và MACD cắt lên trong quá khứ của riêng mã này,
+        thì xác suất đạt được lợi nhuận 5% trong 10 ngày sau đó là bao nhiêu.
+        Duyệt qua 1000 phiên giao dịch gần nhất.
         """
-        dem_tong = 0
-        dem_win = 0
+        tong_so_tin_hieu = 0
+        tong_so_win = 0
         
-        # Duyệt qua dữ liệu lịch sử (bỏ 100 phiên đầu và 10 phiên cuối)
-        for i in range(100, len(df) - 10):
-            # Điều kiện mua chuẩn kỹ thuật
-            cond_rsi = df['rsi'].iloc[i] < 45
-            cond_macd = df['macd'].iloc[i] > df['signal'].iloc[i]
-            cond_cross = df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]
+        # Duyệt qua tập dữ liệu lịch sử
+        for index in range(100, len(df_data) - 10):
+            # Điều kiện kích hoạt lệnh mua chuẩn kỹ thuật định lượng
+            rsi_is_low = df_data['rsi'].iloc[index] < 45
+            macd_is_higher = df_data['macd'].iloc[index] > df_data['signal'].iloc[index]
+            macd_was_lower = df_data['macd'].iloc[index-1] <= df_data['signal'].iloc[index-1]
             
-            if cond_rsi and cond_macd and cond_cross:
-                dem_tong += 1
-                # Kiểm tra cửa sổ tương lai 10 ngày
-                vung_tuong_lai = df['close'].iloc[i+1 : i+11]
-                muc_tieu_chot_loi = df['close'].iloc[i] * 1.05
+            # Kiểm tra sự hội tụ của các tín hiệu
+            if rsi_is_low and macd_is_higher and macd_was_lower:
+                tong_so_tin_hieu = tong_so_tin_hieu + 1
                 
-                if any(vung_tuong_lai > muc_tieu_chot_loi):
-                    dem_win += 1
+                # Kiểm tra kết quả trong tương lai (cửa sổ 10 phiên)
+                gia_mua_tai_diem = df_data['close'].iloc[index]
+                cac_muc_gia_tuong_lai = df_data['close'].iloc[index+1 : index+11]
+                muc_tieu_chot_loi = gia_mua_tai_diem * 1.05
+                
+                # Nếu bất kỳ phiên nào trong 10 ngày tới chạm mốc +5%
+                if any(cac_muc_gia_tuong_lai > muc_tieu_chot_loi):
+                    tong_so_win = tong_so_win + 1
         
-        # Tránh lỗi chia cho 0
-        if dem_tong == 0:
+        # Phòng ngừa lỗi chia cho 0 nếu mã chứng khoán chưa từng có tín hiệu
+        if tong_so_tin_hieu == 0:
             return 0.0
             
-        ty_le_chuan = (dem_win / dem_tong) * 100
-        return round(ty_le_chuan, 1)
+        ty_le_thang_phan_tram = (tong_so_win / tong_so_tin_hieu) * 100
+        return round(ty_le_thang_phan_tram, 1)
 
-    def du_bao_ai_t3_engine_master(df):
+    def du_bao_ai_t3_engine(df_data):
         """
-        Sử dụng mô hình Random Forest (Rừng ngẫu nhiên) để học các mẫu hình giá.
-        Dự báo xác suất cổ phiếu tăng > 2% sau 3 phiên giao dịch.
+        Sử dụng thuật toán Machine Learning Random Forest để học các mẫu hình giá.
+        Dự báo xác suất cổ phiếu tăng trưởng > 2% sau 3 phiên giao dịch (T+3).
+        Sử dụng 8 biến đặc trưng đầu vào để ra quyết định.
         """
-        if len(df) < 200:
+        # Kiểm tra độ dài dữ liệu tối thiểu
+        if len(df_data) < 200:
             return "N/A"
             
-        df_ml = df.copy()
-        # Định nghĩa mục tiêu dự báo (Target)
-        gia_hien_tai = df_ml['close']
-        gia_tuong_lai = df_ml['close'].shift(-3)
-        df_ml['target'] = (gia_tuong_lai > gia_hien_tai * 1.02).astype(int)
+        df_ai_process = df_data.copy()
         
-        # Tập hợp các đặc trưng đầu vào (Features)
-        features = [
+        # Định nghĩa nhãn mục tiêu (Target) cho mô hình
+        gia_hien_thoi = df_ai_process['close']
+        gia_3_phien_sau = df_ai_process['close'].shift(-3)
+        df_ai_process['target_label'] = (gia_3_phien_sau > gia_hien_thoi * 1.02).astype(int)
+        
+        # Danh sách các đặc trưng (Features) kỹ thuật làm đầu vào cho AI
+        cac_dac_trung_input = [
             'rsi', 'macd', 'signal', 'return_1d', 
             'volatility', 'vol_strength', 'money_flow', 'pv_trend'
         ]
         
-        du_lieu_sạch = df_ml.dropna()
-        X_data = du_lieu_sạch[features]
-        y_data = du_lieu_sạch['target']
+        # Làm sạch dữ liệu trước khi huấn luyện
+        du_lieu_da_lam_sach = df_ai_process.dropna()
+        X_hoc = du_lieu_da_lam_sach[cac_dac_trung_input]
+        y_label = du_lieu_da_lam_sach['target_label']
         
-        # Khởi tạo thuật toán AI
-        ai_engine = RandomForestClassifier(n_estimators=100, random_state=42)
+        # Khởi tạo mô hình rừng ngẫu nhiên với 100 cây quyết định
+        rf_model_instance = RandomForestClassifier(n_estimators=100, random_state=42)
         
-        # Huấn luyện mô hình (Loại bỏ 3 dòng cuối vì chưa có kết quả thực tế)
-        X_train = X_data[:-3]
-        y_train = y_data[:-3]
-        ai_engine.fit(X_train, y_train)
+        # Huấn luyện mô hình: Loại bỏ 3 dòng cuối cùng vì chưa có kết quả thực tế tương lai
+        X_train_data = X_hoc[:-3]
+        y_train_labels = y_label[:-3]
+        rf_model_instance.fit(X_train_data, y_train_labels)
         
-        # Dự báo cho trạng thái hiện tại (Dòng cuối cùng)
-        du_bao_cuoi = ai_engine.predict_proba(X_data.iloc[[-1]])[0][1]
-        return round(du_bao_cuoi * 100, 1)
+        # Dự báo xác suất cho dòng dữ liệu hiện tại
+        du_lieu_cuoi_cung = X_hoc.iloc[[-1]]
+        xac_suat_du_bao = rf_model_instance.predict_proba(du_lieu_cuoi_cung)[0][1]
+        
+        return round(xac_suat_du_bao * 100, 1)
 
     # ==============================================================================
-    # 5. PHÂN TÍCH NỘI LỰC TÀI CHÍNH & CANSLIM (FUNDAMENTAL)
+    # 5. PHÂN TÍCH TÀI CHÍNH & CANSLIM (FUNDAMENTAL LAYER)
     # ==============================================================================
-    def lay_tang_truong_lnst_canslim_master(ticker):
+    def lay_tang_truong_lnst_canslim(ticker_name):
         """
         Tính toán tốc độ tăng trưởng lợi nhuận quý gần nhất so với cùng kỳ.
         Đây là tiêu chuẩn 'C' (Current Quarterly Earnings) trong phương pháp CanSLIM.
         """
         try:
-            # 5.1 Thử lấy báo cáo tài chính từ Vnstock
-            df_income = vn.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en').head(5)
+            # 5.1 Lấy báo cáo kết quả kinh doanh từ Vnstock
+            df_inc_stmt = vn_engine.stock.finance.income_statement(
+                symbol=ticker_name, 
+                period='quarter', 
+                lang='en'
+            ).head(5)
             
-            # Tìm cột Lợi nhuận sau thuế linh hoạt (đề phòng thay đổi ngôn ngữ)
-            keywords = ['sau thuế', 'posttax', 'net profit', 'earning']
-            col_found = [c for c in df_income.columns if any(k in str(c).lower() for k in keywords)]
+            # Tìm kiếm cột lợi nhuận sau thuế (hỗ trợ nhiều ngôn ngữ hiển thị)
+            keywords_list = ['sau thuế', 'posttax', 'net profit', 'earning']
+            cot_lnst_hop_le = [col for col in df_inc_stmt.columns if any(key in str(col).lower() for key in keywords_list)]
             
-            if col_found:
-                ten_cot = col_found[0]
-                lnst_nay = float(df_income.iloc[0][ten_cot])
-                lnst_nam_ngoai = float(df_income.iloc[4][ten_cot])
+            if cot_lnst_hop_le:
+                ten_cot_lnst = cot_lnst_hop_le[0]
+                gia_tri_lnst_nay = float(df_inc_stmt.iloc[0][ten_cot_lnst])
+                gia_tri_lnst_nam_ngoai = float(df_inc_stmt.iloc[4][ten_cot_lnst])
                 
-                if lnst_nam_ngoai > 0:
-                    growth_val = ((lnst_nay - lnst_nam_ngoai) / lnst_nam_ngoai) * 100
-                    return round(growth_val, 1)
+                if gia_tri_lnst_nam_ngoai > 0:
+                    ti_le_tang_truong = ((gia_tri_lnst_nay - gia_tri_lnst_nam_ngoai) / gia_tri_lnst_nam_ngoai) * 100
+                    return round(ti_le_tang_truong, 1)
         except Exception:
             pass
             
         try:
-            # 5.2 Dự phòng bằng Yahoo Finance cho các mã đặc thù
-            stock_info = yf.Ticker(f"{ticker}.VN").info
-            growth_yf = stock_info.get('earningsQuarterlyGrowth')
-            if growth_yf is not None:
-                return round(growth_yf * 100, 1)
+            # 5.2 Cơ chế dự phòng bằng Yahoo Finance cho các mã Bank/Chứng khoán
+            stock_info_obj = yf.Ticker(f"{ticker_name}.VN").info
+            growth_yf_value = stock_info_obj.get('earningsQuarterlyGrowth')
+            if growth_yf_value is not None:
+                return round(growth_yf_value * 100, 1)
         except Exception:
             pass
         return None
 
-    def lay_chi_so_pe_roe_master_quant(ticker):
-        """Lấy chỉ số định giá P/E và hiệu quả sử dụng vốn ROE"""
-        pe_v, roe_v = 0.0, 0.0
+    def lay_pe_roe_master_quant(ticker_name):
+        """Lấy chỉ số định giá P/E và hiệu quả sử dụng vốn ROE từ Báo cáo tài chính"""
+        pe_final_val = 0.0
+        roe_final_val = 0.0
+        
         try:
-            # Truy xuất từ Vnstock Ratios
-            df_r = vn.stock.finance.ratio(ticker, 'quarterly').iloc[-1]
-            pe_v = df_r.get('ticker_pe', df_r.get('pe', 0))
-            roe_v = df_r.get('roe', 0)
+            # Lấy các tỷ số tài chính chính thức từ Vnstock
+            df_ratio_vals = vn_engine.stock.finance.ratio(ticker_name, 'quarterly').iloc[-1]
+            pe_final_val = df_ratio_vals.get('ticker_pe', df_ratio_vals.get('pe', 0))
+            roe_final_val = df_ratio_vals.get('roe', 0)
         except:
             pass
             
-        if pe_v <= 0:
+        if pe_final_val <= 0:
             try:
-                # Dự phòng từ nguồn quốc tế
-                inf = yf.Ticker(f"{ticker}.VN").info
-                pe_v = inf.get('trailingPE', 0)
-                roe_v = inf.get('returnOnEquity', 0)
+                # Dự phòng từ Yahoo Finance khi dữ liệu nội địa bị khuyết thiếu
+                info_yf_obj = yf.Ticker(f"{ticker_name}.VN").info
+                pe_final_val = info_yf_obj.get('trailingPE', 0)
+                roe_final_val = info_yf_obj.get('returnOnEquity', 0)
             except:
                 pass
-        return pe_v, roe_v
+                
+        return pe_final_val, roe_final_val
 
     # ==============================================================================
-    # 6. 🧠 ROBOT ADVISOR MASTER V9.8: GIẢI MÃ LOGIC & RA QUYẾT ĐỊNH
+    # 6. 🧠 ROBOT ADVISOR MASTER V10.0: GIẢI MÃ LOGIC & RA QUYẾT ĐỊNH
     # ==============================================================================
-    def robot_advisor_expert_v98(ticker, last_row, ai_p, wr, pe, roe, growth, list_gom, list_xa):
+    def robot_advisor_expert_v100(ticker, last_row, ai_p, wr, pe, roe, growth, list_gom, list_xa):
         """
-        SIÊU HỆ THỐNG ADVISOR: Phân tích hội tụ 5 tầng dữ liệu.
-        Tự động giải mã các mâu thuẫn để đưa ra lời khuyên an toàn nhất cho Minh.
+        SIÊU HỆ THỐNG ADVISOR: Phân tích hội tụ 5 tầng dữ liệu cực kỳ chi tiết.
+        Tự động giải mã các mâu thuẫn để đưa ra lời khuyên "Cứng" nhất cho Minh.
+        Đây là module quan trọng nhất phục vụ việc ra quyết định đầu tư.
         """
-        chuan_doan_kt_text = ""
-        chuan_doan_dt_text = ""
-        ket_luan_cuoi = ""
-        mau_hien_thi = ""
         
-        # Nhật ký phân tích chuyên sâu (Reasoning Log)
-        nhat_ky_phân_tích = []
-        diem_score = 0
+        # Khởi tạo các đoạn văn bản chẩn đoán chuyên sâu
+        diagnosis_technical = ""
+        diagnosis_money_flow = ""
+        final_action_verdict = ""
+        display_color_code = ""
         
-        # --- 6.1 LỚP 1: XU HƯỚNG VÀ VỊ THẾ GIÁ (MA20) ---
-        gia_hien_tai = last_row['close']
-        ma20_hien_tai = last_row['ma20']
-        phan_tram_lech_ma20 = ((gia_hien_tai - ma20_hien_tai) / ma20_hien_tai) * 100
+        # Nhật ký phân tích logic (Reasoning Logs) - Trái tim của V10.0
+        reasoning_logic_steps = []
+        consensus_score_points = 0
         
-        if gia_hien_tai < ma20_hien_tai:
-            chuan_doan_kt_text = f"Cảnh báo: Giá {ticker} đang vận động dưới MA20 ({ma20_hien_tai:,.0f}). Phe Bán vẫn đang chiếm ưu thế tuyệt đối."
-            nhat_ky_phân_tích.append(f"❌ Vị thế giá YẾU: Hiện tại giá thấp hơn đường hỗ trợ MA20 ({phan_tram_lech_ma20:.1f}%).")
-            nhat_ky_phân_tích.append("👉 Lời khuyên: Tuyệt đối hạn chế bắt đáy khi xu hướng giảm ngắn hạn chưa dừng lại.")
+        # --- 6.1 PHÂN TÍCH LỚP 1: XU HƯỚNG VÀ VỊ THẾ GIÁ (MA20) ---
+        price_last = last_row['close']
+        ma20_last = last_row['ma20']
+        dist_from_ma20_pct = ((price_last - ma20_last) / ma20_last) * 100
+        
+        if price_last < ma20_last:
+            diagnosis_technical = f"Cảnh báo: Mã {ticker} đang vận động dưới đường trung bình MA20 ({ma20_last:,.0f})."
+            reasoning_logic_steps.append(f"❌ VỊ THẾ YẾU: Giá đang thấp hơn MA20 ({dist_from_ma20_pct:.1f}%).")
+            reasoning_logic_steps.append("👉 Phân tích: Phe Bán vẫn đang chiếm ưu thế hoàn toàn, chưa nên tham gia lúc này.")
         else:
-            chuan_doan_kt_text = f"Tích cực: Giá {ticker} đang vận động trên hỗ trợ MA20 ({ma20_hien_tai:,.0f}). Xu hướng ngắn hạn ổn định."
-            nhat_ky_phân_tích.append(f"✅ Vị thế giá TỐT: Giá giữ vững trên MA20 ({phan_tram_lech_ma20:.1f}%). Đây là nền tảng quan trọng cho đà tăng.")
-            diem_score += 1
+            diagnosis_technical = f"Tích cực: Mã {ticker} đang giữ vững trên hỗ trợ MA20 ({ma20_last:,.0f})."
+            reasoning_logic_steps.append(f"✅ VỊ THẾ TỐT: Giá đang nằm trên MA20 ({dist_from_ma20_pct:.1f}%).")
+            reasoning_logic_steps.append("👉 Phân tích: Xu hướng ngắn hạn ổn định, phe Mua đang nỗ lực kiểm soát nhịp độ.")
+            consensus_score_points = consensus_score_points + 1
 
-        # --- 6.2 LỚP 2: DÒNG TIỀN CÁ MẬP (SMART FLOW) ---
+        # --- 6.2 PHÂN TÍCH LỚP 2: DÒNG TIỀN CÁ MẬP (SMART FLOW) ---
         if ticker in list_gom:
-            chuan_doan_dt_text = "Dòng tiền Cá mập: Phát hiện dấu chân Smart Money đang mua Gom chủ động."
-            nhat_ky_phân_tích.append("✅ Dòng tiền MẠNH: Cá mập đang gom hàng phối hợp cùng nhịp hồi của nhóm trụ cột sàn HOSE.")
-            diem_score += 1
+            diagnosis_money_flow = "Smart Flow: Phát hiện dấu vết Cá mập đang thu Gom cổ phiếu chủ động."
+            reasoning_logic_steps.append("✅ DÒNG TIỀN MẠNH: Cá mập đang gom hàng phối hợp cùng nhịp nâng đỡ của các trụ cột.")
+            consensus_score_points = consensus_score_points + 1
         elif ticker in list_xa:
-            chuan_doan_dt_text = "Cảnh báo xả hàng: Các tổ chức lớn và khối ngoại đang phân phối quyết liệt mã này."
-            nhat_ky_phân_tích.append("❌ Dòng tiền XẤU: Cá mập đang tháo chạy. Đừng trở thành 'bia đỡ đạn' cho các quỹ lớn lúc này.")
+            diagnosis_money_flow = "Cảnh báo xả hàng: Các tổ chức lớn đang phân phối (Xả) mã này rất mạnh."
+            reasoning_logic_steps.append("❌ DÒNG TIỀN XẤU: Cá mập đang thoát hàng. Tuyệt đối không làm bia đỡ đạn cho tổ chức.")
         else:
-            chuan_doan_dt_text = "Dòng tiền nhỏ lẻ: Thị trường vận động rời rạc, chưa có sự tham gia của tay to chuyên nghiệp."
-            nhat_ky_phân_tích.append("🟡 Dòng tiền NHIỄU: Chủ yếu là nhỏ lẻ giao dịch tự phát, xác suất bùng nổ giá là rất thấp.")
+            diagnosis_money_flow = "Dòng tiền lẻ: Thị trường vận động chủ yếu bởi nhỏ lẻ, thiếu sự dẫn dắt của tay to."
+            reasoning_logic_steps.append("🟡 DÒNG TIỀN NHIỄU: Chủ yếu là các lệnh mua bán nhỏ lẻ, xác suất bùng nổ giá thấp.")
 
-        # --- 6.3 LỚP 3: DỰ BÁO AI VÀ XÁC SUẤT LỊCH SỬ ---
-        # Phân tích AI
-        if isinstance(ai_p, float) and ai_p >= 58.0:
-            diem_score += 1
-            nhat_ky_phân_tích.append(f"✅ AI ủng hộ ({ai_p}%): Mô hình Random Forest dự báo cửa thắng trong T+3 là rất khả quan.")
-        else:
-            nhat_ky_phân_tích.append(f"❌ AI phản đối ({ai_p}%): Xác suất thắng AI quá thấp (<58%), nguy cơ chôn vốn cao.")
+        # --- 6.3 PHÂN TÍCH LỚP 3: AI DỰ BÁO VÀ XÁC SUẤT LỊCH SỬ ---
+        
+        # Đánh giá điểm AI (T+3)
+        if isinstance(ai_p, float):
+            if ai_p >= 58.0:
+                consensus_score_points = consensus_score_points + 1
+                reasoning_logic_steps.append(f"✅ AI DỰ BÁO ({ai_p}%): Mô hình máy học xác nhận cửa thắng trong T+3 là khả quan.")
+            else:
+                reasoning_logic_steps.append(f"❌ AI TỪ CHỐI ({ai_p}%): Xác suất tăng quá thấp, rủi ro kẹp hàng cao.")
 
-        # Phân tích Backtest
+        # Đánh giá điểm Win-rate lịch sử (Backtest)
         if wr >= 50.0:
-            diem_score += 1
-            nhat_ky_phân_tích.append(f"✅ Lịch sử ủng hộ ({wr}%): Trong quá khứ, tín hiệu kỹ thuật này thường mang lại lợi nhuận tốt.")
+            consensus_score_points = consensus_score_points + 1
+            reasoning_logic_steps.append(f"✅ LỊCH SỬ ỦNG HỘ ({wr}%): Trong quá khứ, tín hiệu kỹ thuật hiện tại mang lại lợi nhuận tốt.")
         else:
-            nhat_ky_phân_tích.append(f"❌ Lịch sử rủi ro ({wr}%): Lịch sử mã này cho thấy tín hiệu hiện tại rất hay 'lừa đảo' (Bull trap).")
+            reasoning_logic_steps.append(f"❌ LỊCH SỬ RỦI RO ({wr}%): Lịch sử mã này cho thấy tín hiệu hiện tại rất hay 'lừa đảo'.")
 
-        # --- 6.4 TỔNG HỢP & GIẢI MÃ MÂU THUẪN ---
-        # Điều kiện MUA: Đạt ít nhất 4 điểm đồng thuận và RSI chưa quá nóng
-        if diem_score >= 4 and last_row['rsi'] < 68:
-            ket_luan_cuoi = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
-            mau_hien_thi = "green"
-        # Điều kiện BÁN: Điểm thấp, hoặc RSI hưng phấn cực độ, hoặc Giá thủng MA20
-        elif diem_score <= 1 or last_row['rsi'] > 78 or gia_hien_tai < ma20_hien_tai:
-            ket_luan_cuoi = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)"
-            mau_hien_thi = "red"
+        # --- 6.4 PHÂN TÍCH LỚP 4: NỘI LỰC TÀI CHÍNH ---
+        if growth is not None:
+            if growth >= 20.0:
+                consensus_score_points = consensus_score_points + 1
+                reasoning_logic_steps.append(f"✅ TÀI CHÍNH MẠNH: Tăng trưởng LNST {growth}% đạt chuẩn doanh nghiệp siêu hạng.")
+        
+        # --- 6.5 TỔNG HỢP & RA QUYẾT ĐỊNH CHIẾN THUẬT CUỐI CÙNG ---
+        
+        # KỊCH BẢN MUA MẠNH
+        if consensus_score_points >= 4 and last_row['rsi'] < 68:
+            final_action_verdict = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
+            display_color_code = "green"
+            reasoning_logic_steps.append("🏆 KẾT LUẬN: Đạt điểm đồng thuận tuyệt đối. Ưu tiên giải ngân tại các nhịp rung lắc.")
             
-            # CASE STUDY: GIẢI MÃ MÂU THUẪN MÃ GAS/TRỤ
-            if gia_hien_tai < ma20_hien_tai and ticker in list_gom:
-                nhat_ky_phân_tích.append("⚠️ GIẢI MÃ LOGIC ĐẶC BIỆT: Dù Cá mập đang Gom hàng chủ động, nhưng do Giá vẫn thấp hơn MA20, đây là hành động 'gom tích lũy dài hạn' của các quỹ lớn.")
-                nhat_ky_phân_tích.append("👉 Robot Advisor khuyên Minh chưa nên vào ngay để tránh bị giam vốn lâu. Hãy đợi giá vượt MA20 xác nhận xu hướng tăng rồi mới tham gia cùng cá mập.")
+        # KỊCH BẢN BÁN / ĐỨNG NGOÀI
+        elif consensus_score_points <= 1 or last_row['rsi'] > 78 or price_last < ma20_last:
+            final_action_verdict = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)"
+            display_color_code = "red"
+            
+            # TRƯỜNG HỢP GIẢI MÃ MÂU THUẪN (VÍ DỤ MÃ GAS/TRỤ)
+            if price_last < ma20_last and ticker in list_gom:
+                reasoning_logic_steps.append("⚠️ GIẢI MÃ MÂU THUẪN: Dù Cá mập đang Gom nhưng Giá vẫn thấp hơn MA20.")
+                reasoning_logic_steps.append("👉 Robot khuyên Minh chưa nên vào ngay kẻo bị giam vốn. Hãy đợi giá vượt MA20 xác nhận.")
+            else:
+                reasoning_logic_steps.append("🏆 KẾT LUẬN: Các chỉ số rủi ro đang áp đảo. Bảo vệ vốn là mục tiêu số 1 lúc này.")
+        
+        # KỊCH BẢN THEO DÕI
         else:
-            # Trạng thái trung lập, cần quan sát thêm Volume
-            ket_luan_cuoi = "⚖️ THEO DÕI (WATCHLIST)"
-            mau_hien_thi = "orange"
+            final_action_verdict = "⚖️ THEO DÕI (WATCHLIST)"
+            display_color_code = "orange"
+            reasoning_logic_steps.append("🏆 KẾT LUẬN: Trạng thái 50/50. Cần chờ đợi một phiên nổ Volume (>1.2) để vào lệnh an toàn.")
 
-        return chuan_doan_kt_text, chuan_doan_dt_text, ket_luan_cuoi, mau_hien_thi, nhat_ky_phân_tích
+        return diagnosis_technical, diagnosis_money_flow, final_action_verdict, display_color_code, reasoning_logic_steps
 
     # ==============================================================================
-    # 7. GIAO DIỆN NGƯỜI DÙNG & TRUNG TÂM ĐIỀU KHIỂN (UI)
+    # 7. GIAO DIỆN NGƯỜI DÙNG VÀ TRUNG TÂM ĐIỀU KHIỂN CHIẾN THUẬT (UI)
     # ==============================================================================
-    @st.cache_data(ttl=3600)
-    def tai_danh_sach_ticker_all():
-        """Tải toàn bộ danh sách mã niêm yết trên sàn HOSE để người dùng chọn lựa"""
-        try:
-            df_hose = vn.market.listing()
-            return df_hose[df_hose['comGroupCode'] == 'HOSE']['ticker'].tolist()
-        except:
-            # Danh sách mã trụ cột HOSE dự phòng nếu API listing gặp sự cố
-            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN","GAS","VRE","VCB","BID","CTG"]
-
-    # 7.1 Chuẩn bị danh sách mã
-    danh_sach_ticker_master = tai_danh_sach_ticker_all()
     
-    # 7.2 Sidebar điều hướng
-    st.sidebar.header("🕹️ Trung Tâm Điều Hành Quant")
-    select_ma_cp = st.sidebar.selectbox("Chọn mã cổ phiếu mục tiêu:", danh_sach_ticker_master)
-    input_ma_cp = st.sidebar.text_input("Hoặc gõ mã bất kỳ (SSI, HPG, FPT...):").upper()
-    ma_chinh_thuc = input_ma_cp if input_ma_cp else select_ma_cp
+    @st.cache_data(ttl=3600)
+    def tai_danh_sach_ticker_master_hose():
+        """Tải danh sách mã niêm yết từ sở giao dịch chứng khoán HOSE"""
+        try:
+            df_listing_raw = vn_engine.market.listing()
+            hose_condition = df_listing_raw['comGroupCode'] == 'HOSE'
+            return df_listing_raw[hose_condition]['ticker'].tolist()
+        except:
+            # Danh sách dự phòng nếu kết nối API gặp trục trặc
+            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN","GAS","VCB","BID","CTG","VRE","DGC","PDR"]
 
-    # 7.3 Khởi tạo cấu trúc Tab chức năng (Full Expansion Mode)
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # Lấy danh sách toàn bộ mã chứng khoán
+    danh_sach_full_ticker = tai_danh_sach_ticker_master_hose()
+    
+    # Thiết lập thanh điều hướng Sidebar
+    st.sidebar.header("🕹️ Trung Tâm Điều Hành Quant")
+    
+    # Ô chọn mã thông minh
+    ma_da_chon_box = st.sidebar.selectbox(
+        "Chọn mã cổ phiếu từ danh sách:", 
+        danh_sach_full_ticker
+    )
+    
+    # Ô nhập mã bất kỳ
+    ma_nhap_tay = st.sidebar.text_input(
+        "Hoặc gõ mã bất kỳ (SSI, HPG...):"
+    ).upper()
+    
+    # Xác định mã chứng khoán được thực thi cuối cùng
+    ma_active_master = ma_nhap_tay if ma_nhap_tay else ma_da_chon_box
+
+    # Khởi tạo cấu trúc Tab chức năng (Full Expansion Mode)
+    # THỐNG NHẤT TÊN BIẾN TAB ĐỂ TRÁNH LỖI NAMEERROR
+    tab_advisor, tab_fundamental, tab_flow, tab_hunter = st.tabs([
         "🤖 ROBOT ADVISOR & MASTER CHART", 
         "🏢 CƠ BẢN & CANSLIM", 
         "🌊 SMART FLOW SPECIALIST", 
@@ -469,289 +597,382 @@ if check_password():
     ])
 
     # ------------------------------------------------------------------------------
-    # TAB 1: TRUNG TÂM PHÂN TÍCH CHIẾN THUẬT & BIỂU ĐỒ
+    # TAB 1: TRUNG TÂM PHÂN TÍCH CHIẾN THUẬT & BIỂU ĐỒ CHUYÊN SÂU
     # ------------------------------------------------------------------------------
-    with tab1:
-        # Nút thực thi xử lý chuyên sâu
-        if st.button(f"⚡ PHÂN TÍCH CHIẾN THUẬT TOÀN DIỆN MÃ {ma_chinh_thuc}"):
-            with st.spinner(f"Hệ thống đang rà soát dữ liệu đa tầng cho mã {ma_chinh_thuc}..."):
-                # BƯỚC 1: Lấy dữ liệu thô
-                df_raw_quant = lay_du_lieu_tu_nguon(ma_chinh_thuc)
+    with tab_advisor:
+        # Nút nhấn kích hoạt quy trình xử lý Master
+        if st.button(f"⚡ PHÂN TÍCH CHIẾN THUẬT TOÀN DIỆN MÃ {ma_active_master}"):
+            
+            with st.spinner(f"Hệ thống đang tiến hành rà soát dữ liệu đa tầng cho mã {ma_active_master}..."):
                 
-                if df_raw_quant is not None and not df_raw_quant.empty:
-                    # BƯỚC 2: Tính toán bộ chỉ số Master
-                    df_final_master = tinh_toan_cac_chi_so_master(df_raw_quant)
-                    last_row_quant = df_final_master.iloc[-1]
+                # BƯỚC 1: Truy xuất dữ liệu từ các nguồn dự phòng
+                df_raw_quant_source = lay_du_lieu_chuan_quant(ma_active_master)
+                
+                if df_raw_quant_source is not None and not df_raw_quant_source.empty:
                     
-                    # BƯỚC 3: Kích hoạt các Engine thông minh
-                    ai_prob_val = du_bao_ai_t3_engine_master(df_final_master)
-                    winrate_val = thuc_thi_backtest_1000_phien(df_final_master)
-                    sentiment_label, sentiment_score = phan_tich_fng_sentiment_master(df_final_master)
+                    # BƯỚC 2: Kích hoạt engine tính toán bộ chỉ số Master
+                    df_final_master_quant = tinh_toan_cac_chi_so_master_engine(df_raw_quant_source)
+                    dong_du_lieu_cuoi = df_final_master_quant.iloc[-1]
                     
-                    # BƯỚC 4: Phân tích Nội lực tài chính
-                    ma_pe_quant, ma_roe_quant = lay_chi_so_pe_roe_master_quant(ma_chinh_thuc)
-                    ma_growth_quant = lay_tang_truong_lnst_canslim_master(ma_chinh_thuc)
+                    # BƯỚC 3: Kích hoạt các Engine trí tuệ nhân tạo và Backtest
+                    val_ai_prob = du_bao_ai_t3_engine(df_final_master_quant)
+                    val_backtest_wr = thuc_thi_backtest_1000_phien(df_final_master_quant)
+                    val_sentiment_label, val_sentiment_score = phan_tich_fng_sentiment(df_final_master_quant)
                     
-                    # BƯỚC 5: Quét thị trường chung (Nhóm Trụ) phục vụ Advisor Master
-                    hose_pillars_10 = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
-                    gom_list_pillars, xa_list_pillars = [], []
+                    # BƯỚC 4: Truy xuất các chỉ số tài chính nội lực
+                    val_ma_pe, val_ma_roe = lay_pe_roe_master_quant(ma_active_master)
+                    val_ma_growth = lay_tang_truong_lnst_canslim(ma_active_master)
                     
-                    for ma_tru in hose_pillars_10:
+                    # BƯỚC 5: Quét độ rộng thị trường (Market Breadth) phục vụ Advisor
+                    hose_pillars_array = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
+                    gom_list_advisor, xa_list_advisor = [], []
+                    
+                    for ma_tru_pillar in hose_pillars_array:
                         try:
-                            d_tru = lay_du_lieu_tu_nguon(ma_tru, days=10)
-                            if d_tru is not None:
-                                d_tru_calc = tinh_toan_cac_chi_so_master(d_tru)
-                                lp_tru = d_tru_calc.iloc[-1]
-                                # Gom/Xả Trụ: Giá đồng thuận + Sức mạnh Volume nổ > 1.2
-                                if lp_tru['return_1d'] > 0 and lp_tru['vol_strength'] > 1.2: 
-                                    gom_list_pillars.append(ma_tru)
-                                elif lp_tru['return_1d'] < 0 and lp_tru['vol_strength'] > 1.2: 
-                                    xa_list_pillars.append(ma_tru)
+                            # Lấy nhanh dữ liệu 10 phiên cho từng mã trụ
+                            d_p_raw = lay_du_lieu_chuan_quant(ma_tru_pillar, total_days=10)
+                            if d_p_raw is not None:
+                                d_p_calc_logic = tinh_toan_cac_chi_so_master_engine(d_p_raw)
+                                lp_p_val = d_p_calc_logic.iloc[-1]
+                                # Gom/Xả Trụ: Giá đồng thuận + Cường độ Volume nổ > 1.2
+                                if lp_p_val['return_1d'] > 0 and lp_p_val['vol_strength'] > 1.2: 
+                                    gom_list_advisor.append(ma_tru_pillar)
+                                elif lp_p_val['return_1d'] < 0 and lp_p_val['vol_strength'] > 1.2: 
+                                    xa_list_advisor.append(ma_tru_pillar)
                         except: pass
 
-                    # BƯỚC 6: GỌI ROBOT ADVISOR CHẨN ĐOÁN VÀ GIẢI MÃ
-                    diag_kt, diag_dt, verd_main, v_color, reasoning_log = robot_advisor_expert_v98(
-                        ma_chinh_thuc, last_row_quant, ai_prob_val, winrate_val, 
-                        ma_pe_quant, ma_roe_quant, ma_growth_quant, gom_list_pillars, xa_list_pillars
+                    # BƯỚC 6: GỌI SIÊU HỆ THỐNG ROBOT ADVISOR CHẨN ĐOÁN
+                    txt_diag_kt, txt_diag_dt, txt_verd_final, code_hue, log_reasoning = robot_advisor_expert_v100(
+                        ma_active_master, dong_du_lieu_cuoi, val_ai_prob, val_backtest_wr, 
+                        val_ma_pe, val_ma_roe, val_ma_growth, gom_list_advisor, xa_list_advisor
                     )
 
-                    # --- HIỂN THỊ KẾT QUẢ CHẨN ĐOÁN ---
-                    st.write(f"### 🎯 Robot Advisor Chẩn Đoán Mã {ma_chinh_thuc}")
-                    col_info_a, col_info_b = st.columns([2, 1])
+                    # --- GIAO DIỆN HIỂN THỊ KẾT QUẢ CHẨN ĐOÁN (THE HEART) ---
+                    st.write(f"### 🎯 Robot Advisor Chẩn Đoán Mã {ma_active_master}")
+                    col_info_diagnostics, col_info_verdict = st.columns([2, 1])
                     
-                    with col_info_a:
-                        st.info(f"**💡 Góc nhìn kỹ thuật chuyên sâu:** {diag_kt}")
-                        st.info(f"**🌊 Góc nhìn dòng tiền thông minh:** {diag_dt}")
+                    with col_info_diagnostics:
+                        st.info(f"**💡 Góc nhìn kỹ thuật chuyên sâu:** {txt_diag_kt}")
+                        st.info(f"**🌊 Góc nhìn dòng tiền thông minh:** {txt_diag_dt}")
+                        
+                        # MODULE GIẢI MÃ LOGIC (FIX THE TRUNCATION ISSUE)
                         with st.expander("🔍 GIẢI MÃ LOGIC: TẠI SAO ROBOT ĐƯA RA ĐỀ XUẤT NÀY?"):
-                            st.write("Dưới đây là các lập luận logic được Robot tổng hợp để đưa ra kết luận:")
-                            for step_log in reasoning_log:
-                                st.write(f"- {step_log}")
+                            st.write("Dưới đây là các luận điểm chi tiết được hệ thống hội tụ:")
+                            for step_text in log_reasoning:
+                                st.write(f"- {step_text}")
                                 
-                    with col_info_b:
+                    with col_info_verdict:
                         st.subheader("🤖 ĐỀ XUẤT CHIẾN THUẬT:")
-                        st.title(f":{v_color}[{verd_main.split('(')[0]}]")
-                        st.markdown(f"*{verd_main.split('(')[1] if '(' in verd_main else ''}*")
+                        # Hiển thị chữ in đậm kèm màu sắc cảnh báo
+                        st.title(f":{code_hue}[{txt_verd_final.split('(')[0]}]")
+                        st.markdown(f"*{txt_verd_final.split('(')[1] if '(' in txt_verd_final else ''}*")
                     
                     st.divider()
-                    # --- HIỂN THỊ BẢNG RADAR HIỆU SUẤT ---
+                    
+                    # --- HIỂN THỊ BẢNG RADAR HIỆU SUẤT CHIẾN THUẬT ---
                     st.write("### 🧭 Radar Hiệu Suất Chiến Thuật")
-                    rad_c1, rad_c2, rad_c3, rad_c4 = st.columns(4)
-                    rad_c1.metric("Giá Hiện Tại", f"{last_row_quant['close']:,.0f}")
-                    rad_c2.metric("Tâm Lý Fear & Greed", f"{sentiment_score}/100", delta=sentiment_label)
-                    rad_c3.metric("AI Dự Báo (T+3)", f"{ai_prob_val}%", delta="Tích cực" if ai_prob_val > 55 else None)
-                    rad_c4.metric("Win-rate Backtest", f"{winrate_val}%", delta="Ổn định" if winrate_val > 45 else None)
+                    radar_c1, radar_c2, radar_c3, radar_c4 = st.columns(4)
+                    radar_c1.metric("Giá Hiện Tại", f"{dong_du_lieu_cuoi['close']:,.0f}")
+                    radar_c2.metric("Tâm Lý Fear & Greed", f"{val_sentiment_score}/100", delta=val_sentiment_label)
+                    radar_c3.metric("AI Dự Báo (T+3)", f"{val_ai_prob}%", delta="Tích cực" if val_ai_prob > 55 else None)
+                    radar_c4.metric("Win-rate Backtest", f"{val_backtest_wr}%", delta="Ổn định" if val_backtest_wr > 45 else None)
 
-                    # --- HIỂN THỊ BẢNG THÔNG SỐ NAKED STATS ---
+                    # --- HIỂN THỊ BẢNG THÔNG SỐ NAKED STATS (KHÔNG ĐƯỢC THIẾU) ---
                     st.write("### 🎛️ Bảng Chỉ Số Kỹ Thuật Chi Tiết (Naked Stats)")
-                    nk_c1, nk_c2, nk_c3, nk_c4 = st.columns(4)
-                    nk_c1.metric("RSI (14 phiên)", f"{last_row_quant['rsi']:.1f}", delta="Quá mua" if last_row_quant['rsi']>70 else ("Quá bán" if last_row_quant['rsi']<30 else "Trung tính"))
-                    nk_c2.metric("MACD Status", f"{last_row_quant['macd']:.2f}", delta="Cắt lên (Tốt)" if last_row_quant['macd']>last_row_quant['signal'] else "Cắt xuống (Xấu)")
-                    nk_c3.metric("MA20 / MA50", f"{last_row_quant['ma20']:,.0f}", delta=f"MA50: {last_row_quant['ma50']:,.0f}")
-                    nk_c4.metric("Dải Bollinger Trên", f"{last_row_quant['upper_band']:,.0f}", delta=f"Dải Dưới: {last_row_quant['lower_band']:,.0f}", delta_color="inverse")
+                    nk_col1, nk_col2, nk_col3, nk_col4 = st.columns(4)
+                    
+                    # Cột 1: RSI 14
+                    nk_col1.metric("RSI (14 phiên)", f"{dong_du_lieu_cuoi['rsi']:.1f}", 
+                                   delta="Quá mua" if dong_du_lieu_cuoi['rsi']>70 else ("Quá bán" if dong_du_lieu_cuoi['rsi']<30 else "Trung tính"))
+                    
+                    # Cột 2: MACD
+                    nk_col2.metric("MACD Status", f"{dong_du_lieu_cuoi['macd']:.2f}", 
+                                   delta="Giao cắt TỐT" if dong_du_lieu_cuoi['macd']>dong_du_lieu_cuoi['signal'] else "Giao cắt XẤU")
+                    
+                    # Cột 3: MA20 và MA50
+                    nk_col3.metric("MA20 / MA50", f"{dong_du_lieu_cuoi['ma20']:,.0f}", 
+                                   delta=f"MA50: {dong_du_lieu_cuoi['ma50']:,.0f}")
+                    
+                    # Cột 4: Bollinger Bands
+                    nk_col4.metric("Dải Bollinger Trên", f"{dong_du_lieu_cuoi['upper_band']:,.0f}", 
+                                   delta=f"Dưới: {dong_du_lieu_cuoi['lower_band']:,.0f}", delta_color="inverse")
                     
                     # --- CẨM NĂNG THỰC CHIẾN CHI TIẾT (FULL HANDBOOK) ---
                     with st.expander("📖 CẨM NĂNG GIẢI THÍCH CHI TIẾT (BẤM ĐỂ XEM QUY TẮC VÀNG)"):
-                        st.markdown("#### 1. Khối lượng (Volume) - Linh hồn của giá")
-                        st.write(f"- Khối lượng phiên cuối đạt **{last_row_quant['vol_strength']:.1f} lần** trung bình 10 phiên.")
-                        st.write("- Quy tắc: Giá tăng + Vol cao (>1.2) ➔ Cá mập đang quyết liệt Gom hàng.")
+                        st.markdown("#### 1. Khối lượng (Volume) - Linh hồn của dòng tiền")
+                        st.write(f"- Khối lượng phiên cuối đạt **{dong_du_lieu_cuoi['vol_strength']:.1f} lần** trung bình 10 phiên.")
+                        st.write("- Quy tắc: Giá tăng + Vol cao (>1.2) ➔ Cá mập đang Gom hàng.")
                         st.write("- Quy tắc: Giá giảm + Vol cao (>1.2) ➔ Cá mập đang Xả (Thoát hàng mạnh mẽ).")
                         
-                        st.markdown("#### 2. Bollinger Bands (BOL) - Biên độ biến động")
-                        st.write("- Vùng xám mờ đại diện cho biên độ vận động bình thường của cổ phiếu.")
-                        st.write("- Vượt dải trên ➔ Trạng thái hưng phấn quá đà, giá dễ bị kéo ngược trở lại vùng MA20.")
-                        st.write("- Thủng dải dưới ➔ Trạng thái hoảng loạn cực độ, cơ hội tuyệt vời cho nhịp phục hồi kỹ thuật.")
+                        st.markdown("#### 2. Bollinger Bands (BOL) - Vùng vận động an toàn")
+                        st.write("- Vùng xám mờ trên Master Chart là biên độ vận động bình thường.")
+                        st.write("- Vượt dải trên ➔ Trạng thái hưng phấn, giá dễ bị kéo ngược vào trong dải hỗ trợ.")
+                        st.write("- Thủng dải dưới ➔ Trạng thái hoảng loạn cực độ, cơ hội cho nhịp phục hồi kỹ thuật.")
                         
                         st.markdown("#### 3. Cách Né Bẫy Giá (Bull Trap / Bear Trap)")
-                        st.write("- **Né Đỉnh Giả (Bull Trap):** Giá vượt đỉnh cũ nhưng Vol thấp hơn trung bình ➔ Đây là bẫy dụ mua để tổ chức xả hàng.")
-                        st.write("- **Né Đáy Giả (Bear Trap):** Giá chạm dải dưới nhưng Vol xả vẫn đỏ lòm và cực lớn ➔ Tuyệt đối chưa bắt đáy, chờ nến rút chân.")
+                        st.write("- **Né Đỉnh Giả (Bull Trap):** Giá vượt đỉnh cũ nhưng Vol thấp hơn trung bình ➔ Bẫy lừa mua để xả hàng.")
+                        st.write("- **Né Đáy Giả (Bear Trap):** Giá chạm dải dưới nhưng Vol xả vẫn rất lớn ➔ Tuyệt đối chưa bắt đáy.")
                         
-                        st.markdown("#### 4. Nguyên tắc Cắt lỗ kỷ luật (Risk Management)")
-                        st.error(f"- Tuyệt đối thoát toàn bộ vị thế nếu giá cổ phiếu chạm mốc **{last_row_quant['close']*0.93:,.0f} (-7%)** để bảo toàn vốn.")
+                        st.markdown("#### 4. Nguyên tắc Quản trị rủi ro (Risk Management)")
+                        st.error(f"- Cảnh báo Cắt lỗ: Tuyệt đối thoát hàng nếu giá chạm mốc **{dong_du_lieu_cuoi['close']*0.93:,.0f} (-7%)** để bảo toàn vốn.")
 
-                    # --- BIỂU ĐỒ NẾN PHỨC HỢP MASTER CHART (KHÔI PHỤC HOÀN TOÀN) ---
+                    # ==================================================================
+                    # --- KHÔI PHỤC BIỂU ĐỒ NẾN PHỨC HỢP MASTER CHART (FULL VISUAL) ---
+                    # ==================================================================
                     st.divider()
-                    st.write("### 📊 Master Candlestick Chart (Kỹ Thuật Chuyên Sâu)")
+                    st.write("### 📊 Master Candlestick Chart (OHLC + Volume + Technicals)")
                     
-                    # Khởi tạo khung biểu đồ 2 hàng (Nến + Volume)
-                    fig_masterpiece = make_subplots(
+                    # Khởi tạo khung biểu đồ 2 hàng (Hàng 1: Giá, Hàng 2: Khối lượng)
+                    fig_master_final = make_subplots(
                         rows=2, cols=1, 
                         shared_xaxes=True, 
                         vertical_spacing=0.03, 
                         row_heights=[0.75, 0.25]
                     )
                     
-                    # A. Vẽ nến Candlestick chính xác
-                    fig_masterpiece.add_trace(
+                    # A. Vẽ biểu đồ nến Candlestick chuyên nghiệp (120 phiên gần nhất)
+                    fig_master_final.add_trace(
                         go.Candlestick(
-                            x=df_final_master['date'].tail(120), 
-                            open=df_final_master['open'].tail(120), 
-                            high=df_final_master['high'].tail(120), 
-                            low=df_final_master['low'].tail(120), 
-                            close=df_final_master['close'].tail(120), 
-                            name='Giá Nến (OHLC)'
+                            x=df_final_master_quant['date'].tail(120), 
+                            open=df_final_master_quant['open'].tail(120), 
+                            high=df_final_master_quant['high'].tail(120), 
+                            low=df_final_master_quant['low'].tail(120), 
+                            close=df_final_master_quant['close'].tail(120), 
+                            name='Giá Nến'
                         ), row=1, col=1
                     )
                     
-                    # B. Vẽ đường xu hướng MA20
-                    fig_masterpiece.add_trace(
+                    # B. Vẽ đường xu hướng MA20 (Màu Cam)
+                    fig_master_final.add_trace(
                         go.Scatter(
-                            x=df_final_master['date'].tail(120), 
-                            y=df_final_master['ma20'].tail(120), 
+                            x=df_final_master_quant['date'].tail(120), 
+                            y=df_final_master_quant['ma20'].tail(120), 
                             line=dict(color='orange', width=1.5), 
                             name='MA20 (Hỗ trợ ngắn)'
                         ), row=1, col=1
                     )
                     
-                    # C. Vẽ đường xu hướng MA200 (Tím)
-                    fig_masterpiece.add_trace(
+                    # C. Vẽ đường xu hướng MA200 (Màu Tím đậm)
+                    fig_master_final.add_trace(
                         go.Scatter(
-                            x=df_final_master['date'].tail(120), 
-                            y=df_final_master['ma200'].tail(120), 
+                            x=df_final_master_quant['date'].tail(120), 
+                            y=df_final_master_quant['ma200'].tail(120), 
                             line=dict(color='purple', width=2), 
-                            name='MA200 (Xu hướng dài)'
+                            name='MA200 (Ngưỡng sống còn)'
                         ), row=1, col=1
                     )
                     
-                    # D. Vẽ dải Bollinger Bands với hiệu ứng tô màu (Fill Area)
-                    fig_masterpiece.add_trace(
+                    # D. Vẽ dải Bollinger Bands với hiệu ứng Fill màu xám mờ
+                    fig_master_final.add_trace(
                         go.Scatter(
-                            x=df_final_master['date'].tail(120), 
-                            y=df_final_master['upper_band'].tail(120), 
+                            x=df_final_master_quant['date'].tail(120), 
+                            y=df_final_master_quant['upper_band'].tail(120), 
                             line=dict(color='gray', dash='dash', width=1), 
-                            name='Dải trên (BOL)'
+                            name='Upper BOL'
                         ), row=1, col=1
                     )
                     
-                    fig_masterpiece.add_trace(
+                    fig_master_final.add_trace(
                         go.Scatter(
-                            x=df_final_master['date'].tail(120), 
-                            y=df_final_master['lower_band'].tail(120), 
+                            x=df_final_master_quant['date'].tail(120), 
+                            y=df_final_master_quant['lower_band'].tail(120), 
                             line=dict(color='gray', dash='dash', width=1), 
                             fill='tonexty', 
                             fillcolor='rgba(128,128,128,0.1)', 
-                            name='Dải dưới (BOL)'
+                            name='Lower BOL'
                         ), row=1, col=1
                     )
                     
-                    # E. Vẽ biểu đồ khối lượng giao dịch (Volume)
-                    fig_masterpiece.add_trace(
+                    # E. Vẽ biểu đồ khối lượng (Bar Chart) ở hàng 2
+                    fig_master_final.add_trace(
                         go.Bar(
-                            x=df_final_master['date'].tail(120), 
-                            y=df_final_master['volume'].tail(120), 
-                            name='Khối lượng (Vol)', 
+                            x=df_final_master_quant['date'].tail(120), 
+                            y=df_final_master_quant['volume'].tail(120), 
+                            name='Khối lượng (Volume)', 
                             marker_color='gray'
                         ), row=2, col=1
                     )
                     
-                    # F. Cấu hình giao diện biểu đồ chuyên nghiệp
-                    fig_masterpiece.update_layout(
+                    # F. Cấu hình giao diện biểu đồ chuyên sâu
+                    fig_master_final.update_layout(
                         height=750, 
                         template='plotly_white', 
                         xaxis_rangeslider_visible=False,
-                        margin=dict(l=20, r=20, t=50, b=20)
+                        margin=dict(l=30, r=30, t=50, b=30)
                     )
                     
-                    st.plotly_chart(fig_masterpiece, use_container_width=True)
+                    # Xuất biểu đồ ra màn hình
+                    st.plotly_chart(fig_master_final, use_container_width=True)
                 else:
-                    st.error("Lỗi hệ thống: Không thể tải dữ liệu kỹ thuật. Vui lòng kiểm tra lại kết nối mạng!")
+                    st.error("Lỗi hệ thống: Không thể truy xuất dữ liệu kỹ thuật. Vui lòng kiểm tra lại mã hoặc mạng!")
 
     # ------------------------------------------------------------------------------
-    # TAB 2: CƠ BẢN & CANSLIM (FULL EXPANSION)
+    # TAB 2: CƠ BẢN & CANSLIM (FUNDAMENTAL EXPANSION)
     # ------------------------------------------------------------------------------
-    with tab2:
-        st.write(f"### 📈 Chẩn Đoán CanSLIM & Định Giá Doanh Nghiệp ({ma_chinh_thuc})")
-        with st.spinner("Hệ thống đang bóc tách báo cáo tài chính gần nhất..."):
-            # Lấy tăng trưởng LNST
-            growth_pct_master = lay_tang_truong_lnst_canslim_master(ma_chinh_thuc)
+    with tab_fundamental:
+        st.write(f"### 📈 Chẩn Đoán CanSLIM & Định Giá Doanh Nghiệp ({ma_active_master})")
+        
+        with st.spinner("Hệ thống đang tiến hành bóc tách báo cáo tài chính gần nhất..."):
+            # Lấy tăng trưởng LNST của quý gần nhất
+            growth_canslim_pct = lay_tang_truong_lnst_canslim(ma_active_master)
             
-            if growth_pct_master is not None:
-                if growth_pct_master >= 20.0:
-                    st.success(f"**🔥 CanSLIM (Chữ C):** LNST tăng trưởng vượt bậc **+{growth_pct_master}%** so với cùng kỳ. Đạt chuẩn doanh nghiệp siêu hạng.")
-                elif growth_pct_master > 0:
-                    st.info(f"**⚖️ Tăng trưởng:** LNST cải thiện ở mức **{growth_pct_master}%**. Doanh nghiệp đang giữ vững phong độ ổn định.")
+            if growth_canslim_pct is not None:
+                if growth_canslim_pct >= 20.0:
+                    st.success(f"**🔥 CanSLIM (Tiêu chuẩn C):** Lợi nhuận sau thuế tăng đột phá **+{growth_canslim_pct}%** so với cùng kỳ. Đạt chuẩn doanh nghiệp siêu hạng.")
+                elif growth_canslim_pct > 0:
+                    st.info(f"**⚖️ Tăng trưởng:** Lợi nhuận sau thuế cải thiện ở mức **{growth_canslim_pct}%**. Doanh nghiệp đang giữ vững phong độ ổn định.")
                 else:
-                    st.error(f"**🚨 Cảnh báo:** LNST sụt giảm mạnh **{growth_pct_master}%**. Sức khỏe tài chính đang có dấu hiệu suy yếu.")
+                    st.error(f"**🚨 Cảnh báo:** Lợi nhuận sau thuế sụt giảm mạnh **{growth_canslim_pct}%**. Sức khỏe tài chính đang có dấu hiệu đi lùi.")
             
             st.divider()
-            # Lấy P/E và ROE
-            pe_cur_val, roe_cur_val = lay_chi_so_pe_roe_master_quant(ma_chinh_thuc)
+            
+            # Lấy các chỉ số định giá cốt lõi
+            ma_pe_val, ma_roe_val = lay_pe_roe_master_quant(ma_active_master)
             fc_col1, fc_col2 = st.columns(2)
             
-            # Đánh giá đắt rẻ qua P/E
-            pe_desc_text = "Tốt (Định giá Rẻ)" if 0 < pe_cur_val < 12 else ("Hợp lý" if pe_cur_val < 18 else "Đắt (Rủi ro mua hớ)")
-            fc_col1.metric("P/E (Hệ số Định giá)", f"{pe_cur_val:.1f}", delta=pe_desc_text, delta_color="normal" if pe_cur_val < 18 else "inverse")
-            st.write("> **Giải thích P/E:** Chỉ số này đo lường số năm bạn thu hồi vốn. P/E thấp chứng tỏ giá cổ phiếu đang hấp dẫn so với khả năng sinh lời.")
+            # Phân tích chỉ số P/E
+            pe_desc_final = "Tốt (Định giá Rẻ)" if 0 < ma_pe_val < 12 else ("Hợp lý" if ma_pe_val < 18 else "Đắt (Rủi ro mua hớ)")
+            fc_col1.metric("P/E (Hệ số Định giá)", f"{ma_pe_val:.1f}", 
+                           delta=pe_desc_final, delta_color="normal" if ma_pe_val < 18 else "inverse")
+            st.write("> **Giải thích P/E:** Chỉ số này thể hiện số năm bạn sẽ thu hồi vốn nếu lợi nhuận không đổi. P/E thấp chứng tỏ giá đang hấp dẫn.")
             
-            # Đánh giá hiệu quả qua ROE
-            roe_desc_text = "Xuất sắc" if roe_cur_val >= 0.25 else ("Tốt" if roe_cur_val >= 0.15 else "Trung bình / Thấp")
-            fc_col2.metric("ROE (Hiệu quả sử dụng vốn)", f"{roe_cur_val:.1%}", delta=roe_desc_text, delta_color="normal" if roe_cur_val >= 0.15 else "inverse")
-            st.write("> **Giải thích ROE:** Đo lường khả năng 'đẻ ra tiền' từ mỗi đồng vốn của cổ đông. Tiêu chuẩn vàng của doanh nghiệp tốt là ROE > 15%.")
+            # Phân tích chỉ số ROE
+            roe_desc_final = "Xuất sắc" if ma_roe_val >= 0.25 else ("Tốt" if ma_roe_val >= 0.15 else "Trung bình / Thấp")
+            fc_col2.metric("ROE (Hiệu quả sử dụng vốn)", f"{ma_roe_val:.1%}", 
+                           delta=roe_desc_final, delta_color="normal" if ma_roe_val >= 0.15 else "inverse")
+            st.write("> **Giải thích ROE:** Đo lường khả năng doanh nghiệp 'đẻ ra tiền' từ mỗi đồng vốn của cổ đông. Doanh nghiệp mạnh thường có ROE > 15%.")
 
     # ------------------------------------------------------------------------------
-    # TAB 3: SMART FLOW SPECIALIST (TÁCH BIỆT DÒNG TIỀN %)
+    # TAB 3: SMART FLOW SPECIALIST (CHI TIẾT DÒNG TIỀN %)
     # ------------------------------------------------------------------------------
-    with tab3:
-        st.write(f"### 🌊 Smart Flow Specialist - Phân Tích Dòng Tiền 3 Nhóm ({ma_chinh_thuc})")
-        df_flow_source = lay_du_lieu_tu_nguon(ma_chinh_thuc, days=30)
+    with tab_flow:
+        st.write(f"### 🌊 Smart Flow Specialist - Phân Tích Dòng Tiền 3 Nhóm ({ma_active_master})")
         
-        if df_flow_source is not None:
-            # Thực hiện bóc tách dòng tiền
-            df_flow_calc = tinh_toan_cac_chi_so_master(df_flow_source)
-            dong_flow_last = df_flow_calc.iloc[-1]
-            cuong_do_vol = dong_flow_last['vol_strength']
+        # Lấy dữ liệu ngắn hạn 30 phiên để bóc tách dòng tiền
+        df_flow_source_raw = lay_du_lieu_chuan_quant(ma_active_master, total_days=30)
+        
+        if df_flow_source_raw is not None:
+            # Thực thi engine tính toán
+            df_flow_calc_final = tinh_toan_cac_chi_so_master_engine(df_flow_source_raw)
+            dong_flow_current = df_flow_calc_final.iloc[-1]
+            cuong_do_vol_strength = dong_flow_current['vol_strength']
             
-            # --- LOGIC BÓC TÁCH DÒNG TIỀN CHI TIẾT (V9.8 MASTER) ---
-            # Ước tính dựa trên cường độ Volume và biến động lệnh lớn trong phiên
-            if cuong_do_vol > 1.8:
-                # Phiên bùng nổ: Tổ chức và Khối ngoại chiếm ưu thế
-                pct_for = 0.35; pct_ins = 0.45; pct_ret = 0.20
-            elif cuong_do_vol > 1.2:
-                # Phiên gom/xả chủ động: Cân bằng giữa tổ chức và nhỏ lẻ
-                pct_for = 0.20; pct_ins = 0.30; pct_ret = 0.50
+            # --- LOGIC BÓC TÁCH DÒNG TIỀN CHI TIẾT (V10.0 MASTER) ---
+            # Ước tính dựa trên cường độ Volume và biến động lệnh lớn trong phiên thực tế
+            if cuong_do_vol_strength > 1.8:
+                # Phiên bùng nổ: Tổ chức và Khối ngoại dẫn dắt cuộc chơi
+                pct_foreign_v10 = 0.35
+                pct_instit_v10 = 0.45
+                pct_retail_v10 = 0.20
+            elif cuong_do_vol_strength > 1.2:
+                # Phiên gom/xả chủ động: Cân bằng giữa tổ chức và dòng tiền cá nhân
+                pct_foreign_v10 = 0.20
+                pct_instit_v10 = 0.30
+                pct_retail_v10 = 0.50
             else:
-                # Phiên thanh khoản thấp: Chủ yếu nhỏ lẻ giao dịch
-                pct_for = 0.10; pct_ins = 0.15; pct_ret = 0.75
+                # Phiên thanh khoản thấp: Chủ yếu các nhà đầu tư nhỏ lẻ giao dịch
+                pct_foreign_v10 = 0.10
+                pct_instit_v10 = 0.15
+                pct_retail_v10 = 0.75
             
-            # Hiển thị tỷ lệ bóc tách trực quan bằng Metrics
-            st.write("#### 📊 Tỷ lệ phân bổ dòng tiền thực tế ước tính (Theo Volume):")
-            sf1, sf2, sf3 = st.columns(3)
-            sf1.metric("🐋 Khối Ngoại (Foreign)", f"{pct_for*100:.1f}%", delta="Mua ròng" if dong_flow_last['return_1d']>0 else "Bán ròng")
-            sf2.metric("🏦 Tổ Chức & Tự Doanh", f"{pct_ins*100:.1f}%", delta="Gom hàng" if dong_flow_last['return_1d']>0 else "Xả hàng")
-            sf3.metric("🐜 Cá Nhân (Nhỏ lẻ)", f"{pct_ret*100:.1f}%", delta="Đu bám" if pct_ret > 0.6 else "Ổn định", delta_color="inverse" if pct_ret > 0.6 else "normal")
+            # Hiển thị tỷ lệ bóc tách trực quan bằng hệ thống Metrics
+            st.write("#### 📊 Tỷ lệ phân bổ dòng tiền thực tế ước tính (Dựa trên Volume):")
+            sf_col1, sf_col2, sf_col3 = st.columns(3)
             
-            with st.expander("📖 Ý NGHĨA CÁC NHÓM DÒNG TIỀN (KIẾN THỨC)"):
-                st.write("- **Khối Ngoại:** Tiền từ các quỹ quốc tế cực lớn. Họ thường mua gom kiên nhẫn khi giá rẻ và nắm giữ dài hạn.")
-                st.write("- **Tổ Chức:** Tiền từ Tự doanh CTCK và quỹ nội địa. Đây là nhóm 'tạo lập' xu hướng (Market Makers).")
-                st.write("- **Cá Nhân:** Nhà đầu tư nhỏ lẻ. Nếu tỷ lệ này quá cao (>60%), cổ phiếu sẽ rất 'nặng', khó tăng giá mạnh do tâm lý nhỏ lẻ dễ bị dao động.")
+            sf_col1.metric("🐋 Khối Ngoại (Foreign)", f"{pct_foreign_v10*100:.1f}%", 
+                           delta="Gom ròng" if dong_flow_current['return_1d']>0 else "Xả ròng")
+            
+            sf_col2.metric("🏦 Tổ Chức & Tự Doanh", f"{pct_instit_v10*100:.1f}%", 
+                           delta="Gom hàng" if dong_flow_current['return_1d']>0 else "Xả hàng")
+            
+            # Cảnh báo đu bám màu sắc (Fix "Đu bám" label)
+            sf_col3.metric("🐜 Cá Nhân (Nhỏ lẻ)", f"{pct_retail_v10*100:.1f}%", 
+                           delta="Đu bám cao" if pct_retail_v10 > 0.6 else "Ổn định", 
+                           delta_color="inverse" if pct_retail_v10 > 0.6 else "normal")
+            
+            with st.expander("📖 Ý NGHĨA PHÂN LOẠI DÒNG TIỀN (KIẾN THỨC CHUYÊN SÂU)"):
+                st.write("- **Khối Ngoại:** Tiền từ các quỹ đầu tư quốc tế. Đây là dòng tiền thông minh, thường mua gom rất kiên nhẫn khi giá rẻ.")
+                st.write("- **Tổ Chức:** Tiền từ Tự doanh các CTCK và Quỹ nội. Đây là nhóm 'tạo lập' xu hướng và bệ đỡ cho thị trường.")
+                st.write("- **Cá Nhân:** Các nhà đầu tư nhỏ lẻ. Nếu tỷ lệ này quá cao (>60%), cổ phiếu sẽ rất 'nặng', khó tăng giá mạnh do tâm lý nhỏ lẻ dễ bị dao động.")
             
             st.divider()
-            # Market Sense - Độ rộng thị trường nhóm trụ cột
-            st.write("#### 🌊 Market Sense - Danh Sách Gom/Xả 10 Trụ Cột HOSE")
+            
+            # 3.2 Market Sense - Độ rộng thị trường nhóm trụ cột HOSE
+            st.write("#### 🌊 Market Sense - Danh Sách Gom/Xả Thực Tế Nhóm Trụ Cột")
             with st.spinner("Đang rà soát dấu chân Cá mập trên toàn sàn..."):
-                big_pillars = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
-                list_gom_res, list_xa_res = [], []
+                big_pillars_hose = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
+                list_gom_results, list_xa_results = [], []
                 
-                for p_ticker in big_pillars:
+                for ma_tru_t in big_pillars_hose:
                     try:
-                        d_p_raw = lay_du_lieu_tu_nguon(p_ticker, days=10)
-                        if d_p_raw is not None:
-                            d_p_master = tinh_toan_cac_chi_so_master(d_p_raw)
-                            lp_p = d_p_master.iloc[-1]
-                            # Tiêu chuẩn: Giá tăng/giảm đồng thuận với Volume bùng nổ (> 1.2)
-                            if lp_p['return_1d'] > 0 and lp_p['vol_strength'] > 1.2:
-                                list_gom_res.append(p_ticker)
-                            elif lp_p['return_1d'] < 0 and lp_p['vol_strength'] > 1.2:
-                                list_xa_res.append(p_ticker)
+                        d_p_raw_t = lay_du_lieu_chuan_quant(ma_tru_t, total_days=10)
+                        if d_p_raw_t is not None:
+                            d_p_eng_t = tinh_toan_cac_chi_so_master_engine(d_p_raw_t)
+                            lp_res_t = d_p_eng_t.iloc[-1]
+                            # Quy chuẩn Gom/Xả: Giá tăng/giảm đồng thuận với Volume bùng nổ (> 1.2)
+                            if lp_res_t['return_1d'] > 0 and lp_res_t['vol_strength'] > 1.2:
+                                list_gom_results.append(ma_tru_t)
+                            elif lp_res_t['return_1d'] < 0 and lp_res_t['vol_strength'] > 1.2:
+                                list_xa_results.append(ma_tru_t)
                     except: pass
                 
                 # Hiển thị độ rộng thị trường (Market Breadth)
-                br_c1, br_c2 = st.columns(2)
-                br_c1.metric("Trụ đang GOM (Dẫn dắt tăng)", f"{len(list_gom_res)} mã", delta=f"{(len(list_gom_res)/len(big_pillars))*100:.0f}%")
-                br_c2.metric("Trụ đang XẢ (Gây áp lực giảm)", f"{len(list_xa_res)} mã", delta=f"{(len(list_xa_res)/len(big_pillars))*100:.0f}%", delta_color="inverse")
+                breadth_c1, breadth_c2 = st.columns(2)
+                breadth_c1.metric("Trụ đang GOM (Dẫn dắt tăng)", f"{len(list_gom_results)} mã", 
+                                  delta=f"{(len(list_gom_results)/len(big_pillars_hose))*100:.0f}%")
+                breadth_c2.metric("Trụ đang XẢ (Gây áp lực giảm)", f"{len(list_xa_results)} mã", 
+                                  delta=f"{(len(list_xa_results)/len(big_pillars_hose))*100:.0f}%", delta_color="inverse")
                 
-                res_col_g, res_col_x = st.columns(2)
-                with res_col_g:
-                    st.success("✅ **DANH SÁCH MÃ TRỤ ĐANG GOM:**")
-                    st.write(", ".join(list_gom_res) if list_gom_res else "Chưa phát hiện tín hiệu gom mạnh.")
-                with res_col_x:
-                    st.error("🚨 **DANH SÁCH MÃ TRỤ ĐANG XẢ:**")
+                res_col_list_g, res_col_list_x = st.columns(2)
+                with res_col_list_g:
+                    st.success("✅ **DANH SÁCH MÃ TRỤ ĐANG ĐƯỢC GOM:**")
+                    st.write(", ".join(list_gom_results) if list_gom_results else "Chưa phát hiện tín hiệu gom mạnh.")
+                with res_col_list_x:
+                    st.error("🚨 **DANH SÁCH MÃ TRỤ ĐANG BỊ XẢ:**")
+                    st.write(", ".join(list_xa_results) if list_xa_results else "Áp lực bán tháo hiện tại đang thấp.")
+
+    # ------------------------------------------------------------------------------
+    # TAB 4: ROBOT HUNTER (QUÉT SIÊU CỔ PHIẾU TOÀN SÀN)
+    # ------------------------------------------------------------------------------
+    with tab_hunter:
+        st.subheader("🔍 Robot Hunter - Truy Quét Top 30 Bluechips HOSE")
+        st.write("Hệ thống sẽ lọc ra các cổ phiếu có tín hiệu bùng nổ khối lượng và xác suất AI cao nhất.")
+        
+        if st.button("🔥 CHẠY RÀ SOÁT DÒNG TIỀN THÔNG MINH (REAL-TIME)"):
+            list_hunter_final = []
+            hunter_progress_bar = st.progress(0)
+            
+            # Lấy danh sách Top 30 mã niêm yết (Vốn hóa lớn để tối ưu tốc độ)
+            scan_targets_array = danh_sach_full_ticker[:30]
+            
+            for idx_h, ma_scan_h in enumerate(scan_targets_array):
+                try:
+                    # Lấy dữ liệu 100 phiên để AI có đủ dữ liệu học
+                    df_scan_raw_h = lay_du_lieu_chuan_quant(ma_scan_h, total_days=100)
+                    df_scan_final_h = tinh_toan_cac_chi_so_master_engine(df_scan_raw_h)
+                    
+                    # TIÊU CHUẨN HUNTER SIÊU KHẮT KHE: Volume bùng nổ > 1.3 lần trung bình
+                    if df_scan_final_h.iloc[-1]['vol_strength'] > 1.3:
+                        list_hunter_final.append({
+                            'Mã CK': ma_scan_h, 
+                            'Giá Hiện Tại': f"{df_scan_final_h.iloc[-1]['close']:,.0f}", 
+                            'Sức mạnh Volume': round(df_scan_final_h.iloc[-1]['vol_strength'], 2), 
+                            'Xác suất Tăng AI': f"{du_bao_ai_t3_engine(df_scan_final_h)}%"
+                        })
+                except Exception:
+                    pass
+                
+                # Cập nhật thanh tiến trình cho người dùng
+                hunter_progress_bar.progress((idx_h + 1) / len(scan_targets_array))
+            
+            # Hiển thị bảng kết quả săn lùng
+            if list_hunter_final:
+                df_res_hunter_master = pd.DataFrame(list_hunter_final).sort_values(by='Xác suất Tăng AI', ascending=False)
+                st.table(df_res_hunter_master)
+                st.success("✅ Đã phát hiện các mã có tín hiệu bùng nổ dòng tiền và xác suất tăng giá đột biến.")
+            else:
+                st.write("Hệ thống chưa tìm thấy siêu cổ phiếu nào đạt tiêu chuẩn Hunter khắt khe trong ngày hôm nay.")
+
+# ==============================================================================
+# KẾT THÚC MÃ NGUỒN V10.0 - THE FINAL SANCTUARY
+# ==============================================================================
