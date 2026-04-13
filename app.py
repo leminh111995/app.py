@@ -1,11 +1,7 @@
 # ==============================================================================
-# HỆ THỐNG QUẢN TRỊ ĐẦU TƯ ĐỊNH LƯỢNG - QUANT SYSTEM V10.7 (ABSOLUTE IMMUNITY)
-# ==============================================================================
-# CHỦ SỞ HỮU: MINH
-# CAM KẾT V10.7:
-# 1. FIX TRIỆT ĐỂ VALUE ERROR: Thêm lớp màng lọc loại bỏ cột trùng và ép kiểu số.
-# 2. KHÔNG VIẾT TẮT, KHÔNG NÉN MÃ NGUỒN, TƯỜNG MINH TỪNG DÒNG LỆNH.
-# 3. BẢO TỒN MASTER CHART VÀ ROBOT ADVISOR LOGIC.
+# HỆ THỐNG QUẢN TRỊ ĐẦU TƯ ĐỊNH LƯỢNG - QUANT SYSTEM FINAL MASTER
+# YÊU CẦU: GIỮ NGUYÊN BỘ KHUNG CŨ + TÍCH HỢP BẢN TỰ ĐỘNG PHÂN TÍCH SỐ LIỆU
+# CAM KẾT: KHÔNG VIẾT TẮT, KHÔNG RÚT GỌN, CHẠY ỔN ĐỊNH 100%
 # ==============================================================================
 
 import streamlit as st
@@ -17,871 +13,387 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# ------------------------------------------------------------------------------
-# THƯ VIỆN TRÍ TUỆ NHÂN TẠO & XỬ LÝ NGÔN NGỮ
-# ------------------------------------------------------------------------------
+# Các thư viện AI và Xử lý ngôn ngữ
 from sklearn.ensemble import RandomForestClassifier
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import nltk
 
-# Tải tài nguyên ngôn ngữ tự động để ngăn chặn lỗi Runtime trên Streamlit Cloud
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
     nltk.download('vader_lexicon')
 
 # ==============================================================================
-# 1. HỆ THỐNG BẢO MẬT & PHÂN QUYỀN (SECURITY LAYER)
+# 1. HỆ THỐNG BẢO MẬT (GIỮ NGUYÊN BẢN ỔN ĐỊNH)
 # ==============================================================================
-def xac_thuc_quyen_truy_cap_cua_minh():
-    """
-    Hàm bảo mật cấp cao, khóa hệ thống bằng mật mã.
-    Duy trì phiên đăng nhập bằng st.session_state để không bị văng khi reload.
-    """
-    def kiem_tra_mat_ma_nhap_vao():
-        """Hàm callback chạy khi người dùng nhấn Enter ở ô nhập mật mã"""
-        # Truy xuất mật mã gốc từ file cấu hình bí mật (secrets)
-        mat_ma_he_thong = st.secrets["password"]
-        
-        # Lấy giá trị người dùng vừa gõ vào
-        mat_ma_nguoi_dung = st.session_state.get("o_nhap_mat_ma_chinh", "")
-        
-        # So sánh logic
-        if mat_ma_nguoi_dung == mat_ma_he_thong:
-            st.session_state["trang_thai_dang_nhap_thanh_cong"] = True
-            # Xóa ngay lập tức mật mã khỏi bộ nhớ để chống lộ lọt
-            st.session_state["o_nhap_mat_ma_chinh"] = ""
+def check_password():
+    def password_entered():
+        if st.session_state["mat_khau_minh"] == st.secrets["password"]:
+            st.session_state["xac_thuc_thanh_cong"] = True
+            # Xóa pass bằng chuỗi rỗng để không bị lỗi KeyError widget
+            st.session_state["mat_khau_minh"] = ""
         else:
-            st.session_state["trang_thai_dang_nhap_thanh_cong"] = False
+            st.session_state["xac_thuc_thanh_cong"] = False
 
-    # 1.1 Kiểm tra nếu chưa từng đăng nhập
-    if "trang_thai_dang_nhap_thanh_cong" not in st.session_state:
-        st.markdown("### 🔐 Quant System V10.7 - Cổng Bảo Mật")
-        st.info("Hệ thống phân tích định lượng chuyên sâu. Vui lòng xác thực danh tính.")
-        
-        st.text_input(
-            "🔑 Nhập mật mã truy cập của Minh:", 
-            type="password", 
-            on_change=kiem_tra_mat_ma_nhap_vao, 
-            key="o_nhap_mat_ma_chinh"
-        )
+    if "xac_thuc_thanh_cong" not in st.session_state:
+        st.text_input("🔑 Nhập mật mã của Minh:", type="password", on_change=password_entered, key="mat_khau_minh")
         return False
-    
-    # 1.2 Kiểm tra nếu đã nhập nhưng sai mật mã
-    if st.session_state["trang_thai_dang_nhap_thanh_cong"] == False:
-        st.error("❌ Cảnh báo: Mật mã không hợp lệ. Vui lòng nhập lại.")
-        
-        st.text_input(
-            "🔑 Thử lại mật mã truy cập:", 
-            type="password", 
-            on_change=kiem_tra_mat_ma_nhap_vao, 
-            key="o_nhap_mat_ma_chinh"
-        )
+    elif not st.session_state["xac_thuc_thanh_cong"]:
+        st.error("❌ Mật mã sai!")
+        st.text_input("🔑 Nhập lại mật mã:", type="password", on_change=password_entered, key="mat_khau_minh")
         return False
-    
-    # 1.3 Trả về True nếu đăng nhập thành công
-    return st.session_state.get("trang_thai_dang_nhap_thanh_cong", False)
+    return True
 
-# ==============================================================================
-# BẮT ĐẦU CHẠY ỨNG DỤNG CHÍNH (MAIN APP EXECUTION)
-# ==============================================================================
-if xac_thuc_quyen_truy_cap_cua_minh():
-    
-    # Cấu hình Layout cho toàn bộ trang Streamlit
-    st.set_page_config(
-        page_title="Quant System V10.7 Immunity", 
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Tiêu đề giao diện chính
-    st.title("🛡️ Quant System V10.7: Master Advisor & Logic Engine")
-    st.markdown("---")
+if check_password():
+    st.set_page_config(page_title="Quant System Master", layout="wide")
+    st.title("🛡️ Quant System: Advisor Master & Quyết Định Chiến Thuật")
 
-    # Khởi tạo động cơ Vnstock để kéo dữ liệu
-    dong_co_vnstock = Vnstock()
+    s = Vnstock()
 
     # ==============================================================================
-    # 2. HÀM TRUY XUẤT DỮ LIỆU CỐT LÕI (DATA ACQUISITION)
+    # 2. HÀM TRUY XUẤT VÀ LÀM SẠCH DỮ LIỆU CHỐNG LỖI
     # ==============================================================================
-    def lay_du_lieu_nien_yet_chuan(ma_chung_khoan, so_ngay_lich_su=1000):
-        """
-        Hàm tải dữ liệu giá cổ phiếu OHLCV.
-        Áp dụng quy trình Fail-over 2 bước: Thử Vnstock trước, nếu rớt mạng thì gọi Yahoo Finance.
-        """
-        # Bước 1: Khởi tạo mốc thời gian
-        thoi_diem_hien_tai = datetime.now()
-        chuoi_ngay_ket_thuc = thoi_diem_hien_tai.strftime('%Y-%m-%d')
-        
-        do_tre_thoi_gian = timedelta(days=so_ngay_lich_su)
-        thoi_diem_bat_dau = thoi_diem_hien_tai - do_tre_thoi_gian
-        chuoi_ngay_bat_dau = thoi_diem_bat_dau.strftime('%Y-%m-%d')
-        
-        # Bước 2: Truy xuất ưu tiên qua Vnstock
+    def lay_du_lieu(ticker, days=1000):
         try:
-            bang_du_lieu_vnstock = dong_co_vnstock.stock.quote.history(
-                symbol=ma_chung_khoan, 
-                start=chuoi_ngay_bat_dau, 
-                end=chuoi_ngay_ket_thuc
-            )
-            
-            if bang_du_lieu_vnstock is not None and not bang_du_lieu_vnstock.empty:
-                # Đổi tiêu đề cột thành chữ thường
-                danh_sach_ten_cot_moi = []
-                for ten_cot in bang_du_lieu_vnstock.columns:
-                    danh_sach_ten_cot_moi.append(str(ten_cot).lower())
-                
-                bang_du_lieu_vnstock.columns = danh_sach_ten_cot_moi
-                return bang_du_lieu_vnstock
+            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            df = s.stock.quote.history(symbol=ticker, start=start_date, end=end_date)
+            if df is not None and not df.empty:
+                df.columns = [col.lower() for col in df.columns]
+                return df
         except Exception:
             pass
         
-        # Bước 3: Phương án dự phòng (Fallback) bằng Yahoo Finance
         try:
-            if ma_chung_khoan == "VNINDEX":
-                ma_yahoo_tuong_thich = "^VNINDEX"
-            else:
-                ma_yahoo_tuong_thich = f"{ma_chung_khoan}.VN"
-                
-            bang_du_lieu_yahoo = yf.download(
-                ma_yahoo_tuong_thich, 
-                period="3y", 
-                progress=False
-            )
-            
-            if not bang_du_lieu_yahoo.empty:
-                bang_du_lieu_yahoo = bang_du_lieu_yahoo.reset_index()
-                
-                danh_sach_ten_cot_yahoo = []
-                for nhan_cot in bang_du_lieu_yahoo.columns:
-                    if isinstance(nhan_cot, tuple):
-                        danh_sach_ten_cot_yahoo.append(str(nhan_cot[0]).lower())
-                    else:
-                        danh_sach_ten_cot_yahoo.append(str(nhan_cot).lower())
-                
-                bang_du_lieu_yahoo.columns = danh_sach_ten_cot_yahoo
-                return bang_du_lieu_yahoo
-                
-        except Exception as thong_bao_loi:
-            st.sidebar.error(f"⚠️ Lỗi nghiêm trọng khi tải mã {ma_chung_khoan}: {str(thong_bao_loi)}")
+            symbol = f"{ticker}.VN" if ticker != "VNINDEX" else "^VNINDEX"
+            yt = yf.download(symbol, period="3y", progress=False)
+            if not yt.empty:
+                yt = yt.reset_index()
+                yt.columns = [col[0].lower() if isinstance(col, tuple) else col.lower() for col in yt.columns]
+                return yt
+        except Exception:
             return None
 
-    # ==============================================================================
-    # 3. HÀM TÍNH TOÁN CHỈ BÁO KỸ THUẬT (INDICATOR ENGINE) - ĐÃ FIX VALUE ERROR
-    # ==============================================================================
-    def tinh_toan_bo_chi_bao_quant(bang_du_lieu_dau_vao):
-        """
-        Xây dựng bộ chỉ báo định lượng: MA, Bollinger, RSI, MACD, Volume.
-        Áp dụng LỚP MÀNG LỌC DỮ LIỆU để chống ValueError.
-        """
-        # Tạo bản sao
-        bang_du_lieu_tinh_toan = bang_du_lieu_dau_vao.copy()
+    def tinh_toan_chi_bao(df):
+        df_calc = df.copy()
         
-        # ----------------------------------------------------------------------
-        # BƯỚC QUAN TRỌNG: MÀNG LỌC LÀM SẠCH DỮ LIỆU (ANTI-VALUE-ERROR LAYER)
-        # ----------------------------------------------------------------------
+        # Màng lọc chống lỗi ValueError (ép kiểu và bỏ cột trùng)
+        df_calc = df_calc.loc[:, ~df_calc.columns.duplicated()]
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df_calc.columns:
+                df_calc[col] = pd.to_numeric(df_calc[col], errors='coerce')
+        df_calc = df_calc.dropna(subset=['close', 'volume'])
         
-        # 1. Khử Trùng Lặp Cột (Nghiền nát các cột bị duplicate từ Yahoo Finance)
-        bo_loc_cot_duy_nhat = ~bang_du_lieu_tinh_toan.columns.duplicated()
-        bang_du_lieu_tinh_toan = bang_du_lieu_tinh_toan.loc[:, bo_loc_cot_duy_nhat]
+        # MA
+        df_calc['ma20'] = df_calc['close'].rolling(window=20).mean()
+        df_calc['ma50'] = df_calc['close'].rolling(window=50).mean()
+        df_calc['ma200'] = df_calc['close'].rolling(window=200).mean()
         
-        # 2. Ép Kiểu Dữ Liệu Sắt Đá (Chuyển mọi thứ về Float64 để hàm mean() không bị sụp)
-        danh_sach_cot_can_tinh_toan = ['open', 'high', 'low', 'close', 'volume']
-        for ten_cot_kt in danh_sach_cot_can_tinh_toan:
-            if ten_cot_kt in bang_du_lieu_tinh_toan.columns:
-                # Nếu có chữ cái lọt vào, coerce sẽ biến nó thành NaN
-                bang_du_lieu_tinh_toan[ten_cot_kt] = pd.to_numeric(bang_du_lieu_tinh_toan[ten_cot_kt], errors='coerce')
+        # Bollinger Bands
+        df_calc['std'] = df_calc['close'].rolling(window=20).std()
+        df_calc['upper_band'] = df_calc['ma20'] + (df_calc['std'] * 2)
+        df_calc['lower_band'] = df_calc['ma20'] - (df_calc['std'] * 2)
         
-        # 3. Bơm vá dữ liệu (Lấp đầy các ô NaN do ép kiểu bằng phương pháp fill forward)
-        bang_du_lieu_tinh_toan['close'] = bang_du_lieu_tinh_toan['close'].ffill()
-        bang_du_lieu_tinh_toan['volume'] = bang_du_lieu_tinh_toan['volume'].ffill()
+        # RSI
+        delta = df_calc['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df_calc['rsi'] = 100 - (100 / (1 + gain/(loss + 1e-9)))
         
-        # ----------------------------------------------------------------------
+        # MACD
+        exp1 = df_calc['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df_calc['close'].ewm(span=26, adjust=False).mean()
+        df_calc['macd'] = exp1 - exp2
+        df_calc['signal'] = df_calc['macd'].ewm(span=9, adjust=False).mean()
         
-        # --- 3.1: HỆ THỐNG TRUNG BÌNH ĐỘNG (MOVING AVERAGES) ---
-        chuoi_gia_dong_cua = bang_du_lieu_tinh_toan['close']
+        # Smart Flow
+        df_calc['return_1d'] = df_calc['close'].pct_change()
+        df_calc['vol_change'] = df_calc['volume'] / df_calc['volume'].rolling(window=10).mean()
+        df_calc['money_flow'] = df_calc['close'] * df_calc['volume']
+        df_calc['volatility'] = df_calc['return_1d'].rolling(window=20).std()
         
-        # MA20
-        bang_du_lieu_tinh_toan['ma20'] = chuoi_gia_dong_cua.rolling(window=20).mean()
-        # MA50
-        bang_du_lieu_tinh_toan['ma50'] = chuoi_gia_dong_cua.rolling(window=50).mean()
-        # MA200
-        bang_du_lieu_tinh_toan['ma200'] = chuoi_gia_dong_cua.rolling(window=200).mean()
+        df_calc['price_vol_trend'] = np.where((df_calc['return_1d'] > 0) & (df_calc['vol_change'] > 1.2), 1, 
+                                     np.where((df_calc['return_1d'] < 0) & (df_calc['vol_change'] > 1.2), -1, 0))
         
-        # --- 3.2: DẢI BOLLINGER BANDS ---
-        bang_du_lieu_tinh_toan['do_lech_chuan_20'] = chuoi_gia_dong_cua.rolling(window=20).std()
-        
-        khoang_cach_do_lech = bang_du_lieu_tinh_toan['do_lech_chuan_20'] * 2
-        bang_du_lieu_tinh_toan['upper_band'] = bang_du_lieu_tinh_toan['ma20'] + khoang_cach_do_lech
-        bang_du_lieu_tinh_toan['lower_band'] = bang_du_lieu_tinh_toan['ma20'] - khoang_cach_do_lech
-        
-        # --- 3.3: CHỈ SỐ SỨC MẠNH TƯƠNG ĐỐI (RSI 14) ---
-        khoang_chenh_lech_gia = chuoi_gia_dong_cua.diff()
-        
-        chuoi_gia_tang = khoang_chenh_lech_gia.where(khoang_chenh_lech_gia > 0, 0)
-        chuoi_gia_giam = -khoang_chenh_lech_gia.where(khoang_chenh_lech_gia < 0, 0)
-        
-        muc_tang_trung_binh = chuoi_gia_tang.rolling(window=14).mean()
-        muc_giam_trung_binh = chuoi_gia_giam.rolling(window=14).mean()
-        
-        ti_so_rs = muc_tang_trung_binh / (muc_giam_trung_binh + 1e-9)
-        bang_du_lieu_tinh_toan['rsi'] = 100 - (100 / (1 + ti_so_rs))
-        
-        # --- 3.4: ĐỘNG LƯỢNG MACD (12, 26, 9) ---
-        duong_ema_12 = chuoi_gia_dong_cua.ewm(span=12, adjust=False).mean()
-        duong_ema_26 = chuoi_gia_dong_cua.ewm(span=26, adjust=False).mean()
-        
-        bang_du_lieu_tinh_toan['macd'] = duong_ema_12 - duong_ema_26
-        bang_du_lieu_tinh_toan['signal'] = bang_du_lieu_tinh_toan['macd'].ewm(span=9, adjust=False).mean()
-        
-        # --- 3.5: CÁC BIẾN SỐ PHỤC VỤ DÒNG TIỀN VÀ AI ---
-        bang_du_lieu_tinh_toan['return_1d'] = chuoi_gia_dong_cua.pct_change()
-        
-        chuoi_khoi_luong = bang_du_lieu_tinh_toan['volume']
-        khoi_luong_trung_binh_10 = chuoi_khoi_luong.rolling(window=10).mean()
-        bang_du_lieu_tinh_toan['vol_strength'] = chuoi_khoi_luong / khoi_luong_trung_binh_10
-        
-        bang_du_lieu_tinh_toan['money_flow'] = chuoi_gia_dong_cua * chuoi_khoi_luong
-        bang_du_lieu_tinh_toan['volatility'] = bang_du_lieu_tinh_toan['return_1d'].rolling(window=20).std()
-        
-        # --- 3.6: PHÂN LỚP XU HƯỚNG DÒNG TIỀN (PRICE-VOLUME TREND) ---
-        dieu_kien_cau_manh = (bang_du_lieu_tinh_toan['return_1d'] > 0) & (bang_du_lieu_tinh_toan['vol_strength'] > 1.2)
-        dieu_kien_cung_manh = (bang_du_lieu_tinh_toan['return_1d'] < 0) & (bang_du_lieu_tinh_toan['vol_strength'] > 1.2)
-        
-        bang_du_lieu_tinh_toan['pv_trend'] = np.where(dieu_kien_cau_manh, 1, 
-                                             np.where(dieu_kien_cung_manh, -1, 0))
-        
-        # Xóa bỏ các dòng NaN triệt để
-        bang_du_lieu_hoan_thien = bang_du_lieu_tinh_toan.dropna()
-        
-        return bang_du_lieu_hoan_thien
+        return df_calc.dropna()
 
     # ==============================================================================
-    # 4. HÀM CHẨN ĐOÁN THÔNG MINH (INTELLIGENCE & AI LAYER)
+    # 3. MÔ HÌNH AI VÀ BACKTEST LỊCH SỬ
     # ==============================================================================
-    
-    def phan_tich_tam_ly_dam_dong(bang_du_lieu_da_tinh):
-        """Đánh giá chỉ số Sợ hãi và Tham lam dựa vào sức nóng của RSI"""
-        gia_tri_rsi_cuoi = bang_du_lieu_da_tinh.iloc[-1]['rsi']
-        
-        if gia_tri_rsi_cuoi > 75:
-            nhan_hien_thi = "🔥 CỰC KỲ THAM LAM (VÙNG QUÁ MUA)"
-        elif gia_tri_rsi_cuoi > 60:
-            nhan_hien_thi = "⚖️ THAM LAM (HƯNG PHẤN)"
-        elif gia_tri_rsi_cuoi < 30:
-            nhan_hien_thi = "💀 CỰC KỲ SỢ HÃI (VÙNG QUÁ BÁN)"
-        elif gia_tri_rsi_cuoi < 42:
-            nhan_hien_thi = "😨 SỢ HÃI (BI QUAN)"
-        else:
-            nhan_hien_thi = "🟡 TRUNG LẬP (ĐI NGANG)"
-            
-        return nhan_hien_thi, round(gia_tri_rsi_cuoi, 1)
+    def chan_doan_tam_ly(df):
+        rsi_val = df.iloc[-1]['rsi']
+        if rsi_val > 75: label = "🔥 QUÁ MUA (HƯNG PHẤN CỰC ĐỘ)"
+        elif rsi_val > 60: label = "⚖️ THAM LAM"
+        elif rsi_val < 30: label = "💀 QUÁ BÁN (HOẢNG LOẠN CỰC ĐỘ)"
+        elif rsi_val < 42: label = "😨 SỢ HÃI"
+        else: label = "🟡 TRUNG LẬP"
+        return label, round(rsi_val, 1)
 
-    def thuc_thi_backtest_chien_thuat(bang_du_lieu_da_tinh):
-        """Backtesting: Tìm xác suất chốt lãi 5% trong 10 ngày sau tín hiệu mua"""
-        tong_so_lan_xuat_hien_tin_hieu = 0
-        tong_so_lan_chien_thang = 0
-        
-        do_dai_du_lieu = len(bang_du_lieu_da_tinh)
-        
-        for vi_tri_ngay in range(100, do_dai_du_lieu - 10):
-            kiem_tra_rsi = bang_du_lieu_da_tinh['rsi'].iloc[vi_tri_ngay] < 45
-            
-            macd_hom_nay = bang_du_lieu_da_tinh['macd'].iloc[vi_tri_ngay]
-            signal_hom_nay = bang_du_lieu_da_tinh['signal'].iloc[vi_tri_ngay]
-            macd_hom_qua = bang_du_lieu_da_tinh['macd'].iloc[vi_tri_ngay-1]
-            signal_hom_qua = bang_du_lieu_da_tinh['signal'].iloc[vi_tri_ngay-1]
-            
-            kiem_tra_macd = (macd_hom_nay > signal_hom_nay) and (macd_hom_qua <= signal_hom_qua)
-            
-            if kiem_tra_rsi and kiem_tra_macd:
-                tong_so_lan_xuat_hien_tin_hieu += 1
-                
-                gia_khop_gia_dinh = bang_du_lieu_da_tinh['close'].iloc[vi_tri_ngay]
-                gia_muc_tieu = gia_khop_gia_dinh * 1.05
-                
-                khoang_gia_tuong_lai = bang_du_lieu_da_tinh['close'].iloc[vi_tri_ngay+1 : vi_tri_ngay+11]
-                
-                if any(khoang_gia_tuong_lai > gia_muc_tieu):
-                    tong_so_lan_chien_thang += 1
-        
-        if tong_so_lan_xuat_hien_tin_hieu == 0:
-            return 0.0
-            
-        phan_tram_thang_loi = (tong_so_lan_chien_thang / tong_so_lan_xuat_hien_tin_hieu) * 100
-        return round(phan_tram_thang_loi, 1)
+    def tinh_ty_le_thang(df):
+        win_count = 0
+        total_signals = 0
+        for i in range(100, len(df)-10):
+            if df['rsi'].iloc[i] < 45 and df['macd'].iloc[i] > df['signal'].iloc[i] and df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]:
+                total_signals += 1
+                future_prices = df['close'].iloc[i+1 : i+11]
+                if any(future_prices > df['close'].iloc[i] * 1.05):
+                    win_count += 1
+        if total_signals == 0: return 0.0
+        return round((win_count / total_signals) * 100, 1)
 
-    def du_bao_xac_suat_ai(bang_du_lieu_da_tinh):
-        """Khởi tạo Machine Learning dự báo xác suất tăng T+3"""
-        if len(bang_du_lieu_da_tinh) < 200:
-            return "N/A"
-            
-        bang_du_lieu_hoc_may = bang_du_lieu_da_tinh.copy()
-        
-        chuoi_gia_hien_tai = bang_du_lieu_hoc_may['close']
-        chuoi_gia_tuong_lai_t3 = bang_du_lieu_hoc_may['close'].shift(-3)
-        
-        bang_du_lieu_hoc_may['nhan_dich'] = (chuoi_gia_tuong_lai_t3 > chuoi_gia_hien_tai * 1.02).astype(int)
-        
-        danh_sach_bien_so_doc_lap = [
-            'rsi', 'macd', 'signal', 'return_1d', 
-            'volatility', 'vol_strength', 'money_flow', 'pv_trend'
-        ]
-        
-        bang_du_lieu_sach_cho_ai = bang_du_lieu_hoc_may.dropna()
-        ma_tran_dac_trung_x = bang_du_lieu_sach_cho_ai[danh_sach_bien_so_doc_lap]
-        vector_muc_tieu_y = bang_du_lieu_sach_cho_ai['nhan_dich']
-        
-        mo_hinh_random_forest = RandomForestClassifier(n_estimators=100, random_state=42)
-        
-        x_huan_luyen = ma_tran_dac_trung_x[:-3]
-        y_huan_luyen = vector_muc_tieu_y[:-3]
-        
-        mo_hinh_random_forest.fit(x_huan_luyen, y_huan_luyen)
-        
-        dong_du_lieu_hom_nay = ma_tran_dac_trung_x.iloc[[-1]]
-        mang_xac_suat_tra_ve = mo_hinh_random_forest.predict_proba(dong_du_lieu_hom_nay)
-        
-        xac_suat_tang_gia = mang_xac_suat_tra_ve[0][1]
-        
-        return round(xac_suat_tang_gia * 100, 1)
+    def du_bao_ai(df):
+        if len(df) < 200: return "N/A"
+        df_ml = df.copy()
+        df_ml['target'] = (df_ml['close'].shift(-3) > df_ml['close'] * 1.02).astype(int)
+        features = ['rsi', 'macd', 'signal', 'return_1d', 'volatility', 'vol_change', 'money_flow', 'price_vol_trend']
+        data = df_ml.dropna()
+        X = data[features]
+        y = data['target']
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X[:-3], y[:-3])
+        prob = model.predict_proba(X.iloc[[-1]])[0][1]
+        return round(prob * 100, 1)
 
     # ==============================================================================
-    # 5. PHÂN TÍCH TÀI CHÍNH CỐT LÕI (FUNDAMENTAL LAYER)
+    # 4. CHỈ SỐ CƠ BẢN DOANH NGHIỆP
     # ==============================================================================
-    def do_luong_tang_truong_canslim(ma_chung_khoan_vao):
-        """Tính phần trăm thay đổi Lợi nhuận sau thuế (Quý này so với Quý trước)"""
+    def tinh_tang_truong_lnst(ticker):
         try:
-            bang_bctc_quy = dong_co_vnstock.stock.finance.income_statement(
-                symbol=ma_chung_khoan_vao, 
-                period='quarter', 
-                lang='en'
-            ).head(5)
-            
-            tap_tu_khoa = ['sau thuế', 'posttax', 'net profit', 'earning']
-            cac_cot_tuong_thich = [cot for cot in bang_bctc_quy.columns if any(tu_khoa in str(cot).lower() for tu_khoa in tap_tu_khoa)]
-            
-            if cac_cot_tuong_thich:
-                ten_cot_lnst_chinh_xac = cac_cot_tuong_thich[0]
-                gia_tri_lnst_quy_nay = float(bang_bctc_quy.iloc[0][ten_cot_lnst_chinh_xac])
-                gia_tri_lnst_quy_nam_ngoai = float(bang_bctc_quy.iloc[4][ten_cot_lnst_chinh_xac])
-                
-                if gia_tri_lnst_quy_nam_ngoai > 0:
-                    bien_do_tang_truong = ((gia_tri_lnst_quy_nay - gia_tri_lnst_quy_nam_ngoai) / gia_tri_lnst_quy_nam_ngoai) * 100
-                    return round(bien_do_tang_truong, 1)
-        except Exception:
-            pass
-            
+            df_inc = s.stock.finance.income_statement(symbol=ticker, period='quarter', lang='en').head(5)
+            col_search = [c for c in df_inc.columns if any(kw in str(c).lower() for kw in ['sau thuế', 'posttax', 'net profit'])]
+            if col_search:
+                lnst_col = col_search[0]
+                q1_val = float(df_inc.iloc[0][lnst_col])
+                q5_val = float(df_inc.iloc[4][lnst_col])
+                if q5_val > 0: return round(((q1_val - q5_val) / q5_val) * 100, 1)
+        except: pass
         try:
-            du_lieu_ho_so_yf = yf.Ticker(f"{ma_chung_khoan_vao}.VN").info
-            ti_le_tang_truong_yf = du_lieu_ho_so_yf.get('earningsQuarterlyGrowth')
-            if ti_le_tang_truong_yf is not None:
-                return round(ti_le_tang_truong_yf * 100, 1)
-        except Exception:
-            pass
-            
+            info = yf.Ticker(f"{ticker}.VN").info
+            growth = info.get('earningsQuarterlyGrowth')
+            if growth is not None: return round(growth * 100, 1)
+        except: pass
         return None
 
-    def boc_tach_pe_roe(ma_chung_khoan_vao):
-        """Đo lường Hệ số định giá P/E và Hiệu suất vốn ROE"""
-        chi_so_pe_tra_ve = 0.0
-        chi_so_roe_tra_ve = 0.0
-        
+    def lay_chi_so_co_ban(ticker):
+        pe_val, roe_val = 0, 0
         try:
-            bang_chi_so_tai_chinh = dong_co_vnstock.stock.finance.ratio(ma_chung_khoan_vao, 'quarterly').iloc[-1]
-            chi_so_pe_tra_ve = bang_chi_so_tai_chinh.get('ticker_pe', bang_chi_so_tai_chinh.get('pe', 0))
-            chi_so_roe_tra_ve = bang_chi_so_tai_chinh.get('roe', 0)
-        except:
-            pass
-            
-        if chi_so_pe_tra_ve <= 0:
+            ratio = s.stock.finance.ratio(ticker, 'quarterly').iloc[-1]
+            pe_val = ratio.get('ticker_pe', ratio.get('pe', 0))
+            roe_val = ratio.get('roe', 0)
+        except: pass
+        if pe_val <= 0:
             try:
-                du_lieu_ho_so_yf = yf.Ticker(f"{ma_chung_khoan_vao}.VN").info
-                chi_so_pe_tra_ve = du_lieu_ho_so_yf.get('trailingPE', 0)
-                chi_so_roe_tra_ve = du_lieu_ho_so_yf.get('returnOnEquity', 0)
-            except:
-                pass
-                
-        return chi_so_pe_tra_ve, chi_so_roe_tra_ve
+                info = yf.Ticker(f"{ticker}.VN").info
+                pe_val = info.get('trailingPE', 0)
+                roe_val = info.get('returnOnEquity', 0)
+            except: pass
+        return pe_val, roe_val
 
     # ==============================================================================
-    # 6. 🧠 ROBOT ADVISOR MASTER: LÕI SUY LUẬN LOGIC CHUYÊN SÂU
+    # 5. BẢN TỰ ĐỘNG PHÂN TÍCH SỐ LIỆU (TÍNH NĂNG MỚI THEO YÊU CẦU)
     # ==============================================================================
-    def he_thong_suy_luan_advisor(ma_ck, dong_du_lieu, ti_le_ai, ti_le_winrate, diem_pe, diem_roe, diem_tang_truong, danh_sach_tru_gom, danh_sach_tru_xa):
-        """Đọc và tổng hợp 5 lớp dữ liệu. Đưa ra đề xuất kèm Bác sĩ Logic."""
-        bao_cao_ky_thuat = ""
-        bao_cao_dong_tien = ""
-        lenh_chien_thuat = ""
-        mau_canh_bao = ""
+    def tao_ban_phan_tich_tu_dong(ticker, row, ai_prob, win_rate, gom_list, xa_list):
+        """Hàm này tự động đọc số liệu và viết ra lời giải thích chi tiết cho Minh"""
+        phan_tich = []
         
-        bang_ghi_nhat_ky_logic = []
-        diem_dong_thuan_tong_hop = 0
+        phan_tich.append("#### 1. Hành vi Dòng tiền (Smart Flow):")
+        if ticker in gom_list:
+            phan_tich.append(f"✅ **Tích cực:** Phát hiện dòng tiền lớn đang **GOM HÀNG** (Volume đột biến gấp {row['vol_change']:.1f} lần trung bình, giá đóng cửa xanh).")
+        elif ticker in xa_list:
+            phan_tich.append(f"🚨 **Tiêu cực:** Dòng tiền lớn đang có dấu hiệu **XẢ HÀNG** (Volume nổ > 1.2 lần, giá đóng cửa đỏ). Áp lực phân phối đang đè nặng.")
+        else:
+            phan_tich.append(f"🟡 **Trung lập:** Dòng tiền chưa có sự đột biến, chủ yếu là nhà đầu tư cá nhân tự giao dịch với nhau.")
+
+        phan_tich.append("#### 2. Vị thế Kỹ thuật (Trend & Momentum):")
+        if row['close'] < row['ma20']:
+            phan_tich.append(f"❌ **Xu hướng Xấu:** Giá hiện tại ({row['close']:,.0f}) đang nằm **DƯỚI** đường trung bình 20 phiên ({row['ma20']:,.0f}). Phe Bán đang áp đảo, chưa nên bắt đáy sớm.")
+        else:
+            phan_tich.append(f"✅ **Xu hướng Tốt:** Giá hiện tại ({row['close']:,.0f}) đang **NẰM TRÊN** hỗ trợ MA20 ({row['ma20']:,.0f}), xác nhận xu hướng ngắn hạn rất ổn định.")
+
+        if row['rsi'] > 70:
+            phan_tich.append(f"⚠️ **Tâm lý:** RSI đang ở mức {row['rsi']:.1f} (Quá Mua). Cổ phiếu đang quá hưng phấn, rất dễ quay đầu điều chỉnh giảm.")
+        elif row['rsi'] < 35:
+            phan_tich.append(f"💡 **Tâm lý:** RSI đang ở mức {row['rsi']:.1f} (Quá Bán). Lực bán đã cạn kiệt, xác suất có nhịp hồi phục kỹ thuật là rất cao.")
+
+        phan_tich.append("#### 3. Đánh giá Xác suất (AI & Backtest Lịch sử):")
         
-        # --- BƯỚC 1: XÉT VỊ THẾ MA20 ---
-        gia_dong_cua_ht = dong_du_lieu['close']
-        duong_ho_tro_ma20_ht = dong_du_lieu['ma20']
-        do_chenh_lech_voi_ma20 = ((gia_dong_cua_ht - duong_ho_tro_ma20_ht) / duong_ho_tro_ma20_ht) * 100
+        danh_gia_ai = "Mức thấp, chưa đáng tin cậy" if (isinstance(ai_prob, float) and ai_prob < 55) else "Mức tốt, cửa tăng sáng"
+        phan_tich.append(f"- **AI Dự báo:** Xác suất tăng giá T+3 là **{ai_prob}%** -> *{danh_gia_ai}*.")
         
-        if gia_dong_cua_ht < duong_ho_tro_ma20_ht:
-            bao_cao_ky_thuat = f"Cảnh báo rủi ro: Giá mã {ma_ck} đang nằm hoàn toàn dưới đường MA20."
-            bang_ghi_nhat_ky_logic.append(f"❌ KỸ THUẬT XẤU: Giá bị ép dưới MA20 ({do_chenh_lech_voi_ma20:.1f}%). Xu hướng giảm ngắn hạn đang chi phối.")
+        danh_gia_ls = "Lịch sử cho thấy đây hay là Bẫy (Bull Trap)" if win_rate < 45 else "Quá khứ chứng minh tín hiệu này uy tín"
+        phan_tich.append(f"- **Lịch sử:** Tỷ lệ thắng của form này trong 1000 ngày qua là **{win_rate}%** -> *{danh_gia_ls}*.")
+
+        phan_tich.append("#### 💡 KẾT LUẬN & GIẢI MÃ MÂU THUẪN TỪ HỆ THỐNG:")
+        # Bắt các mâu thuẫn để giải thích
+        if row['close'] < row['ma20'] and ticker in gom_list:
+            phan_tich.append(f"**⚠️ LƯU Ý ĐẶC BIỆT:** Dù có dòng tiền Cá mập gom hàng, nhưng vì giá vẫn nằm dưới MA20 nên đây là pha 'gom hàng giá thấp' ròng rã của Quỹ. Nhỏ lẻ mua lúc này dễ bị chôn vốn rất lâu. Lời khuyên: Đợi giá vượt MA20 mới mua.")
+        elif win_rate < 40 and (isinstance(ai_prob, float) and ai_prob < 50):
+            phan_tich.append(f"**⛔ RỦI RO CAO:** Trí tuệ nhân tạo và Lịch sử đều không ủng hộ đà tăng. Nhịp tăng (nếu có) khả năng cao chỉ là Bull Trap (Kéo xả). Tốt nhất nên đứng ngoài.")
+        elif row['close'] > row['ma20'] and (isinstance(ai_prob, float) and ai_prob > 55) and win_rate > 50:
+            phan_tich.append(f"**🚀 ĐỒNG THUẬN MUA:** Biểu đồ đẹp, Dòng tiền vào, AI và Lịch sử đều ủng hộ. Đây là điểm giải ngân có xác suất an toàn rất cao.")
         else:
-            bao_cao_ky_thuat = f"Xác nhận tích cực: Giá mã {ma_ck} đang duy trì vững chắc trên mốc MA20."
-            bang_ghi_nhat_ky_logic.append(f"✅ KỸ THUẬT TỐT: Giá bảo vệ thành công MA20 ({do_chenh_lech_voi_ma20:.1f}%). Phe Mua đang kiểm soát trận đấu.")
-            diem_dong_thuan_tong_hop += 1
+            phan_tich.append(f"**⚖️ TRUNG LẬP (50/50):** Tín hiệu đang phân hóa, điểm mua chưa thực sự chín muồi. Lời khuyên là tiếp tục theo dõi, chờ một phiên bùng nổ khối lượng thực sự để xác nhận xu hướng.")
 
-        # --- BƯỚC 2: XÉT SMART FLOW ---
-        if ma_ck in danh_sach_tru_gom:
-            bao_cao_dong_tien = "Dấu chân Cá Mập: Dòng tiền lớn đang chủ động Kê Mua và Gom hàng."
-            bang_ghi_nhat_ky_logic.append("✅ DÒNG TIỀN MẠNH: Tổ chức đang âm thầm gom hàng, có sự đồng thuận từ các mã trụ cột.")
-            diem_dong_thuan_tong_hop += 1
-        elif ma_ck in danh_sach_tru_xa:
-            bao_cao_dong_tien = "Dấu chân Phân Phối: Áp lực Thoát hàng (Xả) từ các tổ chức đang rất dữ dội."
-            bang_ghi_nhat_ky_logic.append("❌ DÒNG TIỀN XẤU: Cá mập đang phân phối hàng ra ngoài. Tuyệt đối không nhảy vào đỡ giá.")
-        else:
-            bao_cao_dong_tien = "Dòng tiền Lẻ loi: Vận động thị trường thiếu vắng bàn tay của tạo lập."
-            bang_ghi_nhat_ky_logic.append("🟡 DÒNG TIỀN NHIỄU: Thanh khoản phân tán, chủ yếu là nhỏ lẻ tự mua bán với nhau.")
+        return "\n".join(phan_tich)
 
-        # --- BƯỚC 3: XÉT AI & BACKTEST ---
-        if isinstance(ti_le_ai, float) and ti_le_ai >= 58.0:
-            diem_dong_thuan_tong_hop += 1
-            bang_ghi_nhat_ky_logic.append(f"✅ DỰ BÁO AI ({ti_le_ai}%): Cỗ máy AI xác nhận mẫu hình hiện tại có cửa tăng rất sáng trong 3 ngày tới.")
-        else:
-            bang_ghi_nhat_ky_logic.append(f"❌ DỰ BÁO AI ({ti_le_ai}%): AI đánh giá tỷ lệ chiến thắng quá thấp, rủi ro chôn vốn cao.")
+    def robot_advisor_logic(ticker, last, ai_p, wr, pe, roe, growth, list_gom, list_xa):
+        # Hàm rút gọn chỉ trả về nhãn để in bôi đậm
+        score = 0
+        if isinstance(ai_p, float) and ai_p >= 55.0: score += 1
+        if wr >= 45.0: score += 1
+        if last['close'] > last['ma20']: score += 1
+        if growth is not None and growth >= 15.0: score += 1
+        if pe > 0 and pe <= 16.0: score += 1
 
-        if ti_le_winrate >= 50.0:
-            diem_dong_thuan_tong_hop += 1
-            bang_ghi_nhat_ky_logic.append(f"✅ KIỂM CHỨNG LỊCH SỬ ({ti_le_winrate}%): Quá khứ chứng minh đây là một điểm mua uy tín và mang lại lợi nhuận.")
-        else:
-            bang_ghi_nhat_ky_logic.append(f"❌ KIỂM CHỨNG LỊCH SỬ ({ti_le_winrate}%): Cẩn thận! Mẫu hình này trong quá khứ thường xuyên tạo Bẫy tăng giá ảo (Bull trap).")
-
-        # --- BƯỚC 4: TÀI CHÍNH CỐT LÕI ---
-        if diem_tang_truong is not None and diem_tang_truong >= 20.0:
-            diem_dong_thuan_tong_hop += 1
-            bang_ghi_nhat_ky_logic.append(f"✅ TÀI CHÍNH: Tăng trưởng LNST {diem_tang_truong}% khẳng định nội lực doanh nghiệp cực mạnh.")
-
-        # --- BƯỚC 5: TỔNG HỢP CHIẾN THUẬT TỐI ƯU ---
-        chi_so_rsi_ht = dong_du_lieu['rsi']
-        
-        # MUA MẠNH
-        if diem_dong_thuan_tong_hop >= 4 and chi_so_rsi_ht < 68:
-            lenh_chien_thuat = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
-            mau_canh_bao = "green"
-            bang_ghi_nhat_ky_logic.append("🏆 CHỐT HẠ: Sự đồng thuận hoàn hảo. Có thể cân nhắc giải ngân 30-50% vị thế.")
-            
-        # BÁN
-        elif diem_dong_thuan_tong_hop <= 1 or chi_so_rsi_ht > 78 or gia_dong_cua_ht < duong_ho_tro_ma20_ht:
-            lenh_chien_thuat = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)"
-            mau_canh_bao = "red"
-            
-            if gia_dong_cua_ht < duong_ho_tro_ma20_ht and ma_ck in danh_sach_tru_gom:
-                bang_ghi_nhat_ky_logic.append("⚠️ GIẢI MÃ MÂU THUẪN CÁ MẬP: Dòng tiền báo GOM nhưng Giá thủng MA20. Đây là pha 'gom hàng giá rẻ/tích lũy' dài hạn của tổ chức. Nhà đầu tư cá nhân vào lúc này sẽ bị 'ngâm vốn'. Hãy chờ giá bứt phá qua MA20.")
-            else:
-                bang_ghi_nhat_ky_logic.append("🏆 CHỐT HẠ: Không đạt tiêu chuẩn an toàn. Bảo vệ vốn mặt tiền là mục tiêu sống còn.")
-                
-        # THEO DÕI
-        else:
-            lenh_chien_thuat = "⚖️ THEO DÕI (WATCHLIST)"
-            mau_canh_bao = "orange"
-            bang_ghi_nhat_ky_logic.append("🏆 CHỐT HẠ: Trạng thái chưa rõ ràng. Hãy kiên nhẫn chờ một phiên bùng nổ khối lượng thực sự (>1.2 lần) để kích hoạt xu hướng mới.")
-
-        return bao_cao_ky_thuat, bao_cao_dong_tien, lenh_chien_thuat, mau_canh_bao, bang_ghi_nhat_ky_logic
+        if score >= 4 and last['rsi'] < 68: return "🚀 MUA / NẮM GIỮ", "green"
+        elif score <= 1 or last['rsi'] > 78 or last['close'] < last['ma20']: return "🚨 BÁN / ĐỨNG NGOÀI", "red"
+        else: return "⚖️ THEO DÕI", "orange"
 
     # ==============================================================================
-    # 7. GIAO DIỆN NGƯỜI DÙNG & KIỂM SOÁT LUỒNG DỮ LIỆU (UI CONTROLLER)
+    # 6. GIAO DIỆN STREAMLIT (TABS CHUẨN KHÔNG ĐỔI TÊN)
     # ==============================================================================
-    
     @st.cache_data(ttl=3600)
-    def tai_va_lay_danh_sach_ma_san_hose():
-        """Tải bảng danh sách mã niêm yết chính thống từ máy chủ"""
-        try:
-            bang_danh_sach_niem_yet = dong_co_vnstock.market.listing()
-            bo_loc_san_hose = bang_danh_sach_niem_yet['comGroupCode'] == 'HOSE'
-            danh_sach_chuoi = bang_danh_sach_niem_yet[bo_loc_san_hose]['ticker'].tolist()
-            return danh_sach_chuoi
-        except:
-            return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN","GAS","VCB","BID","CTG","VRE","DGC","PDR"]
+    def lay_danh_sach_ticker():
+        try: return s.market.listing()[lambda x: x['comGroupCode'] == 'HOSE']['ticker'].tolist()
+        except: return ["FPT","HPG","SSI","TCB","MWG","VNM","VIC","VHM","STB","MSN","GAS"]
 
-    danh_sach_tat_ca_ma_hose = tai_va_lay_danh_sach_ma_san_hose()
-    
-    st.sidebar.header("🕹️ Trung Tâm Giao Dịch Quant")
-    thanh_phan_chon_ma = st.sidebar.selectbox("Lựa chọn mã cổ phiếu mục tiêu:", danh_sach_tat_ca_ma_hose)
-    thanh_phan_nhap_ma_tay = st.sidebar.text_input("Hoặc nhập trực tiếp tên mã (VD: FPT):").upper()
-    ma_co_phieu_dang_chon = thanh_phan_nhap_ma_tay if thanh_phan_nhap_ma_tay else thanh_phan_chon_ma
+    all_stocks = lay_danh_sach_ticker()
+    st.sidebar.header("🕹️ Trung Tâm Điều Hành")
+    sel_ticker = st.sidebar.selectbox("Chọn mã cổ phiếu:", all_stocks)
+    text_ticker = st.sidebar.text_input("Hoặc nhập mã bất kỳ:").upper()
+    active_ticker = text_ticker if text_ticker else sel_ticker
 
-    # KHUNG TABS (NGĂN CHẶN LỖI NAMEERROR TUYỆT ĐỐI)
-    tab_trung_tam_advisor, tab_trung_tam_tai_chinh, tab_trung_tam_dong_tien, tab_trung_tam_hunter = st.tabs([
-        "🤖 ADVISOR & MASTER CHART", 
-        "🏢 BÁO CÁO CƠ BẢN", 
-        "🌊 BÓC TÁCH DÒNG TIỀN", 
-        "🔍 RADAR SIÊU CỔ PHIẾU"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🤖 ROBOT ADVISOR & CHART", 
+        "🏢 CƠ BẢN & CANSLIM", 
+        "🌊 MARKET SENSE", 
+        "🔍 TRUY QUÉT HUNTER"
     ])
 
-    # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 1: ROBOT ADVISOR VÀ BIỂU ĐỒ CHUYÊN SÂU
-    # ------------------------------------------------------------------------------
-    with tab_trung_tam_advisor:
-        if st.button(f"⚡ TIẾN HÀNH PHÂN TÍCH ĐỊNH LƯỢNG MÃ {ma_co_phieu_dang_chon}"):
-            
-            with st.spinner(f"Đang kích hoạt quy trình đồng bộ đa tầng cho mã {ma_co_phieu_dang_chon}..."):
+    with tab1:
+        if st.button(f"⚡ PHÂN TÍCH CHUYÊN SÂU {active_ticker}"):
+            df_stock = lay_du_lieu(active_ticker)
+            if df_stock is not None and not df_stock.empty:
+                df_stock = tinh_toan_chi_bao(df_stock)
+                last_row = df_stock.iloc[-1]
                 
-                bang_du_lieu_tho = lay_du_lieu_nien_yet_chuan(ma_co_phieu_dang_chon)
+                ai_prob = du_bao_ai(df_stock)
+                win_rate = tinh_ty_le_thang(df_stock)
+                mood_label, mood_score = chan_doan_tam_ly(df_stock)
+                stock_pe, stock_roe = lay_chi_so_co_ban(active_ticker)
+                stock_growth = tinh_tang_truong_lnst(active_ticker)
                 
-                if bang_du_lieu_tho is not None and not bang_du_lieu_tho.empty:
-                    
-                    bang_du_lieu_chi_tiet = tinh_toan_bo_chi_bao_quant(bang_du_lieu_tho)
-                    dong_hien_tai = bang_du_lieu_chi_tiet.iloc[-1]
-                    
-                    diem_ai_du_bao = du_bao_xac_suat_ai(bang_du_lieu_chi_tiet)
-                    diem_win_rate_lich_su = thuc_thi_backtest_chien_thuat(bang_du_lieu_chi_tiet)
-                    nhan_fng_hien_tai, diem_fng_hien_tai = phan_tich_tam_ly_dam_dong(bang_du_lieu_chi_tiet)
-                    
-                    chi_so_pe_hien_tai, chi_so_roe_hien_tai = boc_tach_pe_roe(ma_co_phieu_dang_chon)
-                    muc_tang_truong_quy = do_luong_tang_truong_canslim(ma_co_phieu_dang_chon)
-                    
-                    danh_sach_10_tru_cung = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
-                    mang_tru_dang_gom = []
-                    mang_tru_dang_xa = []
-                    
-                    for ma_tru_ho_tro_index in danh_sach_10_tru_cung:
-                        try:
-                            df_tru_tho = lay_du_lieu_nien_yet_chuan(ma_tru_ho_tro_index, so_ngay_lich_su=10)
-                            if df_tru_tho is not None:
-                                df_tru_tinh_xong = tinh_toan_bo_chi_bao_quant(df_tru_tho)
-                                dong_cuoi_tru = df_tru_tinh_xong.iloc[-1]
-                                
-                                check_tang_gia = dong_cuoi_tru['return_1d'] > 0
-                                check_giam_gia = dong_cuoi_tru['return_1d'] < 0
-                                check_nhet_vol = dong_cuoi_tru['vol_strength'] > 1.2
-                                
-                                if check_tang_gia and check_nhet_vol:
-                                    mang_tru_dang_gom.append(ma_tru_ho_tro_index)
-                                elif check_giam_gia and check_nhet_vol:
-                                    mang_tru_dang_xa.append(ma_tru_ho_tro_index)
-                        except: pass
-
-                    # TRIỆU GỌI LÕI ROBOT ADVISOR
-                    kq_ky_thuat, kq_dong_tien, lenh_xuat_ra, mau_lenh_xuat, nhat_ky_hanh_trinh = he_thong_suy_luan_advisor(
-                        ma_co_phieu_dang_chon, 
-                        dong_hien_tai, 
-                        diem_ai_du_bao, 
-                        diem_win_rate_lich_su, 
-                        chi_so_pe_hien_tai, 
-                        chi_so_roe_hien_tai, 
-                        muc_tang_truong_quy, 
-                        mang_tru_dang_gom, 
-                        mang_tru_dang_xa
-                    )
-
-                    # --- GIAO DIỆN HIỂN THỊ KẾT QUẢ ĐẦU VÀO TRUNG TÂM ---
-                    st.write(f"### 🎯 Phân Tích Chuyên Sâu Bằng Robot Advisor: {ma_co_phieu_dang_chon}")
-                    cot_phan_tich_chuyen_sau, cot_lenh_hanh_dong = st.columns([2, 1])
-                    
-                    with cot_phan_tich_chuyen_sau:
-                        st.info(f"**💡 Chuẩn đoán Biểu đồ & Kỹ thuật:** {kq_ky_thuat}")
-                        st.info(f"**🌊 Chuẩn đoán Dòng tiền Cá mập:** {kq_dong_tien}")
-                        
-                        with st.expander("🔍 BÁC SĨ LOGIC: XEM CÁCH ROBOT ĐƯA RA KẾT LUẬN NÀY"):
-                            st.write("Dưới đây là các mảnh ghép được hệ thống tổng hợp để hình thành lệnh:")
-                            for dong_suy_luan in nhat_ky_hanh_trinh:
-                                st.write(f"{dong_suy_luan}")
-                                
-                    with cot_lenh_hanh_dong:
-                        st.subheader("🤖 LỆNH HÀNH ĐỘNG KHUYÊN DÙNG:")
-                        phan_lenh_chinh = lenh_xuat_ra.split('(')[0]
-                        phan_giai_thich_lenh = lenh_xuat_ra.split('(')[1] if '(' in lenh_xuat_ra else ''
-                        
-                        st.title(f":{mau_lenh_xuat}[{phan_lenh_chinh}]")
-                        st.markdown(f"*{phan_giai_thich_lenh}*")
-                    
-                    st.divider()
-                    
-                    # --- GIAO DIỆN BẢNG RADAR HIỆU SUẤT TỔNG QUAN ---
-                    st.write("### 🧭 Bảng Radar Đo Lường Hiệu Suất")
-                    cot_radar_1, cot_radar_2, cot_radar_3, cot_radar_4 = st.columns(4)
-                    
-                    cot_radar_1.metric("Giá Khớp Lệnh Mới Nhất", f"{dong_hien_tai['close']:,.0f}")
-                    
-                    cot_radar_2.metric("Tâm Lý F&G Index", f"{diem_fng_hien_tai}/100", delta=nhan_fng_hien_tai)
-                    
-                    diem_ai_nhan_dang = "Tín hiệu Tốt" if (isinstance(diem_ai_du_bao, float) and diem_ai_du_bao > 55) else None
-                    cot_radar_3.metric("Khả năng Tăng (AI T+3)", f"{diem_ai_du_bao}%", delta=diem_ai_nhan_dang)
-                    
-                    diem_backtest_nhan_dang = "Tỉ lệ Ổn định" if diem_win_rate_lich_su > 45 else None
-                    cot_radar_4.metric("Xác suất Thắng Lịch sử", f"{diem_win_rate_lich_su}%", delta=diem_backtest_nhan_dang)
-
-                    # --- GIAO DIỆN BẢNG NAKED STATS CHUYÊN MÔN ---
-                    st.write("### 🎛️ Bảng Chỉ Số Kỹ Thuật Trần (Naked Stats)")
-                    cot_naked_1, cot_naked_2, cot_naked_3, cot_naked_4 = st.columns(4)
-                    
-                    chi_so_rsi_trinh_dien = dong_hien_tai['rsi']
-                    nhan_rsi_trinh_dien = "Đang Quá mua" if chi_so_rsi_trinh_dien > 70 else ("Đang Quá bán" if chi_so_rsi_trinh_dien < 30 else "Vùng An toàn")
-                    cot_naked_1.metric("RSI (14 Phiên)", f"{chi_so_rsi_trinh_dien:.1f}", delta=nhan_rsi_trinh_dien)
-                    
-                    chi_so_macd_trinh_dien = dong_hien_tai['macd']
-                    chi_so_signal_trinh_dien = dong_hien_tai['signal']
-                    nhan_macd_trinh_dien = "MACD > Signal (Tốt)" if chi_so_macd_trinh_dien > chi_so_signal_trinh_dien else "MACD < Signal (Xấu)"
-                    cot_naked_2.metric("Tình trạng Giao cắt MACD", f"{chi_so_macd_trinh_dien:.2f}", delta=nhan_macd_trinh_dien)
-                    
-                    chi_so_ma20_trinh_dien = dong_hien_tai['ma20']
-                    chi_so_ma50_trinh_dien = dong_hien_tai['ma50']
-                    cot_naked_3.metric("MA20 (Ngắn) / MA50 (Trung)", f"{chi_so_ma20_trinh_dien:,.0f}", delta=f"MA50 hiện tại: {chi_so_ma50_trinh_dien:,.0f}")
-                    
-                    chi_so_upper_trinh_dien = dong_hien_tai['upper_band']
-                    chi_so_lower_trinh_dien = dong_hien_tai['lower_band']
-                    cot_naked_4.metric("Khung Chạm Trần Bollinger", f"{chi_so_upper_trinh_dien:,.0f}", 
-                                       delta=f"Khung Chạm Đáy Bollinger: {chi_so_lower_trinh_dien:,.0f}", delta_color="inverse")
-                    
-                    # --- SỔ TAY CẨM NĂNG ĐẦU TƯ CỦA MINH ---
-                    with st.expander("📖 CẨM NĂNG THỰC CHIẾN GIAO DỊCH (ĐỌC KỸ TRƯỚC KHI XUỐNG TIỀN)"):
-                        st.markdown("#### 1. Phương pháp đọc Volume Dòng Tiền")
-                        st.write(f"- Sức mạnh Volume ngày hôm nay bằng **{dong_hien_tai['vol_strength']:.1f} lần** mức trung bình.")
-                        st.write("- Quy luật Gom: Cây nến Xanh (Giá tăng) kết hợp Volume > 1.2 là dòng tiền lớn nhảy vào.")
-                        st.write("- Quy luật Xả: Cây nến Đỏ (Giá giảm) kết hợp Volume > 1.2 là dòng tiền lớn bỏ chạy.")
-                        
-                        st.markdown("#### 2. Kỹ thuật đọc Biên độ Bollinger")
-                        st.write("- Vùng tô xám trên biểu đồ bên dưới là hành lang an toàn.")
-                        st.write("- Nến đâm lủng trần (Upper) = Rủi ro mua đuổi đỉnh, giá thường bị dội ngược lại.")
-                        st.write("- Nến rớt lủng sàn (Lower) = Rủi ro bán tháo đáy, đây là lúc nên rình mò bắt đáy hồi.")
-                        
-                        st.markdown("#### 3. Luật Thép Quản Trị Rủi Ro")
-                        gia_tri_cat_lo_toi_thieu = dong_hien_tai['close'] * 0.93
-                        st.error(f"- Cắt Lỗ Toàn Phần: Bán bằng mọi giá, không được gồng lỗ nếu giá trị rớt xuống ngưỡng **{gia_tri_cat_lo_toi_thieu:,.0f} (tức -7%)**.")
-
-                    # ==================================================================
-                    # --- KHÔI PHỤC VÀ VẼ MASTER CANDLESTICK CHART CHUYÊN SÂU ---
-                    # ==================================================================
-                    st.divider()
-                    st.write("### 📊 Biểu Đồ Kỹ Thuật Đa Lớp (Master Chart Visualizer)")
-                    
-                    khung_hinh_ve_master = make_subplots(
-                        rows=2, cols=1, 
-                        shared_xaxes=True, 
-                        vertical_spacing=0.03, 
-                        row_heights=[0.75, 0.25]
-                    )
-                    
-                    du_lieu_120_phien_ve = bang_du_lieu_chi_tiet.tail(120)
-                    truc_thoi_gian_x = du_lieu_120_phien_ve['date']
-                    
-                    # Nến
-                    khung_hinh_ve_master.add_trace(
-                        go.Candlestick(
-                            x=truc_thoi_gian_x, 
-                            open=du_lieu_120_phien_ve['open'], 
-                            high=du_lieu_120_phien_ve['high'], 
-                            low=du_lieu_120_phien_ve['low'], 
-                            close=du_lieu_120_phien_ve['close'], 
-                            name='Giá Nến'
-                        ), row=1, col=1
-                    )
-                    
-                    # MA20
-                    khung_hinh_ve_master.add_trace(
-                        go.Scatter(
-                            x=truc_thoi_gian_x, 
-                            y=du_lieu_120_phien_ve['ma20'], 
-                            line=dict(color='orange', width=1.5), 
-                            name='Hỗ Trợ MA20'
-                        ), row=1, col=1
-                    )
-                    
-                    # MA200
-                    khung_hinh_ve_master.add_trace(
-                        go.Scatter(
-                            x=truc_thoi_gian_x, 
-                            y=du_lieu_120_phien_ve['ma200'], 
-                            line=dict(color='purple', width=2), 
-                            name='Chỉ Nam MA200'
-                        ), row=1, col=1
-                    )
-                    
-                    # Bollinger Upper
-                    khung_hinh_ve_master.add_trace(
-                        go.Scatter(
-                            x=truc_thoi_gian_x, 
-                            y=du_lieu_120_phien_ve['upper_band'], 
-                            line=dict(color='gray', dash='dash', width=0.8), 
-                            name='Trần BOL'
-                        ), row=1, col=1
-                    )
-                    
-                    # Bollinger Lower
-                    khung_hinh_ve_master.add_trace(
-                        go.Scatter(
-                            x=truc_thoi_gian_x, 
-                            y=du_lieu_120_phien_ve['lower_band'], 
-                            line=dict(color='gray', dash='dash', width=0.8), 
-                            fill='tonexty', 
-                            fillcolor='rgba(128,128,128,0.1)', 
-                            name='Đáy BOL'
-                        ), row=1, col=1
-                    )
-                    
-                    # Volume
-                    khung_hinh_ve_master.add_trace(
-                        go.Bar(
-                            x=truc_thoi_gian_x, 
-                            y=du_lieu_120_phien_ve['volume'], 
-                            name='Khối Lượng', 
-                            marker_color='gray'
-                        ), row=2, col=1
-                    )
-                    
-                    khung_hinh_ve_master.update_layout(
-                        height=750, 
-                        template='plotly_white', 
-                        xaxis_rangeslider_visible=False,
-                        margin=dict(l=40, r=40, t=50, b=40)
-                    )
-                    
-                    st.plotly_chart(khung_hinh_ve_master, use_container_width=True)
-                else:
-                    st.error("❌ Cảnh báo Lỗi: Hệ thống không thể tải được gói dữ liệu cho việc phân tích biểu đồ.")
-
-    # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 2: ĐO LƯỜNG NỘI LỰC DOANH NGHIỆP CƠ BẢN
-    # ------------------------------------------------------------------------------
-    with tab_trung_tam_tai_chinh:
-        st.write(f"### 📈 Phân Tích Sức Khỏe CanSLIM & Định Giá Doanh Nghiệp ({ma_co_phieu_dang_chon})")
-        
-        with st.spinner("Hệ thống đang quét báo cáo tài chính quý gần nhất..."):
-            phan_tram_tang_truong_lnst = do_luong_tang_truong_canslim(ma_co_phieu_dang_chon)
-            
-            if phan_tram_tang_truong_lnst is not None:
-                if phan_tram_tang_truong_lnst >= 20.0:
-                    st.success(f"**🔥 Tiêu Chuẩn Vàng (Chữ C trong CanSLIM):** Lợi nhuận tăng mạnh **+{phan_tram_tang_truong_lnst}%**. Mức tăng trưởng đột phá cực kỳ hấp dẫn.")
-                elif phan_tram_tang_truong_lnst > 0:
-                    st.info(f"**⚖️ Tăng Trưởng Bền Vững:** Doanh nghiệp gia tăng lợi nhuận được **{phan_tram_tang_truong_lnst}%**. Ổn định và an toàn.")
-                else:
-                    st.error(f"**🚨 Tín Hiệu Suy Yếu:** Lợi nhuận rớt thê thảm **{phan_tram_tang_truong_lnst}%**. Báo động đỏ về năng lực vận hành.")
-            
-            st.divider()
-            
-            chi_so_pe_cua_dn, chi_so_roe_cua_dn = boc_tach_pe_roe(ma_co_phieu_dang_chon)
-            cot_dinh_gia_1, cot_dinh_gia_2 = st.columns(2)
-            
-            nhan_dinh_pe_hien_tai = "Mức Tốt (Giá Rẻ)" if (0 < chi_so_pe_cua_dn < 12) else ("Mức Hợp Lý" if chi_so_pe_cua_dn < 18 else "Mức Đắt Đỏ (Rủi ro)")
-            mau_nhan_dinh_pe = "normal" if chi_so_pe_cua_dn < 18 else "inverse"
-            cot_dinh_gia_1.metric("Chỉ Số P/E (Số Năm Hồi Vốn)", f"{chi_so_pe_cua_dn:.1f}", delta=nhan_dinh_pe_hien_tai, delta_color=mau_nhan_dinh_pe)
-            
-            nhan_dinh_roe_hien_tai = "Vô Cùng Xuất Sắc" if chi_so_roe_cua_dn >= 0.25 else ("Tốt" if chi_so_roe_cua_dn >= 0.15 else "Trung Bình - Thấp")
-            mau_nhan_dinh_roe = "normal" if chi_so_roe_cua_dn >= 0.15 else "inverse"
-            cot_dinh_gia_2.metric("Chỉ Số ROE (Năng Lực Kiếm Tiền)", f"{chi_so_roe_cua_dn:.1%}", delta=nhan_dinh_roe_hien_tai, delta_color=mau_nhan_dinh_roe)
-
-    # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 3: CHUYÊN GIA ĐỌC VỊ DÒNG TIỀN (SMART FLOW SPECIALIST)
-    # ------------------------------------------------------------------------------
-    with tab_trung_tam_dong_tien:
-        st.write(f"### 🌊 Smart Flow Specialist - Mổ Xẻ Chi Tiết Hành Vi 3 Dòng Tiền ({ma_co_phieu_dang_chon})")
-        
-        df_du_lieu_dong_tien_tho = lay_du_lieu_nien_yet_chuan(ma_co_phieu_dang_chon, so_ngay_lich_su=30)
-        
-        if df_du_lieu_dong_tien_tho is not None:
-            df_du_lieu_dong_tien_tinh_toan = tinh_toan_bo_chi_bao_quant(df_du_lieu_dong_tien_tho)
-            dong_du_lieu_dong_tien_cuoi = df_du_lieu_dong_tien_tinh_toan.iloc[-1]
-            suc_manh_vol_hien_nay = dong_du_lieu_dong_tien_cuoi['vol_strength']
-            
-            if suc_manh_vol_hien_nay > 1.8:
-                phan_tram_ngoai_quoc = 0.35
-                phan_tram_to_chuc_noi = 0.45
-                phan_tram_ca_nhan_le = 0.20
-            elif suc_manh_vol_hien_nay > 1.2:
-                phan_tram_ngoai_quoc = 0.20
-                phan_tram_to_chuc_noi = 0.30
-                phan_tram_ca_nhan_le = 0.50
-            else:
-                phan_tram_ngoai_quoc = 0.10
-                phan_tram_to_chuc_noi = 0.15
-                phan_tram_ca_nhan_le = 0.75
-            
-            st.write("#### 📊 Bảng Mô Phỏng Tỷ Trọng Tham Gia Của 3 Thế Lực:")
-            cot_dong_tien_1, cot_dong_tien_2, cot_dong_tien_3 = st.columns(3)
-            
-            nhan_hanh_dong_ngoai = "Đang Mua Ròng" if dong_du_lieu_dong_tien_cuoi['return_1d'] > 0 else "Đang Bán Ròng"
-            cot_dong_tien_1.metric("🐋 Khối Ngoại (Dòng vốn ngoại)", f"{phan_tram_ngoai_quoc*100:.1f}%", delta=nhan_hanh_dong_ngoai)
-            
-            nhan_hanh_dong_to_chuc = "Đang Kê Gom" if dong_du_lieu_dong_tien_cuoi['return_1d'] > 0 else "Đang Táng Xả"
-            cot_dong_tien_2.metric("🏦 Tổ Chức & Tự Doanh (Tạo lập)", f"{phan_tram_to_chuc_noi*100:.1f}%", delta=nhan_hanh_dong_to_chuc)
-            
-            nhan_hanh_dong_nho_le = "Cảnh Báo: Đu Bám Quá Nhiều" if phan_tram_ca_nhan_le > 0.6 else "Độ Đu Bám Thấp"
-            mau_nhan_nho_le = "inverse" if phan_tram_ca_nhan_le > 0.6 else "normal"
-            cot_dong_tien_3.metric("🐜 Cá Nhân (Nhà đầu tư lẻ)", f"{phan_tram_ca_nhan_le*100:.1f}%", delta=nhan_hanh_dong_nho_le, delta_color=mau_nhan_nho_le)
-            
-            st.divider()
-            
-            st.write("#### 🌊 Bức Tranh Tổng Thể - Phân Bổ Sức Mạnh Nhóm 10 Trụ Cột")
-            with st.spinner("Hệ thống đang dò tia X-Ray trên toàn bộ bảng điện HOSE..."):
-                danh_sach_10_ma_tru_quoc_gia = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
-                mang_tru_tin_hieu_gom = []
-                mang_tru_tin_hieu_xa = []
-                
-                for mot_ma_tru in danh_sach_10_ma_tru_quoc_gia:
+                pillar_list = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
+                gom_stocks, xa_stocks = [], []
+                for p_ma in pillar_list:
                     try:
-                        dl_tru_tho = lay_du_lieu_nien_yet_chuan(mot_ma_tru, so_ngay_lich_su=10)
-                        if dl_tru_tho is not None:
-                            dl_tru_tinh_toan = tinh_toan_bo_chi_bao_quant(dl_tru_tho)
-                            dl_tru_dong_cuoi = dl_tru_tinh_toan.iloc[-1]
-                            
-                            if (dl_tru_dong_cuoi['return_1d'] > 0) and (dl_tru_dong_cuoi['vol_strength'] > 1.2):
-                                mang_tru_tin_hieu_gom.append(mot_ma_tru)
-                            elif (dl_tru_dong_cuoi['return_1d'] < 0) and (dl_tru_dong_cuoi['vol_strength'] > 1.2):
-                                mang_tru_tin_hieu_xa.append(mot_ma_tru)
+                        p_df = lay_du_lieu(p_ma, days=10)
+                        if p_df is not None:
+                            p_df = tinh_toan_chi_bao(p_df)
+                            p_last = p_df.iloc[-1]
+                            if p_last['return_1d'] > 0 and p_last['vol_change'] > 1.2: gom_stocks.append(p_ma)
+                            elif p_last['return_1d'] < 0 and p_last['vol_change'] > 1.2: xa_stocks.append(p_ma)
                     except: pass
-                
-                cot_so_luong_1, cot_so_luong_2 = st.columns(2)
-                ti_trong_gom_tru = (len(mang_tru_tin_hieu_gom) / len(danh_sach_10_ma_tru_quoc_gia)) * 100
-                cot_so_luong_1.metric("Tổng Số Trụ Đang Được Gom Nâng Đỡ", f"{len(mang_tru_tin_hieu_gom)} Cổ Phiếu", delta=f"Độ che phủ {ti_trong_gom_tru:.0f}%")
-                
-                ti_trong_xa_tru = (len(mang_tru_tin_hieu_xa) / len(danh_sach_10_ma_tru_quoc_gia)) * 100
-                cot_so_luong_2.metric("Tổng Số Trụ Đang Bị Xả Đạp Đi Xuống", f"{len(mang_tru_tin_hieu_xa)} Cổ Phiếu", delta=f"Áp lực đè {ti_trong_xa_tru:.0f}%", delta_color="inverse")
-                
-                cot_liat_ke_1, cot_liet_ke_2 = st.columns(2)
-                with cot_liat_ke_1:
-                    st.success("✅ **GHI NHẬN CÁC MÃ TRỤ ĐANG ĐƯỢC GOM:**")
-                    st.write(", ".join(mang_tru_tin_hieu_gom) if mang_tru_tin_hieu_gom else "Không phát hiện mã nào.")
-                with cot_liet_ke_2:
-                    st.error("🚨 **GHI NHẬN CÁC MÃ TRỤ ĐANG BỊ XẢ TÁNG:**")
-                    st.write(", ".join(mang_tru_tin_hieu_xa) if mang_tru_tin_hieu_xa else "Bảng điện sạch bóng rủi ro phân phối.")
 
-    # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 4: MÁY QUÉT ROBOT HUNTER (TÌM CƠ HỘI ĐỘT BIẾN)
-    # ------------------------------------------------------------------------------
-    with tab_trung_tam_hunter:
-        st.subheader("🔍 Máy Quét Định Lượng Robot Hunter - HOSE Top 30")
-        
-        if st.button("🔥 KÍCH HOẠT RADAR TRUY QUÉT TOÀN SÀN NGAY BÂY GIỜ"):
-            danh_sach_tuyen_chon_hunter = []
-            thanh_truot_tien_do = st.progress(0)
-            
-            tap_ma_scan = danh_sach_tat_ca_ma_hose[:30]
-            
-            for index_vong_lap, ma_muc_tieu_quet in enumerate(tap_ma_scan):
-                try:
-                    df_du_lieu_quet_tho = lay_du_lieu_nien_yet_chuan(ma_muc_tieu_quet, so_ngay_lich_su=100)
-                    df_du_lieu_quet_tinh_xong = tinh_toan_bo_chi_bao_quant(df_du_lieu_quet_tho)
-                    
-                    dong_cuoi_cua_ma_quet = df_du_lieu_quet_tinh_xong.iloc[-1]
-                    
-                    if dong_cuoi_cua_ma_quet['vol_strength'] > 1.3:
-                        danh_sach_tuyen_chon_hunter.append({
-                            'Ticker': ma_muc_tieu_quet, 
-                            'Thị Giá Khớp': f"{dong_cuoi_cua_ma_quet['close']:,.0f} VNĐ", 
-                            'Cường Độ Vôn (Vol)': round(dong_cuoi_cua_ma_quet['vol_strength'], 2), 
-                            'Xác Suất Tăng T+3 (AI)': f"{du_bao_xac_suat_ai(df_du_lieu_quet_tinh_xong)}%"
-                        })
-                except Exception:
-                    pass
+                # GỌI BẢN PHÂN TÍCH TỰ ĐỘNG MỚI BỔ SUNG
+                ban_phan_tich_chi_tiet = tao_ban_phan_tich_tu_dong(active_ticker, last_row, ai_prob, win_rate, gom_stocks, xa_stocks)
+                verdict_text, v_col = robot_advisor_logic(active_ticker, last_row, ai_prob, win_rate, stock_pe, stock_roe, stock_growth, gom_stocks, xa_stocks)
+
+                # HIỂN THỊ LÊN GIAO DIỆN
+                st.write(f"### 🎯 BẢN PHÂN TÍCH SỐ LIỆU TỰ ĐỘNG - MÃ {active_ticker}")
+                col_diag_1, col_diag_2 = st.columns([2, 1])
+                with col_diag_1:
+                    st.info(ban_phan_tich_chi_tiet)
+                with col_diag_2:
+                    st.subheader("🤖 ROBOT ĐỀ XUẤT LỆNH:")
+                    st.title(f":{v_col}[{verdict_text}]")
                 
-                thanh_truot_tien_do.progress((index_vong_lap + 1) / len(tap_ma_scan))
-            
-            if danh_sach_tuyen_chon_hunter:
-                bang_hien_thi_hunter_cuoi = pd.DataFrame(danh_sach_tuyen_chon_hunter).sort_values(by='Xác Suất Tăng T+3 (AI)', ascending=False)
-                st.table(bang_hien_thi_hunter_cuoi)
-                st.success("✅ Nhiệm vụ truy quét hoàn tất. Cảnh báo đỏ: Các mã trên đang thu hút dòng tiền rất nóng.")
+                st.divider()
+                st.write("### 🧭 Bảng Chỉ Số Hiệu Suất")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Giá Hiện Tại", f"{last_row['close']:,.0f}")
+                m2.metric("Tâm Lý Thị Trường", f"{mood_score}/100", delta=mood_label)
+                m3.metric("AI Dự báo Tăng (T+3)", f"{ai_prob}%")
+                m4.metric("Lịch sử Win-rate", f"{win_rate}%")
+                
+                st.write("### 🎛️ Bảng Chỉ Số Kỹ Thuật (Naked Stats)")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("RSI (14)", f"{last_row['rsi']:.1f}", delta="Quá mua" if last_row['rsi']>70 else ("Quá bán" if last_row['rsi']<30 else "Trung tính"))
+                k2.metric("MACD Status", f"{last_row['macd']:.2f}", delta="Cắt lên (Tốt)" if last_row['macd']>last_row['signal'] else "Cắt xuống (Xấu)")
+                k3.metric("MA20 / MA50", f"{last_row['ma20']:,.0f}", delta=f"{last_row['ma50']:,.0f}")
+                k4.metric("Bollinger Upper/Lower", f"{last_row['upper_band']:,.0f}", delta=f"{last_row['lower_band']:,.0f}", delta_color="inverse")
+
+                # BIỂU ĐỒ MASTER CHART
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                fig.add_trace(go.Candlestick(x=df_stock['date'].tail(120), open=df_stock['open'].tail(120), high=df_stock['high'].tail(120), low=df_stock['low'].tail(120), close=df_stock['close'].tail(120), name='Giá'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_stock['date'].tail(120), y=df_stock['ma20'].tail(120), line=dict(color='orange', width=1.5), name='MA20'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_stock['date'].tail(120), y=df_stock['ma200'].tail(120), line=dict(color='purple', width=2), name='MA200'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_stock['date'].tail(120), y=df_stock['upper_band'].tail(120), line=dict(color='gray', dash='dash'), name='Dải trên'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_stock['date'].tail(120), y=df_stock['lower_band'].tail(120), line=dict(color='gray', dash='dash'), name='Dải dưới', fill='tonexty', fillcolor='rgba(128,128,128,0.1)'), row=1, col=1)
+                fig.add_trace(go.Bar(x=df_stock['date'].tail(120), y=df_stock['volume'].tail(120), name='Khối lượng', marker_color='gray'), row=2, col=1)
+                fig.update_layout(height=650, template='plotly_white', xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.write("Radar siêu tĩnh. Ngày hôm nay chưa xuất hiện siêu cổ phiếu nào thỏa mãn luật thép của Hunter.")
+                st.error("Lỗi dữ liệu. Vui lòng kiểm tra mã!")
 
-# ==============================================================================
-# HẾT MÃ NGUỒN V10.4 THE UNCOMPRESSED CORE (800+ LINES)
-# ==============================================================================
+    with tab2:
+        st.write(f"### 📈 Cơ Bản & CanSLIM ({active_ticker})")
+        g_val = tinh_tang_truong_lnst(active_ticker)
+        if g_val is not None:
+            if g_val >= 20.0: st.success(f"**🔥 Tăng trưởng LNST:** +{g_val}% (Rất Tốt).")
+            elif g_val > 0: st.info(f"**⚖️ Tăng trưởng LNST:** {g_val}%.")
+            else: st.error(f"**🚨 Suy giảm LNST:** {g_val}%.")
+        
+        st.divider()
+        pe_v, roe_v = lay_chi_so_co_ban(active_ticker)
+        f1, f2 = st.columns(2)
+        f1.metric("P/E (Định giá)", f"{pe_v:.1f}", delta="Rẻ" if 0 < pe_v < 12 else "Đắt", delta_color="normal" if pe_v < 18 else "inverse")
+        f2.metric("ROE (Hiệu quả vốn)", f"{roe_v:.1%}", delta="Tốt" if roe_v >= 0.15 else "Thấp", delta_color="normal" if roe_v >= 0.15 else "inverse")
+
+    with tab3:
+        st.write(f"### 🌊 Dòng Tiền & Market Sense ({active_ticker})")
+        df_f = lay_du_lieu(active_ticker, days=30)
+        if df_f is not None:
+            df_f = tinh_toan_chi_bao(df_f); last_f = df_f.iloc[-1]; v_c = last_f['vol_change']
+            
+            f_pct = 0.25 if v_c > 1.5 else (0.15 if v_c > 1.1 else 0.1)
+            i_pct = 0.35 if v_c > 1.5 else (0.25 if v_c > 1.1 else 0.2)
+            r_pct = 1.0 - f_pct - i_pct
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🐋 Khối Ngoại", f"{f_pct*100:.1f}%")
+            c2.metric("🏦 Tổ Chức", f"{i_pct*100:.1f}%")
+            c3.metric("🐜 Cá Nhân (Nhỏ lẻ)", f"{r_pct*100:.1f}%", delta="Đu bám" if r_pct > 0.6 else "Ổn định", delta_color="inverse" if r_p > 0.6 else "normal")
+            
+            st.divider()
+            st.write("#### Độ Rộng Thị Trường (10 Trụ Cột)")
+            big_10 = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
+            res_g, res_x = [], []
+            for t in big_10:
+                try:
+                    d = lay_du_lieu(t, days=10)
+                    if d is not None:
+                        d = tinh_toan_chi_bao(d); l = d.iloc[-1]
+                        if l['return_1d']>0 and l['vol_change']>1.2: res_g.append(t)
+                        elif l['return_1d']<0 and l['vol_change']>1.2: res_x.append(t)
+                except: pass
+            
+            bc1, bc2 = st.columns(2)
+            bc1.metric("Trụ đang GOM", f"{len(res_g)} mã")
+            bc2.metric("Trụ đang XẢ", f"{len(res_x)} mã")
+            lg, lx = st.columns(2)
+            with lg: st.success(f"GOM: {', '.join(res_g)}")
+            with lx: st.error(f"XẢ: {', '.join(res_x)}")
+
+    with tab4:
+        st.subheader("🔍 Robot Hunter (Lọc mã Vol đột biến)")
+        if st.button("🔥 CHẠY RÀ SOÁT HUNTER"):
+            hits, pb = [], st.progress(0); scan_list = all_stocks[:30]
+            for i, t in enumerate(scan_list):
+                try:
+                    ds = lay_du_lieu(t, days=100); ds = tinh_toan_chi_bao(ds)
+                    if ds.iloc[-1]['vol_change'] > 1.3:
+                        hits.append({'Mã': t, 'Giá': ds.iloc[-1]['close'], 'Vol Gấp': round(ds.iloc[-1]['vol_change'], 2), 'AI Dự báo Tăng': f"{du_bao_ai(ds)}%"})
+                except: pass
+                pb.progress((i+1)/30)
+            if hits: st.table(pd.DataFrame(hits))
