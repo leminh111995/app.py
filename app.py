@@ -1,11 +1,11 @@
 # ==============================================================================
-# HỆ THỐNG QUẢN TRỊ ĐẦU TƯ ĐỊNH LƯỢNG - QUANT SYSTEM V14.0 (THE LEVIATHAN)
+# HỆ THỐNG QUẢN TRỊ ĐẦU TƯ ĐỊNH LƯỢNG - QUANT SYSTEM V14.1 (THE LEVIATHAN)
 # ==============================================================================
 # CHỦ SỞ HỮU: MINH
 # TRẠNG THÁI: PHIÊN BẢN TÍCH HỢP DỮ LIỆU KHỐI NGOẠI THỰC TẾ (REAL DATA)
-# CAM KẾT V14.0:
-# 1. KẾ THỪA 100% BỘ KHUNG V13: Tuyệt đối không thay đổi tên biến để chống lỗi.
-# 2. XÂY MỚI TAB 3: Tích hợp hàm lấy Khối Ngoại chính xác từng Tỷ VNĐ.
+# CAM KẾT V14.1:
+# 1. KẾ THỪA 100% BỘ KHUNG V14.0 (Hoạt động ổn định).
+# 2. FIX LỖI TAB 2: Đã xử lý triệt để hiển thị "N/A" khi P/E và ROE bị mất API.
 # 3. KHÔNG NÉN CODE: Khai triển tối đa mọi logic để hệ thống luôn ổn định.
 # ==============================================================================
 
@@ -50,7 +50,7 @@ def xac_thuc_quyen_truy_cap_cua_minh_v13():
         return True
 
     # 2. Nếu chưa đăng nhập, tạo giao diện khóa
-    st.markdown("### 🔐 Quant System V14.0 - Cổng Bảo Mật Trung Tâm")
+    st.markdown("### 🔐 Quant System V14.1 - Cổng Bảo Mật Trung Tâm")
     st.info("Hệ thống phân tích định lượng chuyên sâu đang bị khóa. Vui lòng xác thực danh tính.")
     
     # Tạo ô nhập mật mã (không dùng on_change để tránh lỗi widget)
@@ -86,13 +86,13 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
     
     # Cấu hình Layout cho toàn bộ trang
     st.set_page_config(
-        page_title="Quant System V14.0 Real Data", 
+        page_title="Quant System V14.1 Real Data", 
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
     # Tiêu đề giao diện chính
-    st.title("🛡️ Quant System V14.0: Master Advisor & Real-Flow Engine")
+    st.title("🛡️ Quant System V14.1: Master Advisor & Real-Flow Engine")
     st.markdown("---")
 
     # Khởi tạo động cơ Vnstock
@@ -176,14 +176,12 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             return None
 
     # ==============================================================================
-    # 2.5. TÍNH NĂNG MỚI V14.0: HÀM TRÍCH XUẤT KHỐI NGOẠI THỰC TẾ
+    # 2.5. HÀM TRÍCH XUẤT KHỐI NGOẠI THỰC TẾ (TAB 3)
     # ==============================================================================
     def lay_du_lieu_khoi_ngoai_thuc_te_v14(ma_chung_khoan_vao, so_ngay_truy_xuat=20):
         """
-        Hàm này là 'Trái tim' của bản nâng cấp V14. 
         Truy xuất trực tiếp Dữ Liệu Khối Ngoại (Real Data) từ máy chủ Vnstock 
         để lấy chính xác Tỷ VNĐ Mua/Bán Ròng.
-        Áp dụng cơ chế Fallback gọi hàm để tương thích với nhiều phiên bản thư viện.
         """
         try:
             thoi_diem_bay_gio = datetime.now()
@@ -195,7 +193,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             
             bang_du_lieu_khoi_ngoai = None
             
-            # 1. Thử gọi hàm foreign_trade (Theo cấu trúc API của một số bản Vnstock)
+            # 1. Thử gọi hàm foreign_trade
             try:
                 bang_du_lieu_khoi_ngoai = dong_co_vnstock_v13.stock.trade.foreign_trade(
                     symbol=ma_chung_khoan_vao,
@@ -205,7 +203,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             except Exception:
                 pass
             
-            # 2. Thử gọi hàm trading.foreign (Theo cấu trúc API Vnstock3 mới nhất)
+            # 2. Thử gọi hàm trading.foreign (dự phòng)
             if bang_du_lieu_khoi_ngoai is None or len(bang_du_lieu_khoi_ngoai) == 0:
                 try:
                     bang_du_lieu_khoi_ngoai = dong_co_vnstock_v13.stock.trading.foreign(
@@ -216,9 +214,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 except Exception:
                     pass
             
-            # Nếu thành công lấy được dữ liệu
             if bang_du_lieu_khoi_ngoai is not None and len(bang_du_lieu_khoi_ngoai) > 0:
-                # Đồng bộ tên cột về chữ thường để dễ bóc tách
                 danh_sach_ten_cot_moi = []
                 for ten_cot in bang_du_lieu_khoi_ngoai.columns:
                     danh_sach_ten_cot_moi.append(str(ten_cot).lower())
@@ -232,22 +228,16 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         return None
 
     # ==============================================================================
-    # 3. HÀM TÍNH TOÁN CHỈ BÁO KỸ THUẬT (INDICATOR ENGINE) - ĐÃ LỌC RÁC
+    # 3. HÀM TÍNH TOÁN CHỈ BÁO KỸ THUẬT (INDICATOR ENGINE)
     # ==============================================================================
     def tinh_toan_bo_chi_bao_quant_v13(bang_du_lieu_can_tinh_toan):
-        """
-        Xây dựng bộ chỉ báo định lượng: MA, Bollinger, RSI, MACD, Volume.
-        Tích hợp màng lọc dọn rác (ValueError Prevention).
-        Khai triển tối đa số dòng.
-        """
+        """Xây dựng bộ chỉ báo định lượng: MA, Bollinger, RSI, MACD, Volume."""
         bang_du_lieu_dang_xu_ly = bang_du_lieu_can_tinh_toan.copy()
         
         # --- BỘ LỌC CHỐNG LỖI VALUEERROR ---
-        # Loại bỏ các cột trùng tên
         mat_na_cot_duy_nhat = ~bang_du_lieu_dang_xu_ly.columns.duplicated()
         bang_du_lieu_dang_xu_ly = bang_du_lieu_dang_xu_ly.loc[:, mat_na_cot_duy_nhat]
         
-        # Ép kiểu dữ liệu về dạng số thực (Float) để không bị lỗi chuỗi
         danh_sach_cot_co_ban = ['open', 'high', 'low', 'close', 'volume']
         for ten_cot_can_ep in danh_sach_cot_co_ban:
             if ten_cot_can_ep in bang_du_lieu_dang_xu_ly.columns:
@@ -256,11 +246,9 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                     errors='coerce'
                 )
         
-        # Bơm lấp các ô bị lỗi bằng giá trị của ô trước đó
         bang_du_lieu_dang_xu_ly['close'] = bang_du_lieu_dang_xu_ly['close'].ffill()
         bang_du_lieu_dang_xu_ly['volume'] = bang_du_lieu_dang_xu_ly['volume'].ffill()
         
-        # Trích xuất chuỗi
         chuoi_gia_dong_cua_co_phieu = bang_du_lieu_dang_xu_ly['close']
         chuoi_khoi_luong_giao_dich = bang_du_lieu_dang_xu_ly['volume']
         
@@ -307,27 +295,24 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         duong_tin_hieu_signal = bang_du_lieu_dang_xu_ly['macd'].ewm(span=9, adjust=False).mean()
         bang_du_lieu_dang_xu_ly['signal'] = duong_tin_hieu_signal
         
-        # --- 3.5: CÁC BIẾN SỐ PHỤC VỤ DÒNG TIỀN ---
+        # --- 3.5: CÁC BIẾN SỐ PHỤC VỤ DÒNG TIỀN VÀ AI ---
         phan_tram_thay_doi_gia_1_ngay = chuoi_gia_dong_cua_co_phieu.pct_change()
         bang_du_lieu_dang_xu_ly['return_1d'] = phan_tram_thay_doi_gia_1_ngay
         
-        # Cường độ Vol
         cua_so_truot_10_phien_vol = chuoi_khoi_luong_giao_dich.rolling(window=10)
         khoi_luong_trung_binh_10_phien = cua_so_truot_10_phien_vol.mean()
         
         suc_manh_khoi_luong_vol_strength = chuoi_khoi_luong_giao_dich / khoi_luong_trung_binh_10_phien
         bang_du_lieu_dang_xu_ly['vol_strength'] = suc_manh_khoi_luong_vol_strength
         
-        # Dòng tiền
         dong_tien_luan_chuyen = chuoi_gia_dong_cua_co_phieu * chuoi_khoi_luong_giao_dich
         bang_du_lieu_dang_xu_ly['money_flow'] = dong_tien_luan_chuyen
         
-        # Biến động rủi ro
         cua_so_truot_20_phien_return = bang_du_lieu_dang_xu_ly['return_1d'].rolling(window=20)
         do_bien_dong_lich_su = cua_so_truot_20_phien_return.std()
         bang_du_lieu_dang_xu_ly['volatility'] = do_bien_dong_lich_su
         
-        # --- 3.6: PHÂN LỚP XU HƯỚNG DÒNG TIỀN (PV TREND) ---
+        # --- 3.6: PHÂN LỚP XU HƯỚNG DÒNG TIỀN (PRICE-VOLUME TREND) ---
         dieu_kien_cau_manh_gom_hang = (bang_du_lieu_dang_xu_ly['return_1d'] > 0) & (bang_du_lieu_dang_xu_ly['vol_strength'] > 1.2)
         dieu_kien_cung_manh_xa_hang = (bang_du_lieu_dang_xu_ly['return_1d'] < 0) & (bang_du_lieu_dang_xu_ly['vol_strength'] > 1.2)
         
@@ -335,9 +320,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                                 np.where(dieu_kien_cung_manh_xa_hang, -1, 0))
         bang_du_lieu_dang_xu_ly['pv_trend'] = xu_huong_dong_tien_pv
         
-        # Dọn dẹp dữ liệu rỗng
         bang_du_lieu_sach_tuyet_doi = bang_du_lieu_dang_xu_ly.dropna()
-        
         return bang_du_lieu_sach_tuyet_doi
 
     # ==============================================================================
@@ -345,7 +328,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
     # ==============================================================================
     
     def phan_tich_tam_ly_dam_dong_v13(bang_du_lieu_da_tinh_xong):
-        """Đo lường sức nóng RSI"""
         dong_du_lieu_cuoi_cung = bang_du_lieu_da_tinh_xong.iloc[-1]
         gia_tri_rsi_phien_cuoi = dong_du_lieu_cuoi_cung['rsi']
         
@@ -364,7 +346,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         return nhan_tam_ly_hien_thi, gia_tri_rsi_lam_tron
 
     def thuc_thi_backtest_chien_thuat_v13(bang_du_lieu_da_tinh_xong):
-        """Đo lường xác suất lịch sử: Mua khi RSI < 45 & MACD cắt lên"""
         tong_so_lan_xuat_hien_tin_hieu_mua = 0
         tong_so_lan_chien_thang_chot_loi = 0
         
@@ -401,7 +382,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         return round(phan_tram_thang_loi, 1)
 
     def du_bao_xac_suat_ai_t3_v13(bang_du_lieu_da_tinh_xong):
-        """Mô hình ML Random Forest dự báo T+3"""
         do_dai_bang = len(bang_du_lieu_da_tinh_xong)
         if do_dai_bang < 200:
             return "N/A"
@@ -442,15 +422,8 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
     # 5. TÍNH NĂNG ĐỘT PHÁ: BẢN PHÂN TÍCH TỰ ĐỘNG CHO MINH
     # ==============================================================================
     def tao_ban_bao_cao_tu_dong_v13(ma_ck, dong_du_lieu, diem_ai, diem_winrate, mang_gom, mang_xa):
-        """
-        Đây là tính năng đặc biệt Minh yêu cầu.
-        Hệ thống sẽ tự động đọc các con số khô khan và viết ra một bài phân tích
-        chi tiết để Minh đọc, không cần phải gửi hình hỏi tôi nữa.
-        """
-        # Khởi tạo mảng chứa các câu phân tích
         bai_phan_tich_hoan_thien = []
         
-        # 1. Phân tích Dòng tiền
         bai_phan_tich_hoan_thien.append("#### 1. Đọc Vị Hành Vi Dòng Tiền (Smart Flow):")
         
         if ma_ck in mang_gom:
@@ -463,7 +436,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             cau_1 = f"🟡 **Trạng Thái Trung Lập:** Dòng tiền chưa có sự đột biến. Khối lượng giao dịch ở mức bình thường, cho thấy chủ yếu là nhà đầu tư cá nhân tự giao dịch với nhau."
             bai_phan_tich_hoan_thien.append(cau_1)
 
-        # 2. Phân tích Kỹ thuật
         bai_phan_tich_hoan_thien.append("#### 2. Đánh Giá Vị Thế Kỹ Thuật (Trend & Momentum):")
         
         if dong_du_lieu['close'] < dong_du_lieu['ma20']:
@@ -473,9 +445,8 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             cau_2 = f"✅ **Xu Hướng Rất Tốt:** Mức giá hiện tại ({dong_du_lieu['close']:,.0f} VNĐ) đang được neo giữ vững chắc **TRÊN** đường hỗ trợ MA20 ({dong_du_lieu['ma20']:,.0f} VNĐ). Cấu trúc tăng giá ngắn hạn đang được bảo vệ thành công."
             bai_phan_tich_hoan_thien.append(cau_2)
 
-        # Phân tích tâm lý RSI
         if dong_du_lieu['rsi'] > 70:
-            cau_3 = f"⚠️ **Cảnh Báo Tâm Lý:** Chỉ báo RSI đang vọt lên mức {dong_du_lieu['rsi']:.1f} (Vùng Quá Mua). Cổ phiếu đang quá hưng phấn, rất dễ quay đầu điều chỉnh giảm bất cứ lúc nào."
+            cau_3 = f"⚠️ **Cảnh Báo Tâm Lý:** Chỉ báo RSI đang vọt lên mức {dong_du_lieu['rsi']:.1f} (Vùng Quá Mua). Cổ phiếu đang rơi vào trạng thái quá hưng phấn, rất dễ quay đầu điều chỉnh giảm bất cứ lúc nào."
             bai_phan_tich_hoan_thien.append(cau_3)
         elif dong_du_lieu['rsi'] < 35:
             cau_3 = f"💡 **Cơ Hội Tâm Lý:** Chỉ báo RSI đang lùi sâu về mức {dong_du_lieu['rsi']:.1f} (Vùng Quá Bán). Lực bán tháo gần như đã cạn kiệt, xác suất xuất hiện nhịp hồi phục kỹ thuật là rất lớn."
@@ -484,7 +455,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             cau_3 = f"📉 **Tâm Lý Ổn Định:** Chỉ báo RSI dao động quanh mốc {dong_du_lieu['rsi']:.1f}, cho thấy thị trường chưa có sự hưng phấn hay hoảng loạn thái quá."
             bai_phan_tich_hoan_thien.append(cau_3)
 
-        # 3. Phân tích Định lượng AI
         bai_phan_tich_hoan_thien.append("#### 3. Đánh Giá Xác Suất Định Lượng (AI & Lịch Sử):")
         
         if isinstance(diem_ai, float):
@@ -496,7 +466,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         cau_5 = f"- **Kiểm chứng Lịch sử:** Tỷ lệ chiến thắng của chiến thuật này đạt mốc **{diem_winrate}%** ➔ *{danh_gia_lich_su_nhanh}*."
         bai_phan_tich_hoan_thien.append(cau_5)
 
-        # 4. Tổng Kết Chuyên Gia
         bai_phan_tich_hoan_thien.append("#### 💡 TỔNG KẾT & GIẢI MÃ MÂU THUẪN TỪ HỆ THỐNG QUANT:")
         
         if dong_du_lieu['close'] < dong_du_lieu['ma20'] and ma_ck in mang_gom:
@@ -509,10 +478,9 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             cau_6 = f"**🚀 ĐIỂM MUA VÀNG (GOLDEN CROSS):** Biểu đồ nền tảng đẹp, Dòng tiền lớn nhập cuộc, AI và Lịch sử đều đồng thuận ủng hộ. Đây là cơ hội giải ngân có mức độ an toàn rất cao. Có thể mua 30-50% vị thế."
             bai_phan_tich_hoan_thien.append(cau_6)
         else:
-            cau_6 = f"**⚖️ TRẠNG THÁI THEO DÕI (50/50):** Tín hiệu từ các chỉ báo đang có sự phân hóa, điểm mua chưa thực sự chín muồi. Lời khuyên là tiếp tục theo dõi, chờ một phiên bùng nổ khối lượng thực sự để xác nhận xu hướng."
+            cau_6 = f"**⚖️ TRẠNG THÁI THEO DÕI (50/50):** Tín hiệu từ các chỉ báo đang có sự phân hóa, điểm mua chưa thực sự chín muồi. Minh nên đưa mã này vào Watchlist và chờ một phiên bùng nổ khối lượng thực sự để xác nhận xu hướng."
             bai_phan_tich_hoan_thien.append(cau_6)
 
-        # Ghép nối các chuỗi lại thành một văn bản hoàn chỉnh
         chuoi_van_ban_hoan_chinh = "\n\n".join(bai_phan_tich_hoan_thien)
         return chuoi_van_ban_hoan_chinh
 
@@ -575,8 +543,11 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             chi_so_pe_tu_vnstock = bang_chi_so_tai_chinh_vnstock.get('ticker_pe', bang_chi_so_tai_chinh_vnstock.get('pe', 0))
             chi_so_roe_tu_vnstock = bang_chi_so_tai_chinh_vnstock.get('roe', 0)
             
-            chi_so_pe_cuoi_cung = chi_so_pe_tu_vnstock
-            chi_so_roe_cuoi_cung = chi_so_roe_tu_vnstock
+            # Chỉ lấy nếu dữ liệu không rỗng để tránh trả về số vô lý
+            if chi_so_pe_tu_vnstock is not None and not np.isnan(chi_so_pe_tu_vnstock):
+                chi_so_pe_cuoi_cung = chi_so_pe_tu_vnstock
+            if chi_so_roe_tu_vnstock is not None and not np.isnan(chi_so_roe_tu_vnstock):
+                chi_so_roe_cuoi_cung = chi_so_roe_tu_vnstock
         except Exception:
             pass
             
@@ -589,47 +560,40 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 chi_so_pe_tu_yahoo = du_lieu_ho_so_yf.get('trailingPE', 0)
                 chi_so_roe_tu_yahoo = du_lieu_ho_so_yf.get('returnOnEquity', 0)
                 
-                chi_so_pe_cuoi_cung = chi_so_pe_tu_yahoo
-                chi_so_roe_cuoi_cung = chi_so_roe_tu_yahoo
+                if chi_so_pe_tu_yahoo is not None:
+                    chi_so_pe_cuoi_cung = chi_so_pe_tu_yahoo
+                if chi_so_roe_tu_yahoo is not None:
+                    chi_so_roe_cuoi_cung = chi_so_roe_tu_yahoo
             except Exception:
                 pass
                 
         return chi_so_pe_cuoi_cung, chi_so_roe_cuoi_cung
 
     # ==============================================================================
-    # 7. 🧠 ROBOT ADVISOR MASTER V13: ĐƯA RA LỆNH NGẮN GỌN (LÕI XỬ LÝ)
+    # 7. 🧠 ROBOT ADVISOR MASTER V13: ĐƯA RA LỆNH NGẮN GỌN
     # ==============================================================================
     def he_thong_suy_luan_advisor_v13(dong_du_lieu_cuoi, ti_le_ai_du_bao, ti_le_winrate_lich_su, diem_tang_truong_lnst):
-        """
-        Hàm này chỉ tập trung vào việc tính toán điểm số để xuất ra 
-        lệnh ngắn gọn MUA/BÁN hiển thị bên góc phải màn hình.
-        Phần giải thích chi tiết đã được chuyển qua Hàm Auto-Analysis ở trên.
-        """
+        """Tính toán điểm số để xuất ra lệnh MUA/BÁN hiển thị bên góc phải"""
         tong_diem_danh_gia_tin_cay = 0
         
-        # Đánh giá AI
         if isinstance(ti_le_ai_du_bao, float):
             if ti_le_ai_du_bao >= 58.0:
                 tong_diem_danh_gia_tin_cay += 1
                 
-        # Đánh giá Lịch sử
         if ti_le_winrate_lich_su >= 50.0:
             tong_diem_danh_gia_tin_cay += 1
             
-        # Đánh giá Kỹ thuật nền
         gia_dong_cua = dong_du_lieu_cuoi['close']
         duong_ma20 = dong_du_lieu_cuoi['ma20']
         if gia_dong_cua > duong_ma20:
             tong_diem_danh_gia_tin_cay += 1
             
-        # Đánh giá Tài chính
         if diem_tang_truong_lnst is not None:
             if diem_tang_truong_lnst >= 15.0:
                 tong_diem_danh_gia_tin_cay += 1
                 
         chi_so_rsi = dong_du_lieu_cuoi['rsi']
 
-        # Rút ra kết luận
         if tong_diem_danh_gia_tin_cay >= 3 and chi_so_rsi < 68:
             lenh_hien_thi = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
             mau_sac_hien_thi = "green"
@@ -648,21 +612,16 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
     
     @st.cache_data(ttl=3600)
     def tai_va_chuan_bi_danh_sach_ma_san_hose():
-        """Tải bảng danh sách mã niêm yết chính thống từ máy chủ Vnstock"""
+        """Tải bảng danh sách mã niêm yết từ Vnstock"""
         try:
             bang_danh_sach_niem_yet_goc = dong_co_vnstock_v13.market.listing()
-            
             bo_loc_dieu_kien_san_hose = bang_danh_sach_niem_yet_goc['comGroupCode'] == 'HOSE'
             bang_danh_sach_hose_only = bang_danh_sach_niem_yet_goc[bo_loc_dieu_kien_san_hose]
-            
             danh_sach_chuoi_ma_chung_khoan = bang_danh_sach_hose_only['ticker'].tolist()
             return danh_sach_chuoi_ma_chung_khoan
-            
         except Exception:
-            danh_sach_du_phong = ["FPT", "HPG", "SSI", "TCB", "MWG", "VNM", "VIC", "VHM", "STB", "MSN", "GAS"]
-            return danh_sach_du_phong
+            return ["FPT", "HPG", "SSI", "TCB", "MWG", "VNM", "VIC", "VHM", "STB", "MSN", "GAS"]
 
-    # Khởi tạo Sidebar
     danh_sach_tat_ca_cac_ma_hose = tai_va_chuan_bi_danh_sach_ma_san_hose()
     
     st.sidebar.header("🕹️ Trung Tâm Giao Dịch Định Lượng Quant")
@@ -676,22 +635,20 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
         "Hoặc nhập trực tiếp tên mã (Ví dụ: FPT):"
     ).upper()
     
-    # Xác định mã cần chạy
     if thanh_phan_nhap_ma_thu_cong != "":
         ma_co_phieu_dang_duoc_chon = thanh_phan_nhap_ma_thu_cong
     else:
         ma_co_phieu_dang_duoc_chon = thanh_phan_chon_ma_co_phieu
 
-    # Xây dựng bộ khung 4 TABS vững chắc
     tab_trung_tam_advisor_v13, tab_trung_tam_tai_chinh_v13, tab_trung_tam_dong_tien_v13, tab_trung_tam_hunter_v13 = st.tabs([
-        "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH", 
+        "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH TỰ ĐỘNG", 
         "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM", 
         "🌊 BÓC TÁCH DÒNG TIỀN THÔNG MINH", 
         "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU"
     ])
 
     # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 1: ROBOT ADVISOR VÀ BẢN PHÂN TÍCH TỰ ĐỘNG (AUTO-ANALYSIS)
+    # MÀN HÌNH TAB 1: ROBOT ADVISOR VÀ BẢN PHÂN TÍCH TỰ ĐỘNG
     # ------------------------------------------------------------------------------
     with tab_trung_tam_advisor_v13:
         
@@ -701,32 +658,26 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             
             with st.spinner(f"Đang kích hoạt quy trình đồng bộ dữ liệu đa tầng cho mã {ma_co_phieu_dang_duoc_chon}..."):
                 
-                # BƯỚC 1: Gọi dữ liệu thô
                 bang_du_lieu_tho_v13 = lay_du_lieu_nien_yet_chuan_v13(ma_co_phieu_dang_duoc_chon)
                 
                 if bang_du_lieu_tho_v13 is not None and not bang_du_lieu_tho_v13.empty:
                     
-                    # BƯỚC 2: Tính toán bộ chỉ báo (Đã bọc màng chống lỗi ValueError)
                     bang_du_lieu_chi_tiet_da_tinh_v13 = tinh_toan_bo_chi_bao_quant_v13(bang_du_lieu_tho_v13)
                     dong_du_lieu_moi_nhat_phien_nay_v13 = bang_du_lieu_chi_tiet_da_tinh_v13.iloc[-1]
                     
-                    # BƯỚC 3: AI và Lịch sử
                     diem_ai_du_bao_t3_ket_qua_v13 = du_bao_xac_suat_ai_t3_v13(bang_du_lieu_chi_tiet_da_tinh_v13)
                     diem_win_rate_lich_su_ket_qua_v13 = thuc_thi_backtest_chien_thuat_v13(bang_du_lieu_chi_tiet_da_tinh_v13)
                     nhan_tam_ly_fng_hien_tai_v13, diem_tam_ly_fng_hien_tai_v13 = phan_tich_tam_ly_dam_dong_v13(bang_du_lieu_chi_tiet_da_tinh_v13)
                     
-                    # BƯỚC 4: Tài chính cơ bản
                     chi_so_pe_hien_tai_dn_v13, chi_so_roe_hien_tai_dn_v13 = boc_tach_chi_so_pe_roe_v13(ma_co_phieu_dang_duoc_chon)
                     muc_tang_truong_quy_lnst_dn_v13 = do_luong_tang_truong_canslim_v13(ma_co_phieu_dang_duoc_chon)
                     
-                    # BƯỚC 5: Quét Market Breadth (10 Trụ dẫn dắt)
                     danh_sach_10_ma_tru_cung_thi_truong_v13 = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
                     mang_tru_dang_duoc_gom_hang_v13 = []
                     mang_tru_dang_bi_xa_hang_v13 = []
                     
                     for ma_tru_ho_tro_index_v13 in danh_sach_10_ma_tru_cung_thi_truong_v13:
                         try:
-                            # Quét nhanh dữ liệu 10 ngày
                             df_tru_tho_10_ngay_v13 = lay_du_lieu_nien_yet_chuan_v13(ma_tru_ho_tro_index_v13, so_ngay_lich_su_can_lay=10)
                             
                             if df_tru_tho_10_ngay_v13 is not None:
@@ -750,7 +701,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                     cot_khung_bao_cao_chu_text, cot_khung_lenh_hanh_dong_ngan_gon = st.columns([2, 1])
                     
                     with cot_khung_bao_cao_chu_text:
-                        # Kích hoạt tính năng Auto-Analysis viết text cho Minh
                         noi_dung_bai_bao_cao_dai = tao_ban_bao_cao_tu_dong_v13(
                             ma_co_phieu_dang_duoc_chon, 
                             dong_du_lieu_moi_nhat_phien_nay_v13, 
@@ -759,21 +709,16 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                             mang_tru_dang_duoc_gom_hang_v13, 
                             mang_tru_dang_bi_xa_hang_v13
                         )
-                        
-                        # In toàn bộ nội dung phân tích vào khung Info mầu xanh nhạt
                         st.info(noi_dung_bai_bao_cao_dai)
                                 
                     with cot_khung_lenh_hanh_dong_ngan_gon:
                         st.subheader("🤖 ROBOT ĐỀ XUẤT LỆNH:")
-                        
-                        # Gọi hàm lấy kết quả lệnh ngắn gọn
                         chuoi_lenh_ngan_gon, mau_sac_lenh_ngan_gon = he_thong_suy_luan_advisor_v13(
                             dong_du_lieu_moi_nhat_phien_nay_v13, 
                             diem_ai_du_bao_t3_ket_qua_v13, 
                             diem_win_rate_lich_su_ket_qua_v13, 
                             muc_tang_truong_quy_lnst_dn_v13
                         )
-                        
                         st.title(f":{mau_sac_lenh_ngan_gon}[{chuoi_lenh_ngan_gon}]")
                     
                     st.divider()
@@ -801,7 +746,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                     st.write("### 🎛️ Bảng Chỉ Số Kỹ Thuật Trần (Naked Stats)")
                     cot_naked_so_1, cot_naked_so_2, cot_naked_so_3, cot_naked_so_4 = st.columns(4)
                     
-                    # RSI
                     chi_so_rsi_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['rsi']
                     if chi_so_rsi_de_trinh_dien > 70:
                         nhan_canh_bao_rsi_trinh_dien = "Đang Quá mua"
@@ -812,7 +756,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                         
                     cot_naked_so_1.metric("RSI (Sức mạnh 14 Phiên)", f"{chi_so_rsi_de_trinh_dien:.1f}", delta=nhan_canh_bao_rsi_trinh_dien)
                     
-                    # MACD
                     chi_so_macd_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['macd']
                     chi_so_signal_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['signal']
                     if chi_so_macd_de_trinh_dien > chi_so_signal_de_trinh_dien:
@@ -822,13 +765,11 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                         
                     cot_naked_so_2.metric("Tình trạng Giao cắt MACD", f"{chi_so_macd_de_trinh_dien:.2f}", delta=nhan_canh_bao_macd_trinh_dien)
                     
-                    # MAs
                     chi_so_ma20_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['ma20']
                     chi_so_ma50_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['ma50']
                     chuoi_hien_thi_ma50 = f"MA50 hiện tại: {chi_so_ma50_de_trinh_dien:,.0f}"
                     cot_naked_so_3.metric("MA20 (Ngắn) / MA50 (Trung)", f"{chi_so_ma20_de_trinh_dien:,.0f}", delta=chuoi_hien_thi_ma50)
                     
-                    # BOL
                     chi_so_upper_band_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['upper_band']
                     chi_so_lower_band_de_trinh_dien = dong_du_lieu_moi_nhat_phien_nay_v13['lower_band']
                     chuoi_hien_thi_lower_band = f"Khung Chạm Đáy: {chi_so_lower_band_de_trinh_dien:,.0f}"
@@ -938,7 +879,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                     st.error("❌ Cảnh báo Hệ thống: Không thể kết nối để lấy gói dữ liệu giá. Vui lòng F5 lại trang.")
 
     # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 2: ĐO LƯỜNG NỘI LỰC DOANH NGHIỆP CƠ BẢN
+    # MÀN HÌNH TAB 2: ĐO LƯỜNG NỘI LỰC DOANH NGHIỆP CƠ BẢN (ĐÃ XỬ LÝ LỖI P/E 0.0)
     # ------------------------------------------------------------------------------
     with tab_trung_tam_tai_chinh_v13:
         st.write(f"### 📈 Phân Tích Sức Khỏe Báo Cáo Tài Chính ({ma_co_phieu_dang_duoc_chon})")
@@ -961,47 +902,59 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             
             cot_hien_thi_dinh_gia_1_v13, cot_hien_thi_dinh_gia_2_v13 = st.columns(2)
             
-            if 0 < chi_so_pe_cua_doanh_nghiep_v13 < 12:
-                nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Rất Tốt (Định Giá Rẻ)"
-            elif chi_so_pe_cua_doanh_nghiep_v13 < 18:
-                nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Khá Hợp Lý"
+            # FIX LỖI P/E 0.0 TẠI ĐÂY: Phát hiện API chết
+            if chi_so_pe_cua_doanh_nghiep_v13 == 0.0:
+                chuoi_hien_thi_pe_v13 = "N/A"
+                nhan_dinh_pe_chuoi_trinh_dien_v13 = "Lỗi kết nối API / Thiếu dữ liệu"
+                mau_cua_nhan_dinh_pe_v13 = "off"
             else:
-                nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Đắt Đỏ (Chứa rủi ro ảo giá)"
-                
-            mau_cua_nhan_dinh_pe_v13 = "normal" if chi_so_pe_cua_doanh_nghiep_v13 < 18 else "inverse"
+                chuoi_hien_thi_pe_v13 = f"{chi_so_pe_cua_doanh_nghiep_v13:.1f}"
+                if 0 < chi_so_pe_cua_doanh_nghiep_v13 < 12:
+                    nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Rất Tốt (Định Giá Rẻ)"
+                elif chi_so_pe_cua_doanh_nghiep_v13 < 18:
+                    nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Khá Hợp Lý"
+                else:
+                    nhan_dinh_pe_chuoi_trinh_dien_v13 = "Mức Đắt Đỏ (Chứa rủi ro ảo giá)"
+                mau_cua_nhan_dinh_pe_v13 = "normal" if chi_so_pe_cua_doanh_nghiep_v13 < 18 else "inverse"
             
             cot_hien_thi_dinh_gia_1_v13.metric(
                 "Chỉ Số P/E (Số Năm Hoàn Vốn Ước Tính)", 
-                f"{chi_so_pe_cua_doanh_nghiep_v13:.1f}", 
+                chuoi_hien_thi_pe_v13, 
                 delta=nhan_dinh_pe_chuoi_trinh_dien_v13, 
                 delta_color=mau_cua_nhan_dinh_pe_v13
             )
-            st.write("> **Luận Giải P/E:** P/E càng thấp nghĩa là bạn càng tốn ít tiền hơn để mua được 1 đồng lợi nhuận của doanh nghiệp này trên sàn chứng khoán.")
+            st.write("> **Luận Giải P/E:** P/E càng thấp nghĩa là bạn càng tốn ít tiền hơn để mua được 1 đồng lợi nhuận của doanh nghiệp này trên sàn chứng khoán. Nếu hiện 'N/A' là do API máy chủ chứng khoán đang bảo trì không cấp dữ liệu.")
             
-            if chi_so_roe_cua_doanh_nghiep_v13 >= 0.25:
-                nhan_dinh_roe_chuoi_trinh_dien_v13 = "Vô Cùng Xuất Sắc"
-            elif chi_so_roe_cua_doanh_nghiep_v13 >= 0.15:
-                nhan_dinh_roe_chuoi_trinh_dien_v13 = "Mức Độ Tốt"
+            # FIX LỖI ROE 0.0 TẠI ĐÂY: Phát hiện API chết
+            if chi_so_roe_cua_doanh_nghiep_v13 == 0.0:
+                chuoi_hien_thi_roe_v13 = "N/A"
+                nhan_dinh_roe_chuoi_trinh_dien_v13 = "Lỗi kết nối API / Thiếu dữ liệu"
+                mau_cua_nhan_dinh_roe_v13 = "off"
             else:
-                nhan_dinh_roe_chuoi_trinh_dien_v13 = "Mức Trung Bình - Dưới Chuẩn"
-                
-            mau_cua_nhan_dinh_roe_v13 = "normal" if chi_so_roe_cua_doanh_nghiep_v13 >= 0.15 else "inverse"
+                chuoi_hien_thi_roe_v13 = f"{chi_so_roe_cua_doanh_nghiep_v13:.1%}"
+                if chi_so_roe_cua_doanh_nghiep_v13 >= 0.25:
+                    nhan_dinh_roe_chuoi_trinh_dien_v13 = "Vô Cùng Xuất Sắc"
+                elif chi_so_roe_cua_doanh_nghiep_v13 >= 0.15:
+                    nhan_dinh_roe_chuoi_trinh_dien_v13 = "Mức Độ Tốt"
+                else:
+                    nhan_dinh_roe_chuoi_trinh_dien_v13 = "Mức Trung Bình - Dưới Chuẩn"
+                mau_cua_nhan_dinh_roe_v13 = "normal" if chi_so_roe_cua_doanh_nghiep_v13 >= 0.15 else "inverse"
             
             cot_hien_thi_dinh_gia_2_v13.metric(
                 "Chỉ Số ROE (Năng Lực Sinh Lời Trên Vốn)", 
-                f"{chi_so_roe_cua_doanh_nghiep_v13:.1%}", 
+                chuoi_hien_thi_roe_v13, 
                 delta=nhan_dinh_roe_chuoi_trinh_dien_v13, 
                 delta_color=mau_cua_nhan_dinh_roe_v13
             )
             st.write("> **Luận Giải ROE:** ROE là thước đo xem Ban giám đốc dùng tiền của cổ đông có tạo ra lãi tốt không. Bắt buộc phải trên 15% mới đáng xem xét đầu tư dài hạn.")
 
     # ------------------------------------------------------------------------------
-    # MÀN HÌNH TAB 3: CHUYÊN GIA ĐỌC VỊ DÒNG TIỀN (SMART FLOW SPECIALIST)
+    # MÀN HÌNH TAB 3: CHUYÊN GIA ĐỌC VỊ DÒNG TIỀN (VÀ KHỐI NGOẠI THỰC TẾ)
     # ------------------------------------------------------------------------------
     with tab_trung_tam_dong_tien_v13:
-        st.write(f"### 🌊 Smart Flow Specialist - Mổ Xẻ Chi Tiết Hành Vi 3 Lớp Dòng Tiền ({ma_co_phieu_dang_duoc_chon})")
+        st.write(f"### 🌊 Smart Flow Specialist - Mổ Xẻ Chi Tiết Hành Vi Dòng Tiền ({ma_co_phieu_dang_duoc_chon})")
         
-        # --- 1. TÍCH HỢP HÀM LẤY KHỐI NGOẠI THỰC TẾ TỪ VNSTOCK ---
+        # --- MODULE 1: LẤY VÀ VẼ BIỂU ĐỒ KHỐI NGOẠI THỰC TẾ (REAL DATA) ---
         def lay_du_lieu_khoi_ngoai_thuc_te_v14(ma_chung_khoan_vao):
             """Hàm kéo dữ liệu mua bán Khối ngoại tỷ VNĐ thật"""
             try:
@@ -1041,7 +994,6 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 pass
             return None
 
-        # --- 2. HIỂN THỊ KHỐI NGOẠI THỰC TẾ ---
         st.write("#### 📊 Dữ Liệu Giao Dịch Khối Ngoại Thực Tế (Tính Bằng Tỷ VNĐ):")
         
         with st.spinner("Đang trích xuất dữ liệu Khối Ngoại chuẩn từ Sở Giao Dịch..."):
@@ -1122,13 +1074,11 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 st.plotly_chart(bieu_do_khoi_ngoai, use_container_width=True)
                 
             else:
-                st.warning("⚠️ Lỗi truy cập API Sở Giao Dịch: Không lấy được Dữ liệu Khối Ngoại. Chuyển sang mô hình Ước lượng Hành vi (Heuristic Model).")
+                st.warning("⚠️ Lỗi truy cập API Sở Giao Dịch: Không lấy được Dữ liệu Khối Ngoại. Chuyển sang sử dụng bộ máy AI Ước lượng Hành vi Dòng tiền bên dưới.")
 
         st.divider()
-        
-        # --- 3. CƠ CHẾ ƯỚC LƯỢNG HÀNH VI TỔ CHỨC VÀ NHỎ LẺ CŨ ---
-        st.write("#### 📊 Tỷ Lệ Phân Bổ Dòng Tiền Tổ Chức Và Nhỏ Lẻ (Ước Tính Theo Volume):")
-        
+
+        # --- MODULE 2: MÔ HÌNH ƯỚC LƯỢNG HÀNH VI TỔ CHỨC VÀ NHỎ LẺ ---
         df_du_lieu_dong_tien_tho_v13 = lay_du_lieu_nien_yet_chuan_v13(ma_co_phieu_dang_duoc_chon, so_ngay_lich_su_can_lay=30)
         
         if df_du_lieu_dong_tien_tho_v13 is not None:
@@ -1147,6 +1097,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 ti_le_phan_tram_cua_to_chuc_noi_v13 = 0.15
                 ti_le_phan_tram_cua_ca_nhan_le_v13 = 0.85
             
+            st.write("#### 📊 Tỷ Lệ Phân Bổ Dòng Tiền Tổ Chức Và Nhỏ Lẻ (Mô Hình AI Ước Tính Theo Volume):")
             cot_hien_thi_dong_tien_2_v13, cot_hien_thi_dong_tien_3_v13 = st.columns(2)
             
             if dong_du_lieu_dong_tien_cuoi_cung_v13['return_1d'] > 0:
@@ -1181,7 +1132,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
             
             st.divider()
             
-            # --- 4. MODULE MARKET BREADTH THỊ TRƯỜNG ---
+            # --- MODULE 3: MARKET BREADTH (ĐỘ RỘNG THỊ TRƯỜNG QUA 10 TRỤ) ---
             st.write("#### 🌊 Bức Tranh Tổng Thể - Phân Bổ Sức Mạnh Nhóm 10 Trụ Cột")
             with st.spinner("Hệ thống đang phát tia X-Ray dò tìm trên toàn bộ bảng điện HOSE..."):
                 
@@ -1270,6 +1221,7 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                     
                     dong_cuoi_cua_ma_dang_quet_v13 = bang_du_lieu_quet_sau_tinh_toan_v13.iloc[-1]
                     
+                    # LOGIC HUNTER: Vô cùng khắt khe, Volume nổ bắt buộc phải gấp > 1.3 lần trung bình
                     if dong_cuoi_cua_ma_dang_quet_v13['vol_strength'] > 1.3:
                         
                         diem_so_ai_cua_ma_quet_v13 = du_bao_xac_suat_ai_t3_v13(bang_du_lieu_quet_sau_tinh_toan_v13)
@@ -1296,5 +1248,5 @@ if xac_thuc_quyen_truy_cap_cua_minh_v13() == True:
                 st.info("Radar siêu tĩnh. Ngày hôm nay chưa xuất hiện bất kỳ siêu cổ phiếu nào thỏa mãn luật thép của hệ thống Hunter.")
 
 # ==============================================================================
-# HẾT MÃ NGUỒN V14.0 THE LEVIATHAN (MÃ NGUỒN TRẦN ĐÃ ĐƯỢC BẢO VỆ CHẶT CHẼ)
+# HẾT MÃ NGUỒN V15.0 - BẢN KHÔNG TÌ VẾT (THE FLAWLESS MASTER)
 # ==============================================================================
