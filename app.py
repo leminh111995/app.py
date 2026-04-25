@@ -144,7 +144,7 @@ if kiem_tra_quyen_truy_cap == True:
     # ==============================================================================
     # 2. HÀM TRUY XUẤT DỮ LIỆU GIÁ (DATA ACQUISITION) - KẾ THỪA FILE WORD
     # ==============================================================================
-    def lay_du_lieu_nien_yet_chuan_v19(ma_chung_khoan_can_lay, so_ngay_lich_su_can_lay=1000):
+    def lay_du_lieu_nien_yet_chuan_v13(ma_chung_khoan_can_lay, so_ngay_lich_su_can_lay=1000):
         """
         Hàm tải dữ liệu giá cổ phiếu OHLCV.
         Quy trình Fail-over 2 lớp: Vnstock -> Yahoo Finance.
@@ -1107,7 +1107,7 @@ if kiem_tra_quyen_truy_cap == True:
             with st.spinner(f"Hệ thống đang kích hoạt quy trình đồng bộ dữ liệu đa tầng cho mã {ma_chung_khoan_duoc_chon_de_phan_tich}..."):
                 
                 # BƯỚC 1: Gọi dữ liệu
-                bang_du_lieu_tho_lay_duoc = lay_du_lieu_nien_yet_chuan_v19(ma_chung_khoan_duoc_chon_de_phan_tich)
+                bang_du_lieu_tho_lay_duoc = lay_du_lieu_nien_yet_chuan_v13(ma_chung_khoan_duoc_chon_de_phan_tich)
                 
                 kiem_tra_bang_tho_co_ton_tai = bang_du_lieu_tho_lay_duoc is not None
                 if kiem_tra_bang_tho_co_ton_tai:
@@ -1135,7 +1135,7 @@ if kiem_tra_quyen_truy_cap == True:
                         
                         for ma_tru_dang_quet in danh_sach_10_ma_tru_kiem_dinh:
                             try:
-                                bang_tru_tho_10_ngay = lay_du_lieu_nien_yet_chuan_v19(ma_tru_dang_quet, so_ngay_lich_su_can_lay=10)
+                                bang_tru_tho_10_ngay = lay_du_lieu_nien_yet_chuan_v13(ma_tru_dang_quet, so_ngay_lich_su_can_lay=10)
                                 
                                 kiem_tra_bang_tru_co_khong = bang_tru_tho_10_ngay is not None
                                 if kiem_tra_bang_tru_co_khong:
@@ -1597,7 +1597,7 @@ if kiem_tra_quyen_truy_cap == True:
         st.divider()
 
         # --- MODULE 2: MÔ HÌNH ƯỚC LƯỢNG HÀNH VI TỔ CHỨC VÀ NHỎ LẺ (BACKUP) ---
-        bang_du_lieu_dong_tien_tho_truy_xuat = lay_du_lieu_nien_yet_chuan_v19(ma_co_phieu_chinh_thuc, so_ngay_lich_su_can_lay=30)
+        bang_du_lieu_dong_tien_tho_truy_xuat = lay_du_lieu_nien_yet_chuan_v13(ma_co_phieu_chinh_thuc, so_ngay_lich_su_can_lay=30)
         
         kiem_tra_bang_dong_tien_tho_co_ton_tai = bang_du_lieu_dong_tien_tho_truy_xuat is not None
         
@@ -1677,7 +1677,7 @@ if kiem_tra_quyen_truy_cap == True:
             
             for vi_tri_so_thu_tu_quet, ma_chung_khoan_dang_quet in enumerate(danh_sach_30_ma_se_quet):
                 try:
-                    bang_du_lieu_tho_cua_ma_quet = lay_du_lieu_nien_yet_chuan_v19(ma_chung_khoan_dang_quet, 100)
+                    bang_du_lieu_tho_cua_ma_quet = lay_du_lieu_nien_yet_chuan_v13(ma_chung_khoan_dang_quet, 100)
                     
                     bang_du_lieu_quant_cua_ma_quet = tinh_toan_bo_chi_bao_quant_v19(bang_du_lieu_tho_cua_ma_quet)
                     
