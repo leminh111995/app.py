@@ -1012,7 +1012,7 @@ if kiem_tra_quyen_truy_cap == True:
         dieu_kien_khoi_ngoai_dang_gom = False
         
         # Gọi trực tiếp hàm Khối Ngoại để check (Lấy 5 ngày cho nhẹ API)
-        bang_check_ngoai = lay_du_lieu_khoi_ngoai_thuc_te_v14(ma_co_phieu, 5)
+        bang_check_ngoai = lay_du_lieu_khoi_ngoai_thuc_te_v19(ma_co_phieu, 5)
         
         kiem_tra_bang_check_ngoai_co_data = bang_check_ngoai is not None
         if kiem_tra_bang_check_ngoai_co_data:
@@ -1453,7 +1453,7 @@ if kiem_tra_quyen_truy_cap == True:
         
         with st.spinner("Đang trích xuất dữ liệu Khối Ngoại chuẩn từ Sở Giao Dịch..."):
             
-            bang_du_lieu_khoi_ngoai_thuc_te_tra_ve = lay_du_lieu_khoi_ngoai_thuc_te_v14(ma_chung_khoan_duoc_chon_de_phan_tich)
+            bang_du_lieu_khoi_ngoai_thuc_te_tra_ve = lay_du_lieu_khoi_ngoai_thuc_te_v19(ma_chung_khoan_duoc_chon_de_phan_tich)
             
             kiem_tra_co_bang_du_lieu_ngoai_khong = bang_du_lieu_khoi_ngoai_thuc_te_tra_ve is not None
             
