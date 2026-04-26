@@ -581,44 +581,45 @@ if xac_thuc_quyen_truy_cap_cua_minh() == True:
         else:
             return " ⚖️  THEO DÕI (WATCHLIST)", "orange"
 
-    def tao_ban_bao_cao_tu_dong(tui_du_lieu):
-        """
-        CHỐNG LỖI TYPEERROR: Sử dụng 1 tham số Dictionary duy nhất [cite: 1570-1666].
-        Minh đọc báo cáo này để hiểu rõ tại sao Robot ra lệnh như vậy.
-        """
-        ma = tui_du_lieu['ma_ck']
-        last = tui_du_lieu['dong_cuoi']
-        p_ai = tui_du_lieu['diem_ai']
-        
-        bai_van = []
-        bai_van.append(f"#### 🎯 PHÂN TÍCH CHIẾN THUẬT MÃ: {ma}")
-        
-        # 1. Đọc vị dòng tiền tổ chức
-        if tui_du_lieu['to_chuc_gom'] == True:
-            bai_van.append(f"✅ **Dòng tiền lớn:** Phát hiện Cá mập (Tây/Tự doanh) đang âm thầm GOM HÀNG mã {ma} trong các phiên gần đây.")
-        else:
-            bai_van.append(f"🟡 **Dòng tiền lớn:** Chưa thấy dấu hiệu gom hàng rõ nét từ các tổ chức lớn.")
+    def tao_ban_bao_cao_tu_dong(tui_thong_tin):
+    """
+    CHỐNG LỖI TYPEERROR: Sử dụng 1 tham số Dictionary duy nhất.
+    Đã sửa lỗi NameError: Đồng bộ THAM_SO_SQUEEZE.
+    """
+    ma = tui_thong_tin['ma_ck']
+    last = tui_thong_tin['dong_cuoi']
+    p_ai = tui_thong_tin['diem_ai']
+    
+    bai_van = []
+    bai_van.append(f"#### 🎯 PHÂN TÍCH CHIẾN THUẬT MÃ: {ma}")
+    
+    # 1. Đọc vị dòng tiền tổ chức
+    if tui_thong_tin['to_chuc_gom'] == True:
+        bai_van.append(f"✅ **Dòng tiền lớn:** Phát hiện Cá mập (Tây/Tự doanh) đang âm thầm GOM HÀNG mã {ma}.")
+    else:
+        bai_van.append(f"🟡 **Dòng tiền lớn:** Chưa thấy dấu hiệu gom hàng rõ nét.")
 
-        # 2. Đọc vị vị thế kỹ thuật
-        if last['close'] > last['ma20']:
-            bai_van.append(f"✅ **Xu hướng:** Giá ({last['close']:,.0f}) neo vững trên đường sinh tử MA20. Nền tảng tăng giá rất ổn định.")
-        else:
-            bai_van.append(f"❌ **Cảnh báo:** Giá đang nằm dưới đường MA20. Xu hướng ngắn hạn đang bị đe dọa nghiêm trọng.")
+    # 2. Đọc vị vị thế kỹ thuật
+    if last['close'] > last['ma20']:
+        bai_van.append(f"✅ **Xu hướng:** Giá ({last['close']:,.0f}) neo vững trên MA20. Nền tảng tăng giá rất ổn định.")
+    else:
+        bai_van.append(f"❌ **Cảnh báo:** Giá đang nằm dưới đường MA20. Xu hướng ngắn hạn bị đe dọa.")
 
-        # 3. Đọc vị vũ khí Predator
-        if last['bb_width'] <= tui_du_lieu['min_bbw'] * HESO_SQUEEZE_BOLLINGER:
-            bai_van.append(f"🌀 **Tín hiệu đặc biệt:** Lò xo Bollinger đang nén rất chặt ({last['bb_width']:.2f}). Một cú bùng nổ sắp xảy ra.")
-            
-        if last['can_cung'] == True:
-            bai_van.append(f"💧 **Tín hiệu đặc biệt:** Phát hiện trạng thái CẠN CUNG. Lực bán tháo đã kiệt quệ, giá dễ bật tăng.")
-
-        # 4. Quản trị rủi ro (Stop-loss)
-        nguong_thu_quan = last['ma20'] * 0.98 # Cắt lỗ nếu gãy MA20 quá 2%
-        bai_van.append(f"#### 🛡️ QUẢN TRỊ RỦI RO CHO MINH:")
-        bai_van.append(f"- **Vùng giá mua an toàn:** Quanh {last['ma20']:,.0f} VNĐ.")
-        bai_van.append(f"- **Ngưỡng bảo vệ vốn (Stop-loss):** {nguong_thu_quan:,.0f} VNĐ.")
+    # 3. Đọc vị vũ khí Predator (Đã FIX NameError tại đây)
+    # Sử dụng chính xác tên biến THAM_SO_SQUEEZE đã khai báo ở Config
+    if last['bb_width'] <= tui_thong_tin['min_bbw'] * THAM_SO_SQUEEZE:
+        bai_van.append(f"🌀 **Tín hiệu đặc biệt:** Lò xo Bollinger đang nén rất chặt. Một cú bùng nổ sắp xảy ra.")
         
-        return "\n\n".join(bai_van)
+    if last['can_cung'] == True:
+        bai_van.append(f"💧 **Tín hiệu đặc biệt:** Phát hiện trạng thái CẠN CUNG. Lực bán đã kiệt quệ.")
+
+    # 4. Quản trị rủi ro
+    nguong_thu_quan = last['ma20'] * 0.98 
+    bai_van.append(f"#### 🛡️ QUẢN TRỊ RỦI RO CHO MINH:")
+    bai_van.append(f"- **Vùng giá mua an toàn:** Quanh {last['ma20']:,.0f} VNĐ.")
+    bai_van.append(f"- **Ngưỡng bảo vệ vốn (Stop-loss):** {nguong_thu_quan:,.0f} VNĐ.")
+    
+    return "\n\n".join(bai_van)
 
     # ==============================================================================
     # 8. THIẾT LẬP GIAO DIỆN NGƯỜI DÙNG (UI CONTROLLER)
