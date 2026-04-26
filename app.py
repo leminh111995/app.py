@@ -581,7 +581,7 @@ if xac_thuc_quyen_truy_cap_cua_minh() == True:
         else:
             return " ⚖️  THEO DÕI (WATCHLIST)", "orange"
 
-    def tao_ban_bao_cao_tu_dong(tui_thong_tin):
+   def tao_ban_bao_cao_tu_dong(tui_thong_tin):
     """
     CHỐNG LỖI TYPEERROR: Sử dụng 1 tham số Dictionary duy nhất.
     Đã sửa lỗi NameError: Đồng bộ THAM_SO_SQUEEZE.
@@ -605,8 +605,7 @@ if xac_thuc_quyen_truy_cap_cua_minh() == True:
     else:
         bai_van.append(f"❌ **Cảnh báo:** Giá đang nằm dưới đường MA20. Xu hướng ngắn hạn bị đe dọa.")
 
-    # 3. Đọc vị vũ khí Predator (Đã FIX NameError tại đây)
-    # Sử dụng chính xác tên biến THAM_SO_SQUEEZE đã khai báo ở Config
+    # 3. Đọc vị vũ khí Predator (Đã đồng bộ hằng số THAM_SO_SQUEEZE)
     if last['bb_width'] <= tui_thong_tin['min_bbw'] * THAM_SO_SQUEEZE:
         bai_van.append(f"🌀 **Tín hiệu đặc biệt:** Lò xo Bollinger đang nén rất chặt. Một cú bùng nổ sắp xảy ra.")
         
