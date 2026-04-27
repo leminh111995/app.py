@@ -2267,11 +2267,24 @@ if quyen_truy_cap_da_duoc_cap_phep:
                     gia_tri_vol_lam_tron_tab4 = round(gia_tri_vol_strength_hien_tai_ma_tab4, 2)
                     chuoi_hien_thi_ai_du_bao_tab4 = f"{phan_tram_ai_du_bao_cua_ma_quet_tab4}%"
 
+                    # --- BẮT TRẠNG THÁI 3 VŨ KHÍ ĐỂ HIỂN THỊ RA BẢNG ---
+                    try:
+                        chuoi_hien_thi_lo_xo = "🌀 Nén Chặt" if dieu_kien_lo_xo_da_nen_chat_tab4 else "-"
+                        chuoi_hien_thi_can_cung = "💧 Cạn Cung" if dieu_kien_da_xuat_hien_can_cung_tab4 else "-"
+                        chuoi_hien_thi_to_chuc = "🦈 Đang Gom" if dieu_kien_khoi_ngoai_dang_gom_cua_ma else "-"
+                    except NameError:
+                        chuoi_hien_thi_lo_xo = "-"
+                        chuoi_hien_thi_can_cung = "-"
+                        chuoi_hien_thi_to_chuc = "-"
+
                     doi_tuong_dong_du_lieu_hien_thi_tab4 = {
                         'Ticker Mã CP': ma_chung_khoan_dang_quet_tab4,
                         'Thị Giá Hiện Tại': chuoi_hien_thi_gia_khop_lenh_tab4,
                         'Hệ Số Nổ Volume': gia_tri_vol_lam_tron_tab4,
-                        'AI T+3 Dự Báo': chuoi_hien_thi_ai_du_bao_tab4
+                        'AI T+3 Dự Báo': chuoi_hien_thi_ai_du_bao_tab4,
+                        'Lò Xo Bollinger': chuoi_hien_thi_lo_xo,
+                        'Lực Bán': chuoi_hien_thi_can_cung,
+                        'Tổ Chức (Tây/Tự Doanh)': chuoi_hien_thi_to_chuc
                     }
 
                     kiem_tra_thuoc_nhom_bung_no_tab4 = chuoi_ket_qua_phan_loai_ma_nay_tab4 == " 🚀  Bùng Nổ (Dòng tiền nóng)"
