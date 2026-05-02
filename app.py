@@ -78,7 +78,7 @@ ADV_WINRATE_GOOD  = 50.0
 # Tài chính
 CANSLIM_GREAT     = 20.0
 PE_CHEAP          = 12
-PE_OK             = 18
+PE_OK             = 20
 ROE_EXCELLENT     = 0.25
 ROE_GOOD          = 0.15
 
@@ -881,7 +881,7 @@ with tab3:
         inst_act = "Đang Tích Cực Kê Gom" if last_fl['return_1d'] > 0 else "Đang Nhồi Lệnh Xả"
         c1.metric("🏦 Tổ Chức & Tự Doanh", f"{inst_pct*100:.1f}%", delta=inst_act)
 
-        retail_label = "Cảnh Báo: Nhỏ Lẻ Đu Bám Nhiều" if retail_pct > 0.6 else "Ổn Định"
+        retail_label = "Cảnh Báo: Nhỏ Lẻ Đu Bám Nhiều" if retail_pct > 0.5 else "Ổn Định"
         retail_color = "inverse" if retail_pct > 0.6 else "normal"
         c2.metric("🐜 Cá Nhân (Nhỏ Lẻ)", f"{retail_pct*100:.1f}%",
                   delta=retail_label, delta_color=retail_color)
