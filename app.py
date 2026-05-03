@@ -17,7 +17,14 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from xgboost import XGBClassifier          # Tab 1: chính xác tối đa (1 mã)
-from lightgbm import LGBMClassifier         # Radar: nhanh + chính xác (150 mã)
+
+# Radar: dùng LightGBM nếu có, fallback về XGBoost nếu chưa cài
+try:
+    from lightgbm import LGBMClassifier
+    LGBM_AVAILABLE = True
+except ImportError:
+    LGBM_AVAILABLE = False
+    print("[INFO] LightGBM chưa cài — Radar sẽ dùng XGBoost thay thế")
 from sklearn.model_selection import TimeSeriesSplit
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -535,14 +542,27 @@ def predict_ai_t3_fast(df: pd.DataFrame) -> float | str:
     X = df2[features].values
     y = df2['target'].values
 
-    model = LGBMClassifier(
-        n_estimators  = 100,        # ít hơn XGBoost (200) → nhanh hơn 2x
-        max_depth     = 4,
-        learning_rate = 0.1,        # cao hơn → hội tụ nhanh hơn
-        subsample     = 0.8,
-        random_state  = 42,
-        verbose       = -1,         # tắt log
-    )
+    # Dùng LightGBM nếu đã cài, fallback XGBoost nếu chưa
+    if LGBM_AVAILABLE:
+        model = LGBMClassifier(
+            n_estimators  = 100,
+            max_depth     = 4,
+            learning_rate = 0.1,
+            subsample     = 0.8,
+            random_state  = 42,
+            verbose       = -1,
+        )
+    else:
+        model = XGBClassifier(
+            n_estimators     = 100,
+            max_depth        = 4,
+            learning_rate    = 0.1,
+            subsample        = 0.8,
+            use_label_encoder= False,
+            eval_metric      = 'logloss',
+            random_state     = 42,
+            verbosity        = 0,
+        )
 
     # Train trên toàn bộ trừ 3 ngày cuối (tránh look-ahead bias)
     model.fit(X[:-3], y[:-3])
@@ -1539,9 +1559,9 @@ with tab4:
                     'RSI':             f"{last_s['rsi']:.1f}",
                     'AI T+3':          ai_display,
                     'Weekly Trend':    {"UP":"📈 Tăng","DOWN":"📉 Giảm","NEUTRAL":"➡️ Ngang"}.get(weekly_s, "-"),
-                    'Lò Xo BB':        "✅ Đang Nén" if squeezed else "—",
-                    'Cạn Cung':        "✅ Cạn Cung" if supply   else "—",
-                    'Tổ Chức Gom':     "✅ Đang Gom" if smart    else "—",
+                    'Lò Xo BB':        "✅ Đang Nén" if squeezed else "❌ Chưa Nén",
+                    'Cạn Cung':        "✅ Cạn Cung" if supply   else "❌ Chưa Cạn",
+                    'Tổ Chức Gom':     "✅ Đang Gom" if smart    else "❌ Chưa Gom",
                 }
 
                 if "Bùng Nổ"     in label: breakouts.append(row)
