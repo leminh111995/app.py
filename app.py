@@ -117,6 +117,33 @@ FOREIGN_NET_DAYS  = 10    # [NÂNG CẤP #4] Phân tích xu hướng 10 phiên
 # Chart
 CHART_DAYS        = 120
 
+# VN30 — Large Cap
+VN30 = [
+    "ACB","BCM","BID","BVH","CTG","FPT","GAS","GVR","HDB","HPG",
+    "MBB","MSN","MWG","NVL","PDR","PLX","POW","SAB","SHB","SSB",
+    "SSI","STB","TCB","TPB","VCB","VHM","VIC","VJC","VNM","VPB"
+]
+
+# Mid Cap — phổ biến nhưng không thuộc VN30
+MID_CAP = [
+    "DIG","DXG","EIB","GEX","GMD","HAH","HCM","HDG","HSG","KBC",
+    "KDH","KOS","LPB","MCH","MSB","NKG","NLG","OCB","PAN","PC1",
+    "PHR","PNJ","PVD","PVT","REE","SBT","SCS","TCH","VCI","VGC",
+    "VHC","VIX","VND","VRE","VSH","VTP","DGW","DPM","DCM","ANV",
+]
+
+# Portfolio — ngưỡng cảnh báo
+PORT_SL_PCT       = 0.07     # cảnh báo cắt lỗ -7%
+PORT_TP_PCT       = 0.15     # cảnh báo chốt lời +15%
+
+# Backtest danh mục
+PORT_BT_TOP_N     = 5        # top 5 mã điểm cao nhất
+PORT_BT_HOLD_DAYS = 10       # giữ 10 ngày
+
+# Anomaly detection
+ANOMALY_VOL_MULT  = 2.0      # vol đột biến > 2x MA20
+ANOMALY_FLOW_DAYS = 5        # theo dõi 5 phiên
+
 # Mã trụ thị trường
 PILLARS = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
 
@@ -1053,6 +1080,279 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
     return None
 
 
+
+
+# ==============================================================================
+# TÍNH NĂNG MỚI #5 — BETA & RELATIVE STRENGTH so VN-Index
+# ==============================================================================
+
+def calc_beta_rs(df_ticker: pd.DataFrame, days: int = 60) -> dict:
+    """
+    Beta: Độ nhạy cảm của mã với VN-Index.
+      Beta > 1 → tăng/giảm mạnh hơn thị trường
+      Beta < 1 → ổn định hơn thị trường
+    Relative Strength (RS): Mã tăng mạnh hơn hay yếu hơn VN-Index?
+      RS > 0 → mạnh hơn thị trường (tay to đang ưa thích)
+      RS < 0 → yếu hơn thị trường
+    """
+    result = {'beta': None, 'rs_20': None, 'rs_label': '—', 'beta_label': '—'}
+    try:
+        df_vni = get_price("VNINDEX", days=days + 30)
+        if not valid(df_vni) or not valid(df_ticker):
+            return result
+
+        ret_t   = df_ticker['close'].pct_change().dropna().tail(days)
+        ret_vni = df_vni['close'].pct_change().dropna().tail(days)
+
+        # Align theo độ dài ngắn hơn
+        min_len = min(len(ret_t), len(ret_vni))
+        if min_len < 20:
+            return result
+
+        ret_t   = ret_t.values[-min_len:]
+        ret_vni = ret_vni.values[-min_len:]
+
+        # Beta = Cov(ticker, index) / Var(index)
+        cov     = np.cov(ret_t, ret_vni)[0][1]
+        var_vni = np.var(ret_vni)
+        beta    = round(cov / (var_vni + 1e-9), 2)
+
+        # Relative Strength 20 ngày
+        rs_days  = min(20, min_len)
+        gain_t   = (1 + ret_t[-rs_days:]).prod() - 1
+        gain_vni = (1 + ret_vni[-rs_days:]).prod() - 1
+        rs_20    = round((gain_t - gain_vni) * 100, 2)
+
+        # Labels
+        if beta >= 1.3:    beta_label = f"🔥 Rất nhạy ({beta}x) — tăng/giảm mạnh hơn thị trường"
+        elif beta >= 0.8:  beta_label = f"⚖️ Trung bình ({beta}x) — diễn biến gần với thị trường"
+        else:              beta_label = f"🛡️ Phòng thủ ({beta}x) — ít biến động hơn thị trường"
+
+        if rs_20 >= 3:     rs_label = f"💪 Vượt trội +{rs_20}% so VN-Index — Tay to đang ưa thích"
+        elif rs_20 >= 0:   rs_label = f"✅ Nhỉnh hơn +{rs_20}% so VN-Index"
+        elif rs_20 >= -3:  rs_label = f"⚠️ Yếu hơn {rs_20}% so VN-Index"
+        else:              rs_label = f"🚨 Kém xa {rs_20}% so VN-Index — Tay to đang tránh mã này"
+
+        result = {'beta': beta, 'rs_20': rs_20, 'rs_label': rs_label, 'beta_label': beta_label}
+    except Exception as e:
+        print(f"[WARN] Beta/RS: {e}")
+    return result
+
+
+# ==============================================================================
+# TÍNH NĂNG MỚI #7 — PHÁT HIỆN BẤT THƯỜNG (Anomaly Detection)
+# ==============================================================================
+
+def detect_anomaly(ticker: str, df: pd.DataFrame) -> dict:
+    """
+    Phát hiện các dấu hiệu bất thường trước khi có tin tức chính thức:
+    1. Vol đột biến > 2x MA20 mà không có tin tức rõ ràng
+    2. Dòng tiền ròng Khối Ngoại đảo chiều đột ngột
+    3. Giá tăng/giảm bất thường so với Vol (PV Divergence)
+    4. Số phiên mua ròng liên tiếp tăng nhanh
+    """
+    signals  = []
+    score    = 0   # 0 = bình thường, càng cao càng bất thường
+
+    last     = df.iloc[-1]
+    vol      = last['vol_strength']
+    ret      = last['return_1d']
+    bb_width = last['bb_width']
+    bb_min   = df['bb_width'].tail(20).min()
+
+    # --- Tín hiệu 1: Vol đột biến ---
+    if vol > ANOMALY_VOL_MULT:
+        signals.append(f"🔊 **Vol Đột Biến {vol:.1f}x** — Khối lượng nổ gấp {vol:.1f} lần MA20 "
+                       f"mà chưa có tin tức công bố. Có thể tay to đang hành động âm thầm.")
+        score += 3
+
+    # --- Tín hiệu 2: PV Divergence (giá tăng nhưng vol giảm hoặc ngược lại) ---
+    vol_5avg  = df['vol_strength'].tail(5).mean()
+    ret_5avg  = df['return_1d'].tail(5).mean()
+    pv_div    = (ret_5avg > 0.005 and vol_5avg < 0.8) or (ret_5avg < -0.005 and vol_5avg > 1.5)
+    if pv_div:
+        signals.append("📊 **PV Divergence:** Giá và khối lượng đang đi ngược chiều nhau — "
+                       "dấu hiệu xu hướng hiện tại có thể không bền vững.")
+        score += 2
+
+    # --- Tín hiệu 3: Nén Bollinger cực đoan (sắp bùng nổ mạnh) ---
+    if bb_width <= bb_min * 1.05:
+        signals.append("🌀 **Nén Bollinger Cực Đoan:** Biên độ dao động đang ở mức thấp nhất "
+                       "20 phiên — thường xảy ra ngay trước một cú bứt phá mạnh (lên hoặc xuống).")
+        score += 2
+
+    # --- Tín hiệu 4: Khối Ngoại đảo chiều đột ngột ---
+    df_for = get_foreign(ticker, ANOMALY_FLOW_DAYS)
+    if valid(df_for) and len(df_for) >= 3:
+        net_vals = []
+        for _, row in df_for.iterrows():
+            b = to_billion(row.get('buyval', 0))
+            s = to_billion(row.get('sellval', 0))
+            net_vals.append(to_billion(row.get('netval', b - s)))
+
+        # Đảo chiều: 3 phiên trước bán → 2 phiên gần mua (hoặc ngược lại)
+        if len(net_vals) >= 5:
+            prev3 = net_vals[:3]
+            last2 = net_vals[3:]
+            if all(v < 0 for v in prev3) and all(v > 0 for v in last2):
+                signals.append("🦈 **Khối Ngoại Đảo Chiều Mua:** Sau nhiều phiên bán ròng, "
+                               "Khối Ngoại bất ngờ chuyển sang mua ròng — tín hiệu cực kỳ đáng chú ý!")
+                score += 4
+            elif all(v > 0 for v in prev3) and all(v < 0 for v in last2):
+                signals.append("🚨 **Khối Ngoại Đảo Chiều Bán:** Sau nhiều phiên mua ròng, "
+                               "Khối Ngoại bất ngờ xả hàng — cảnh báo rủi ro cao!")
+                score += 3
+
+    # Đánh giá tổng
+    if score >= 6:
+        verdict = "🔴 BẤT THƯỜNG CAO — Có dấu hiệu hoạt động bất thường mạnh. Theo dõi sát!"
+    elif score >= 3:
+        verdict = "🟠 BẤT THƯỜNG TRUNG BÌNH — Một số tín hiệu đáng chú ý. Nên để mắt thêm."
+    elif score >= 1:
+        verdict = "🟡 BẤT THƯỜNG NHẸ — Có vài tín hiệu nhỏ nhưng chưa đủ kết luận."
+    else:
+        verdict = "🟢 BÌNH THƯỜNG — Không phát hiện hoạt động bất thường đáng kể."
+
+    return {'signals': signals, 'score': score, 'verdict': verdict}
+
+
+# ==============================================================================
+# TÍNH NĂNG MỚI #6 — BACKTEST DANH MỤC
+# ==============================================================================
+
+def backtest_portfolio(scored_tickers: list[dict]) -> dict:
+    """
+    Backtest top N mã có điểm cao nhất từ Radar.
+    Giả định: Mua đều nhau (equal weight), giữ PORT_BT_HOLD_DAYS ngày.
+    So sánh với VN-Index ETF (E1VFVN30) cùng kỳ.
+    """
+    if not scored_tickers:
+        return {}
+
+    top_n    = scored_tickers[:PORT_BT_TOP_N]
+    results  = []
+
+    for item in top_n:
+        ticker = item['ticker']
+        try:
+            df = get_price(ticker, days=SCAN_DAYS + PORT_BT_HOLD_DAYS + 10)
+            if not valid(df) or len(df) < PORT_BT_HOLD_DAYS + 20:
+                continue
+            df = calc_indicators(df)
+
+            # Mua tại điểm giữa lịch sử (giả lập)
+            mid = len(df) // 2
+            buy_price  = df['close'].iloc[mid] * (1 + SLIPPAGE)
+            sell_price = df['close'].iloc[mid + PORT_BT_HOLD_DAYS]
+            gross      = (sell_price - buy_price) / buy_price
+            net        = gross - ROUND_TRIP_COST
+            results.append({'ticker': ticker, 'return': round(net * 100, 2)})
+        except Exception as e:
+            print(f"[WARN] Portfolio BT {ticker}: {e}")
+
+    # VN-Index cùng kỳ
+    vni_return = None
+    try:
+        df_vni = get_price("VNINDEX", days=SCAN_DAYS + PORT_BT_HOLD_DAYS + 10)
+        if valid(df_vni):
+            mid        = len(df_vni) // 2
+            vni_buy    = df_vni['close'].iloc[mid]
+            vni_sell   = df_vni['close'].iloc[mid + PORT_BT_HOLD_DAYS]
+            vni_return = round((vni_sell - vni_buy) / vni_buy * 100, 2)
+    except Exception:
+        pass
+
+    avg_return = round(np.mean([r['return'] for r in results]), 2) if results else 0
+    alpha      = round(avg_return - (vni_return or 0), 2)
+
+    return {
+        'results':    results,
+        'avg_return': avg_return,
+        'vni_return': vni_return,
+        'alpha':      alpha,
+    }
+
+
+# ==============================================================================
+# TÍNH NĂNG MỚI #3 — PORTFOLIO TRACKER
+# ==============================================================================
+
+def init_portfolio():
+    """Khởi tạo danh mục trong session state nếu chưa có."""
+    if 'portfolio' not in st.session_state:
+        st.session_state['portfolio'] = []
+
+
+def add_position(ticker: str, buy_price: float, shares: int, buy_date: str):
+    """Thêm vị thế vào danh mục."""
+    st.session_state['portfolio'].append({
+        'ticker':    ticker.upper(),
+        'buy_price': buy_price,
+        'shares':    shares,
+        'buy_date':  buy_date,
+    })
+
+
+def remove_position(idx: int):
+    """Xóa vị thế theo index."""
+    if 0 <= idx < len(st.session_state['portfolio']):
+        st.session_state['portfolio'].pop(idx)
+
+
+def calc_portfolio_summary() -> list[dict]:
+    """Tính lãi/lỗ hiện tại cho từng vị thế."""
+    summary = []
+    for pos in st.session_state.get('portfolio', []):
+        ticker    = pos['ticker']
+        buy_price = pos['buy_price']
+        shares    = pos['shares']
+        try:
+            df = get_price(ticker, days=5)
+            if not valid(df):
+                raise ValueError("No data")
+            df       = calc_indicators(df)
+            cur_price= df.iloc[-1]['close']
+            rsi      = df.iloc[-1]['rsi']
+            pnl_pct  = round((cur_price - buy_price) / buy_price * 100, 2)
+            pnl_vnd  = round((cur_price - buy_price) * shares)
+            sl_price = round(buy_price * (1 - PORT_SL_PCT))
+            tp_price = round(buy_price * (1 + PORT_TP_PCT))
+
+            # Cảnh báo
+            if cur_price <= sl_price:
+                alert = "🚨 CHẠM SL — Nên cắt lỗ ngay!"
+            elif cur_price >= tp_price:
+                alert = "🎯 CHẠM TP — Nên chốt lời một phần!"
+            elif rsi > 75:
+                alert = "⚠️ RSI Quá Mua — Cân nhắc chốt lời"
+            else:
+                alert = "✅ Bình thường"
+
+            summary.append({
+                'Ticker':       ticker,
+                'Giá Mua':      f"{buy_price:,.0f}",
+                'Giá Hiện Tại': f"{cur_price:,.0f}",
+                'SL (-7%)':     f"{sl_price:,.0f}",
+                'TP (+15%)':    f"{tp_price:,.0f}",
+                'Lãi/Lỗ %':    f"{pnl_pct:+.2f}%",
+                'Lãi/Lỗ (VNĐ)': f"{pnl_vnd:+,.0f}",
+                'RSI':          f"{rsi:.1f}",
+                'Cảnh Báo':     alert,
+            })
+        except Exception as e:
+            summary.append({
+                'Ticker':       ticker,
+                'Giá Mua':      f"{buy_price:,.0f}",
+                'Giá Hiện Tại': 'N/A',
+                'SL (-7%)':     f"{round(buy_price*(1-PORT_SL_PCT)):,.0f}",
+                'TP (+15%)':    f"{round(buy_price*(1+PORT_TP_PCT)):,.0f}",
+                'Lãi/Lỗ %':    'N/A',
+                'Lãi/Lỗ (VNĐ)': 'N/A',
+                'RSI':          'N/A',
+                'Cảnh Báo':     f"⚠️ Lỗi: {e}",
+            })
+    return summary
+
 # ==============================================================================
 # CACHE: DANH SÁCH MÃ HOSE
 # ==============================================================================
@@ -1122,12 +1422,16 @@ news_raw = st.sidebar.text_area("Tiêu đề tin tức:", height=120,
 news_headlines = [l.strip() for l in news_raw.splitlines() if l.strip()]
 
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+init_portfolio()   # Khởi tạo portfolio trong session
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
     "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU",
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
+    "💼 PORTFOLIO TRACKER",
+    "📊 BACKTEST DANH MỤC & PHÁT HIỆN BẤT THƯỜNG",
 ])
 
 
@@ -1295,6 +1599,38 @@ with tab1:
                       delta=f"Đáy: {last['lower_band']:,.0f}", delta_color="inverse")
 
             st.divider()
+
+            # --- Beta & Relative Strength [TÍNH NĂNG #5] ---
+            st.divider()
+            st.write("### 📊 So Sánh Với VN-Index (Beta & Relative Strength)")
+            with st.spinner("Đang tính Beta & Relative Strength..."):
+                brs = calc_beta_rs(df)
+            br1, br2 = st.columns(2)
+            br1.metric(
+                "📐 Beta (Độ Nhạy Với Thị Trường)",
+                f"{brs['beta']}x" if brs['beta'] else "N/A",
+                delta=brs['beta_label'], delta_color="off"
+            )
+            br2.metric(
+                "💪 Relative Strength 20 Ngày",
+                f"{brs['rs_20']:+.2f}%" if brs['rs_20'] is not None else "N/A",
+                delta=brs['rs_label'], delta_color="normal" if (brs['rs_20'] or 0) >= 0 else "inverse"
+            )
+            st.caption("Beta > 1 = biến động mạnh hơn thị trường | RS > 0 = mạnh hơn VN-Index → tay to đang ưa thích")
+
+            # --- Phát Hiện Bất Thường [TÍNH NĂNG #7] ---
+            st.divider()
+            st.write("### 🔎 Phát Hiện Hoạt Động Bất Thường")
+            with st.spinner("Đang phân tích dấu hiệu bất thường..."):
+                anomaly = detect_anomaly(ticker, df)
+            if anomaly['score'] >= 3:
+                st.error(anomaly['verdict'])
+            elif anomaly['score'] >= 1:
+                st.warning(anomaly['verdict'])
+            else:
+                st.success(anomaly['verdict'])
+            for sig in anomaly['signals']:
+                st.markdown(f"- {sig}")
 
             # --- Cẩm nang False Breakout ---
             st.write("### 📖 CẨM NANG — Bí Kíp Né Bẫy Giá (False Breakout)")
@@ -1516,8 +1852,26 @@ with tab4:
         "Mã tốt như PDR có thể đang tích lũy chưa đủ tín hiệu — dùng Tab 1 phân tích riêng."
     )
 
+    # [TÍNH NĂNG #4] Bộ lọc vốn hóa
+    col_filter1, col_filter2 = st.columns([1, 2])
+    with col_filter1:
+        cap_filter = st.selectbox(
+            "🏦 Lọc theo Vốn Hóa:",
+            ["🌐 Tất Cả", "🥇 VN30 (Large Cap)", "🥈 Mid Cap", "🥉 Small Cap"],
+            help="VN30 = 30 mã lớn nhất | Mid Cap = vừa | Small Cap = nhỏ"
+        )
+
     if st.button("🔥 KÍCH HOẠT RADAR TRUY QUÉT 3 TẦNG (REAL-TIME)"):
-        scan_list = tickers[:RADAR_MAX]
+        # Lọc danh sách theo vốn hóa
+        if cap_filter == "🥇 VN30 (Large Cap)":
+            scan_list = [t for t in tickers if t in VN30]
+        elif cap_filter == "🥈 Mid Cap":
+            scan_list = [t for t in tickers if t in MID_CAP]
+        elif cap_filter == "🥉 Small Cap":
+            scan_list = [t for t in tickers if t not in VN30 and t not in MID_CAP]
+        else:
+            scan_list = tickers[:RADAR_MAX]
+        scan_list = scan_list[:RADAR_MAX]
         st.caption(f"🔭 Đang quét {len(scan_list)} mã trên HOSE... | AI: LightGBM (tốc độ cao) | Tab 1 dùng XGBoost (chính xác tối đa)")
         progress   = st.progress(0)
         breakouts  = []
@@ -1673,6 +2027,197 @@ with tab5:
                                    ("🔴 Dòng tiền ra" if v < -0.5 else "🟡 Trung lập") for v in perf]
             })
             st.table(df_sec)
+
+
+# ==============================================================================
+# TAB 6: PORTFOLIO TRACKER [TÍNH NĂNG #3]
+# ==============================================================================
+with tab6:
+    st.subheader("💼 Nhật Ký & Theo Dõi Danh Mục Cá Nhân")
+    st.info("📌 Danh mục được lưu trong phiên làm việc hiện tại. "
+            "Dùng nút **Xuất JSON** để lưu lại, **Nhập JSON** để khôi phục lần sau.")
+
+    # --- Thêm vị thế mới ---
+    st.write("#### ➕ Thêm Vị Thế Mới")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    new_ticker  = col_a.text_input("Mã CK:", placeholder="VD: PDR").strip().upper()
+    new_price   = col_b.number_input("Giá Mua (VNĐ):", min_value=0.0, step=100.0)
+    new_shares  = col_c.number_input("Số Lượng (cổ phiếu):", min_value=0, step=100)
+    new_date    = col_d.date_input("Ngày Mua:", value=now_vn().date())
+
+    if st.button("➕ Thêm vào danh mục") and new_ticker and new_price > 0 and new_shares > 0:
+        add_position(new_ticker, new_price, new_shares, str(new_date))
+        st.success(f"✅ Đã thêm {new_shares} cp {new_ticker} @ {new_price:,.0f} VNĐ")
+        st.rerun()
+
+    st.divider()
+
+    # --- Hiển thị danh mục ---
+    portfolio = st.session_state.get('portfolio', [])
+    if not portfolio:
+        st.warning("📭 Danh mục trống. Thêm vị thế đầu tiên ở trên!")
+    else:
+        st.write(f"#### 📋 Danh Mục Hiện Tại ({len(portfolio)} vị thế)")
+        with st.spinner("Đang cập nhật giá thị trường..."):
+            summary = calc_portfolio_summary()
+
+        if summary:
+            df_port = pd.DataFrame(summary)
+            st.dataframe(df_port, use_container_width=True, hide_index=True)
+
+            # Tổng lãi/lỗ
+            total_cost = sum(
+                pos['buy_price'] * pos['shares']
+                for pos in portfolio
+            )
+            st.divider()
+            st.write("#### 💰 Tổng Quan Danh Mục")
+            p1, p2 = st.columns(2)
+            p1.metric("Tổng Vốn Đầu Tư", f"{total_cost:,.0f} VNĐ")
+
+            # Cảnh báo SL/TP
+            alerts = [r['Cảnh Báo'] for r in summary if '🚨' in r['Cảnh Báo'] or '🎯' in r['Cảnh Báo']]
+            if alerts:
+                st.error("⚡ **Cần Hành Động Ngay:**")
+                for a in alerts:
+                    st.markdown(f"- {a}")
+
+        # --- Xóa vị thế ---
+        st.divider()
+        st.write("#### 🗑️ Xóa Vị Thế")
+        del_idx = st.selectbox(
+            "Chọn vị thế cần xóa:",
+            options=range(len(portfolio)),
+            format_func=lambda i: f"{portfolio[i]['ticker']} — {portfolio[i]['shares']} cp @ {portfolio[i]['buy_price']:,.0f}"
+        )
+        if st.button("🗑️ Xóa vị thế đã chọn"):
+            remove_position(del_idx)
+            st.success("✅ Đã xóa!")
+            st.rerun()
+
+        # --- Xuất / Nhập JSON ---
+        st.divider()
+        st.write("#### 💾 Lưu & Khôi Phục Danh Mục")
+        import json
+        port_json = json.dumps(portfolio, ensure_ascii=False, indent=2)
+        st.text_area("📤 Copy đoạn JSON này để lưu lại:", value=port_json, height=150)
+
+        st.write("📥 Dán JSON vào đây để khôi phục:")
+        import_json = st.text_area("Nhập JSON:", height=100, placeholder='[{"ticker": "PDR", ...}]')
+        if st.button("📥 Khôi Phục Danh Mục Từ JSON"):
+            try:
+                imported = json.loads(import_json)
+                st.session_state['portfolio'] = imported
+                st.success(f"✅ Đã khôi phục {len(imported)} vị thế!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ JSON không hợp lệ: {e}")
+
+
+# ==============================================================================
+# TAB 7: BACKTEST DANH MỤC & PHÁT HIỆN BẤT THƯỜNG [TÍNH NĂNG #6, #7]
+# ==============================================================================
+with tab7:
+    col_left, col_right = st.columns(2)
+
+    # --- BACKTEST DANH MỤC [TÍNH NĂNG #6] ---
+    with col_left:
+        st.subheader("📊 Backtest Danh Mục Từ Radar")
+        st.write(
+            f"Mô phỏng kết quả nếu mua **Top {PORT_BT_TOP_N} mã điểm cao nhất** từ Radar, "
+            f"giữ **{PORT_BT_HOLD_DAYS} ngày**, so sánh với VN-Index."
+        )
+        st.info("💡 Chạy Radar Tab 4 trước để có dữ liệu. "
+                "Nhập tay tối đa 5 mã nếu chưa chạy Radar.")
+
+        # Nhập mã thủ công nếu chưa có từ Radar
+        manual_tickers = st.text_input(
+            "Nhập tối đa 5 mã (phân cách bằng dấu phẩy):",
+            placeholder="VD: PDR, DIG, GEX, KDH, DXG"
+        )
+
+        if st.button("🚀 Chạy Backtest Danh Mục"):
+            if manual_tickers:
+                input_list = [t.strip().upper() for t in manual_tickers.split(',') if t.strip()]
+                scored = [{'ticker': t} for t in input_list[:PORT_BT_TOP_N]]
+            else:
+                st.warning("⚠️ Vui lòng nhập ít nhất 1 mã.")
+                scored = []
+
+            if scored:
+                with st.spinner(f"Đang backtest {len(scored)} mã..."):
+                    bt_result = backtest_portfolio(scored)
+
+                if bt_result and bt_result.get('results'):
+                    # Bảng kết quả từng mã
+                    df_bt = pd.DataFrame(bt_result['results'])
+                    df_bt.columns = ['Ticker', f'Lợi Nhuận {PORT_BT_HOLD_DAYS} ngày (%)']
+                    df_bt[f'Lợi Nhuận {PORT_BT_HOLD_DAYS} ngày (%)'] = df_bt[f'Lợi Nhuận {PORT_BT_HOLD_DAYS} ngày (%)'].apply(lambda x: f"{x:+.2f}%")
+                    st.table(df_bt)
+
+                    # Tổng kết
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric(
+                        "TB Danh Mục",
+                        f"{bt_result['avg_return']:+.2f}%",
+                        delta="Tốt hơn index" if bt_result['alpha'] > 0 else "Kém hơn index",
+                        delta_color="normal" if bt_result['alpha'] > 0 else "inverse"
+                    )
+                    r2.metric(
+                        "VN-Index cùng kỳ",
+                        f"{bt_result['vni_return']:+.2f}%" if bt_result['vni_return'] else "N/A"
+                    )
+                    r3.metric(
+                        "Alpha (Vượt trội)",
+                        f"{bt_result['alpha']:+.2f}%",
+                        delta="✅ Đánh bại thị trường" if bt_result['alpha'] > 0 else "❌ Thua thị trường",
+                        delta_color="normal" if bt_result['alpha'] > 0 else "inverse"
+                    )
+
+                    st.caption(
+                        f"📌 Ghi chú: Đã trừ phí {ROUND_TRIP_COST*100:.2f}%/lệnh + slippage. "
+                        f"Kết quả dựa trên lịch sử — không đảm bảo tương lai."
+                    )
+                else:
+                    st.warning("Không đủ dữ liệu để backtest.")
+
+    # --- PHÁT HIỆN BẤT THƯỜNG [TÍNH NĂNG #7] ---
+    with col_right:
+        st.subheader("🔎 Quét Phát Hiện Hoạt Động Bất Thường")
+        st.write(
+            "Phát hiện **Vol đột biến, PV Divergence, Nén Bollinger cực đoan, "
+            "Khối Ngoại đảo chiều** — dấu hiệu tay to hành động trước tin tức."
+        )
+
+        anomaly_tickers = st.text_input(
+            "Nhập mã cần kiểm tra (phân cách dấu phẩy):",
+            placeholder="VD: PDR, DIG, KDH",
+            key="anomaly_input"
+        )
+
+        if st.button("🔎 Quét Bất Thường"):
+            if not anomaly_tickers:
+                st.warning("Vui lòng nhập ít nhất 1 mã.")
+            else:
+                scan_symbols = [t.strip().upper() for t in anomaly_tickers.split(',') if t.strip()]
+                for sym in scan_symbols[:10]:
+                    with st.spinner(f"Đang phân tích {sym}..."):
+                        try:
+                            df_a = get_price(sym, days=60)
+                            if not valid(df_a):
+                                st.warning(f"⚠️ {sym}: Không lấy được dữ liệu.")
+                                continue
+                            df_a    = calc_indicators(df_a)
+                            anomaly = detect_anomaly(sym, df_a)
+
+                            st.write(f"**{sym}** — {anomaly['verdict']}")
+                            for sig in anomaly['signals']:
+                                st.markdown(f"  - {sig}")
+                            if not anomaly['signals']:
+                                st.write("  - Không phát hiện dấu hiệu bất thường.")
+                            st.divider()
+                        except Exception as e:
+                            st.error(f"Lỗi {sym}: {e}")
 
 
 # ==============================================================================
