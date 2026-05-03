@@ -97,7 +97,16 @@ CHART_DAYS        = 120
 
 # Mã trụ thị trường
 PILLARS = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
-FALLBACK_TICKERS  = ["FPT", "HPG", "SSI", "TCB", "MWG", "VNM", "VIC", "VHM", "STB", "MSN", "GAS"]
+FALLBACK_TICKERS = [
+    "ACB","BCG","BID","BVH","CTD","CTG","DBC","DCM","DGC","DGW",
+    "DIG","DPM","DXG","EIB","FPT","GAS","GEX","GMD","HDB","HDG",
+    "HPG","HSG","KDH","LPB","MBB","MSN","MWG","NLG","NVL","OCB",
+    "PDR","PHR","PLX","PNJ","POW","PVD","REE","SAB","SSI","STB",
+    "TCB","TPB","VCB","VCI","VHM","VIC","VIX","VJC","VND","VNM",
+    "VPB","VRE","VTP","DXS","DGW","FRT","GEG","HAH","HHV","HVN",
+    "IMP","KBC","KDC","KOS","MCH","MIG","MSB","NKG","PAN","PC1",
+    "PTB","PVT","SBT","SHB","SRC","SSB","TCH","VGC","VHC","VSH",
+]
 
 
 # ==============================================================================
@@ -646,21 +655,37 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score) -> str | None:
 @st.cache_data(ttl=3600)
 def load_hose_tickers() -> list[str]:
     """
-    Tải danh sách mã HOSE, cache 1 giờ để tránh gọi API liên tục.
-    ⚠️ FIX: Tạo Vnstock() mới bên trong thay vì dùng engine() / session_state
-    vì @st.cache_data chạy trong context riêng, KHÔNG truy cập được session_state
-    → nếu dùng engine() sẽ lỗi âm thầm và fallback về 11 mã cứng.
+    Tải danh sách mã HOSE, cache 1 giờ.
+    Thử nhiều cách gọi API — Vnstock hay đổi cú pháp giữa các phiên bản.
+    KHÔNG dùng engine()/session_state vì cache_data chạy context riêng.
     """
-    try:
-        stock   = Vnstock()   # instance riêng cho hàm cache — hoàn toàn an toàn
-        df      = stock.market.listing()
-        tickers = df[df['comGroupCode'] == 'HOSE']['ticker'].tolist()
-        if len(tickers) < 10:
-            raise ValueError("Danh sách quá ngắn, có thể API lỗi")
-        return tickers
-    except Exception as e:
-        print(f"[WARN] load_hose_tickers fallback: {e}")
-        return FALLBACK_TICKERS
+    stock = Vnstock()
+
+    attempts = [
+        lambda: stock.market.listing(),
+        lambda: Vnstock().stock(symbol='ACB', source='VCI').listing.all_symbols(),
+    ]
+
+    for attempt in attempts:
+        try:
+            df = attempt()
+            if df is None or df.empty:
+                continue
+            # Lọc HOSE — thử nhiều tên cột khác nhau
+            for col in ['comGroupCode', 'exchange', 'market']:
+                if col in df.columns:
+                    result = df[df[col].str.upper() == 'HOSE']['ticker'].tolist()
+                    if len(result) > 50:
+                        return result
+            # Không lọc được thì trả về tất cả
+            if 'ticker' in df.columns and len(df) > 50:
+                return df['ticker'].tolist()
+        except Exception as e:
+            print(f"[WARN] attempt failed: {e}")
+            continue
+
+    print("[WARN] load_hose_tickers: API lỗi, dùng danh sách dự phòng 90 mã")
+    return FALLBACK_TICKERS
 
 
 # ==============================================================================
@@ -745,7 +770,14 @@ st.markdown("---")
 # --- SIDEBAR ---
 tickers  = load_hose_tickers()
 st.sidebar.header("🕹️ Trung Tâm Giao Dịch Định Lượng")
+
+# Nút xóa cache — dùng khi danh sách mã không cập nhật đúng
+if st.sidebar.button("🔄 Làm mới danh sách mã (Xóa Cache)"):
+    st.cache_data.clear()
+    st.rerun()
+
 dropdown = st.sidebar.selectbox("Lựa chọn mã cổ phiếu:", tickers)
+st.sidebar.caption(f"📊 Tổng số mã đang theo dõi: {len(tickers)}")
 manual   = st.sidebar.text_input("Hoặc nhập trực tiếp (VD: FPT):").strip().upper()
 ticker   = manual if manual else dropdown
 
