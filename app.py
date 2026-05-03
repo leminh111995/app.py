@@ -645,11 +645,21 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score) -> str | None:
 
 @st.cache_data(ttl=3600)
 def load_hose_tickers() -> list[str]:
-    """Tải danh sách mã HOSE, cache 1 giờ để tránh gọi API liên tục."""
+    """
+    Tải danh sách mã HOSE, cache 1 giờ để tránh gọi API liên tục.
+    ⚠️ FIX: Tạo Vnstock() mới bên trong thay vì dùng engine() / session_state
+    vì @st.cache_data chạy trong context riêng, KHÔNG truy cập được session_state
+    → nếu dùng engine() sẽ lỗi âm thầm và fallback về 11 mã cứng.
+    """
     try:
-        df = engine().market.listing()
-        return df[df['comGroupCode'] == 'HOSE']['ticker'].tolist()
-    except Exception:
+        stock   = Vnstock()   # instance riêng cho hàm cache — hoàn toàn an toàn
+        df      = stock.market.listing()
+        tickers = df[df['comGroupCode'] == 'HOSE']['ticker'].tolist()
+        if len(tickers) < 10:
+            raise ValueError("Danh sách quá ngắn, có thể API lỗi")
+        return tickers
+    except Exception as e:
+        print(f"[WARN] load_hose_tickers fallback: {e}")
         return FALLBACK_TICKERS
 
 
