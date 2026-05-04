@@ -1353,6 +1353,216 @@ def calc_portfolio_summary() -> list[dict]:
             })
     return summary
 
+
+# ==============================================================================
+# DÒNG TIỀN NÂNG CẤP — Phân tích đủ mạnh hay không
+# ==============================================================================
+
+def analyze_money_flow_advanced(ticker: str, df: pd.DataFrame) -> dict:
+    """
+    Phân tích toàn diện dòng tiền 10 phiên — đủ mạnh hay không.
+
+    Trả về:
+    - Tổng tiền từng bên (Khối Ngoại / Tự Doanh / Nhỏ Lẻ ước tính)
+    - Tốc độ dòng tiền (tăng/giảm qua các phiên)
+    - Ước lượng phân phối ATO/Giữa phiên/ATC
+    - So sánh với mã cùng ngành
+    - Kết luận: MẠNH / TRUNG BÌNH / YẾU
+    """
+    result = {
+        'foreign_10d':    [],   # net flow từng phiên
+        'prop_10d':       [],   # tự doanh từng phiên
+        'retail_10d':     [],   # nhỏ lẻ ước tính từng phiên
+        'dates':          [],
+        'foreign_total':  0.0,
+        'prop_total':     0.0,
+        'retail_total':   0.0,
+        'foreign_buy_days': 0,
+        'prop_buy_days':  0,
+        'speed_trend':    'NEUTRAL',   # ACCELERATING / DECELERATING / NEUTRAL
+        'atc_vs_ato':     'NEUTRAL',   # ATC_DOMINANT / ATO_DOMINANT / NEUTRAL
+        'sector_rank':    None,
+        'sector_total':   {},
+        'strength':       'YẾU',
+        'strength_score': 0,
+        'strength_color': 'red',
+        'reasons':        [],
+    }
+
+    # --- 1. Khối Ngoại 10 phiên ---
+    df_for = get_foreign(ticker, FOREIGN_DAYS)
+    df_pro = get_proprietary(ticker, FOREIGN_DAYS)
+
+    foreign_nets = []
+    prop_nets    = []
+    dates        = []
+
+    if valid(df_for):
+        for _, row in df_for.tail(10).iterrows():
+            b = to_billion(row.get('buyval', 0))
+            s = to_billion(row.get('sellval', 0))
+            n = to_billion(row.get('netval', b - s))
+            foreign_nets.append(n)
+            if 'date' in df_for.columns:
+                dates.append(str(row.get('date', ''))[:10])
+
+    if valid(df_pro):
+        for _, row in df_pro.tail(10).iterrows():
+            b = to_billion(row.get('buyval', 0))
+            s = to_billion(row.get('sellval', 0))
+            n = to_billion(row.get('netval', b - s))
+            prop_nets.append(n)
+
+    # Pad nếu thiếu
+    while len(prop_nets) < len(foreign_nets):
+        prop_nets.append(0.0)
+
+    # --- 2. Ước lượng Nhỏ Lẻ từ Vol tổng - Ngoại - Tự Doanh ---
+    retail_nets = []
+    df10 = df.tail(10)
+    for i, (f_net, p_net) in enumerate(zip(foreign_nets, prop_nets)):
+        if i < len(df10):
+            row_price  = df10.iloc[i]['close']
+            row_vol    = df10.iloc[i]['volume']
+            total_val  = to_billion(row_price * row_vol)
+            # Nhỏ lẻ = tổng giá trị - |Ngoại| - |Tự Doanh| (ước tính)
+            inst_val   = abs(f_net) + abs(p_net)
+            retail_val = max(0, total_val - inst_val)
+            retail_nets.append(round(retail_val, 2))
+        else:
+            retail_nets.append(0.0)
+
+    result['foreign_10d']   = foreign_nets
+    result['prop_10d']      = prop_nets
+    result['retail_10d']    = retail_nets
+    result['dates']         = dates
+    result['foreign_total'] = round(sum(foreign_nets), 2)
+    result['prop_total']    = round(sum(prop_nets), 2)
+    result['retail_total']  = round(sum(retail_nets), 2)
+    result['foreign_buy_days'] = sum(1 for v in foreign_nets if v > 0)
+    result['prop_buy_days']    = sum(1 for v in prop_nets    if v > 0)
+
+    # --- 3. Tốc độ dòng tiền (so sánh nửa đầu vs nửa sau 10 phiên) ---
+    if len(foreign_nets) >= 6:
+        first_half = sum(foreign_nets[:5])
+        last_half  = sum(foreign_nets[5:])
+        if last_half > first_half * 1.2:
+            result['speed_trend'] = 'ACCELERATING'   # đang tăng tốc
+        elif last_half < first_half * 0.8:
+            result['speed_trend'] = 'DECELERATING'   # đang giảm tốc
+        else:
+            result['speed_trend'] = 'NEUTRAL'
+
+    # --- 4. Ước lượng ATO / Giữa phiên / ATC từ Vol lịch sử ---
+    # Giả định phân phối chuẩn: ATO ~20%, Giữa phiên ~50%, ATC ~30%
+    # Nếu ngày tăng mạnh → ATC thường cao hơn (tổ chức gom cuối phiên)
+    # Nếu ngày giảm mạnh → ATO thường cao hơn (tổ chức xả đầu phiên)
+    if len(df10) > 0:
+        last_row   = df10.iloc[-1]
+        ret_last   = last_row['return_1d']
+        vol_str    = last_row['vol_strength']
+
+        if ret_last > 0.01 and vol_str > 1.2:
+            ato_pct, mid_pct, atc_pct = 0.15, 0.40, 0.45
+            result['atc_vs_ato'] = 'ATC_DOMINANT'
+        elif ret_last < -0.01 and vol_str > 1.2:
+            ato_pct, mid_pct, atc_pct = 0.45, 0.40, 0.15
+            result['atc_vs_ato'] = 'ATO_DOMINANT'
+        else:
+            ato_pct, mid_pct, atc_pct = 0.20, 0.50, 0.30
+            result['atc_vs_ato'] = 'NEUTRAL'
+
+        total_val_last = to_billion(last_row['close'] * last_row['volume'])
+        result['ato_val'] = round(total_val_last * ato_pct, 2)
+        result['mid_val'] = round(total_val_last * mid_pct, 2)
+        result['atc_val'] = round(total_val_last * atc_pct, 2)
+    else:
+        result['ato_val'] = result['mid_val'] = result['atc_val'] = 0.0
+
+    # --- 5. So sánh với mã cùng ngành ---
+    ticker_sector = get_ticker_sector(ticker)
+    if ticker_sector:
+        peers     = [t for t in SECTOR_MAP[ticker_sector] if t != ticker][:5]
+        peer_flow = {}
+        for peer in peers:
+            try:
+                df_p = get_foreign(peer, 5)
+                if valid(df_p):
+                    peer_flow[peer] = round(calc_net_flow(df_p, 5), 2)
+            except Exception:
+                pass
+        peer_flow[ticker] = round(sum(foreign_nets[-5:]), 2)
+        sorted_peers      = sorted(peer_flow.items(), key=lambda x: x[1], reverse=True)
+        rank              = [t for t, _ in sorted_peers].index(ticker) + 1
+        result['sector_rank']  = f"#{rank}/{len(sorted_peers)}"
+        result['sector_total'] = dict(sorted_peers)
+
+    # --- 6. Chấm điểm sức mạnh dòng tiền (0-6) ---
+    score   = 0
+    reasons = []
+
+    # Tiêu chí 1: Khối Ngoại mua ròng tổng 10 phiên
+    if result['foreign_total'] > 0:
+        score += 1
+        reasons.append(f"✅ Khối Ngoại mua ròng tổng {result['foreign_total']:+.1f} tỷ trong 10 phiên")
+    else:
+        reasons.append(f"❌ Khối Ngoại bán ròng tổng {result['foreign_total']:+.1f} tỷ trong 10 phiên")
+
+    # Tiêu chí 2: Mua ròng ≥ 6/10 phiên
+    if result['foreign_buy_days'] >= 6:
+        score += 1
+        reasons.append(f"✅ Khối Ngoại mua ròng {result['foreign_buy_days']}/10 phiên — nhất quán")
+    else:
+        reasons.append(f"❌ Khối Ngoại chỉ mua ròng {result['foreign_buy_days']}/10 phiên — không ổn định")
+
+    # Tiêu chí 3: Tốc độ đang tăng
+    if result['speed_trend'] == 'ACCELERATING':
+        score += 1
+        reasons.append("✅ Tốc độ dòng tiền đang TĂNG TỐC — momentum mạnh dần")
+    elif result['speed_trend'] == 'DECELERATING':
+        reasons.append("❌ Tốc độ dòng tiền đang GIẢM TỐC — momentum yếu dần")
+    else:
+        reasons.append("⚠️ Tốc độ dòng tiền ổn định — không tăng không giảm")
+
+    # Tiêu chí 4: Tự Doanh cùng chiều
+    if result['prop_total'] > 0:
+        score += 1
+        reasons.append(f"✅ Tự Doanh cùng chiều mua ròng +{result['prop_total']:.1f} tỷ — xác nhận tín hiệu")
+    else:
+        reasons.append(f"❌ Tự Doanh bán ròng {result['prop_total']:.1f} tỷ — ngược chiều Khối Ngoại")
+
+    # Tiêu chí 5: ATC chiếm ưu thế (tổ chức gom cuối phiên)
+    if result['atc_vs_ato'] == 'ATC_DOMINANT':
+        score += 1
+        reasons.append("✅ ATC > ATO — Tổ chức gom hàng vào cuối phiên, tránh bị lộ")
+    elif result['atc_vs_ato'] == 'ATO_DOMINANT':
+        reasons.append("❌ ATO > ATC — Tổ chức xả hàng đầu phiên, cẩn thận!")
+    else:
+        reasons.append("⚠️ ATO ≈ ATC — Phân phối đều, chưa có tín hiệu rõ ràng")
+
+    # Tiêu chí 6: Top 3 trong ngành
+    if result['sector_rank'] and int(result['sector_rank'][1]) <= 3:
+        score += 1
+        reasons.append(f"✅ Dòng tiền xếp hạng {result['sector_rank']} trong ngành — dẫn đầu ngành")
+    elif result['sector_rank']:
+        reasons.append(f"❌ Dòng tiền xếp hạng {result['sector_rank']} trong ngành — dưới trung bình")
+
+    # Kết luận
+    result['strength_score'] = score
+    result['reasons']        = reasons
+
+    if score >= 5:
+        result['strength']       = '🟢 DÒNG TIỀN MẠNH — Đủ điều kiện vào lệnh'
+        result['strength_color'] = 'green'
+    elif score >= 3:
+        result['strength']       = '🟡 DÒNG TIỀN TRUNG BÌNH — Theo dõi thêm 2-3 phiên'
+        result['strength_color'] = 'orange'
+    else:
+        result['strength']       = '🔴 DÒNG TIỀN YẾU — Chưa đủ, không nên vào lệnh'
+        result['strength_color'] = 'red'
+
+    return result
+
 # ==============================================================================
 # CACHE: DANH SÁCH MÃ HOSE
 # ==============================================================================
@@ -1734,106 +1944,203 @@ with tab2:
 
 
 # ==============================================================================
-# TAB 3: DÒNG TIỀN THÔNG MINH
+# TAB 3: DÒNG TIỀN THÔNG MINH — NÂNG CẤP TOÀN DIỆN
 # ==============================================================================
 with tab3:
-    st.write(f"### 🌊 Smart Flow Specialist — Mổ Xẻ Hành Vi Dòng Tiền ({ticker})")
+    st.write(f"### 🌊 Trung Tâm Phân Tích Dòng Tiền Chuyên Sâu — {ticker}")
+    st.caption("Phân tích đủ 4 chiều: Tổng tiền × Tốc độ × Khung giờ × So sánh ngành — Kết luận dòng tiền ĐỦ MẠNH hay không")
 
-    with st.spinner("Đang trích xuất dữ liệu Khối Ngoại 10 phiên..."):
-        df_for = get_foreign(ticker, FOREIGN_DAYS)
-        foreign_trend_t3 = analyze_foreign_trend(df_for)
+    with st.spinner("Đang phân tích toàn diện dòng tiền 10 phiên..."):
+        df_flow_raw = get_price(ticker, days=30)
+        if valid(df_flow_raw):
+            df_flow_raw = calc_indicators(df_flow_raw)
+        mf = analyze_money_flow_advanced(ticker, df_flow_raw if valid(df_flow_raw) else pd.DataFrame())
 
-        if valid(df_for):
-            last_f = df_for.iloc[-1]
-            buy_v  = to_billion(last_f.get('buyval',  0))
-            sell_v = to_billion(last_f.get('sellval', 0))
-            net_v  = to_billion(last_f.get('netval', buy_v - sell_v))
+    # ================================================================
+    # KẾT LUẬN DÒNG TIỀN — Hiển thị đầu tiên, nổi bật nhất
+    # ================================================================
+    st.divider()
+    strength_color = mf['strength_color']
+    if strength_color == 'green':
+        st.success(f"## {mf['strength']}")
+    elif strength_color == 'orange':
+        st.warning(f"## {mf['strength']}")
+    else:
+        st.error(f"## {mf['strength']}")
 
-            # --- [NÂNG CẤP #4] Hiển thị xu hướng 10 phiên ---
-            st.write("#### 📊 Xu Hướng Khối Ngoại 10 Phiên — Phân Tích Tích Lũy Âm Thầm")
-            ft = foreign_trend_t3
-            f1, f2, f3, f4 = st.columns(4)
-            f1.metric("Tổng Ròng 10 Phiên",    f"{ft['net_total']:+.2f} Tỷ",
-                      delta="Mua Ròng ✓" if ft['net_total'] > 0 else "Bán Ròng ⚠️",
-                      delta_color="normal" if ft['net_total'] > 0 else "inverse")
-            f2.metric("Phiên Mua Liên Tiếp",  f"{ft['consecutive_buy']} phiên")
-            f3.metric("Phiên Bán Liên Tiếp",  f"{ft['consecutive_sell']} phiên")
-            f4.metric("Xu Hướng Tổng",         ft['trend'],
-                      delta="🦈 Tích Lũy Âm Thầm!" if ft['is_silent_accum'] else "",
-                      delta_color="normal" if ft['is_silent_accum'] else "off")
+    st.progress(mf['strength_score'] / 6)
+    st.caption(f"Điểm sức mạnh: {mf['strength_score']}/6 tiêu chí đạt")
 
-            if ft['is_silent_accum']:
-                st.success(ft['summary'])
-            elif 'BUY' in ft['trend']:
-                st.info(ft['summary'])
-            elif 'SELL' in ft['trend']:
-                st.error(ft['summary'])
-            else:
-                st.warning(ft['summary'])
+    # Chi tiết từng tiêu chí
+    with st.expander("📋 Xem chi tiết 6 tiêu chí đánh giá"):
+        for r in mf['reasons']:
+            st.markdown(f"- {r}")
 
-            # Biểu đồ 10 phiên
-            x_dates  = df_for['date'].tail(10) if 'date' in df_for.columns else df_for.index[-10:]
-            net_vals = []
-            for _, row in df_for.tail(10).iterrows():
-                b = to_billion(row.get('buyval', 0))
-                s = to_billion(row.get('sellval', 0))
-                n = to_billion(row.get('netval', b - s))
-                net_vals.append(n)
+    st.divider()
 
-            colors = ['green' if v > 0 else 'red' for v in net_vals]
-            fig_f  = go.Figure(go.Bar(x=x_dates, y=net_vals,
-                                       marker_color=colors, name="Ròng (Tỷ VNĐ)"))
-            fig_f.update_layout(height=300, title="Khối Ngoại Mua/Bán Ròng 10 Phiên (Tỷ VNĐ)",
-                                  margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig_f, use_container_width=True)
+    # ================================================================
+    # PHẦN 1: TỔNG TIỀN TỪNG BÊN 10 PHIÊN
+    # ================================================================
+    st.write("### 1️⃣ Tổng Tiền Từng Bên — 10 Phiên Gần Nhất (Tỷ VNĐ)")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("🦈 Khối Ngoại (Ròng)",
+        f"{mf['foreign_total']:+.2f} Tỷ",
+        delta=f"Mua {mf['foreign_buy_days']}/10 phiên",
+        delta_color="normal" if mf['foreign_total'] > 0 else "inverse")
+    m2.metric("🏦 Tự Doanh (Ròng)",
+        f"{mf['prop_total']:+.2f} Tỷ",
+        delta=f"Mua {mf['prop_buy_days']}/10 phiên",
+        delta_color="normal" if mf['prop_total'] > 0 else "inverse")
+    m3.metric("🐜 Nhỏ Lẻ (Ước tính)",
+        f"{mf['retail_total']:+.2f} Tỷ",
+        delta="Chủ yếu tham gia" if mf['retail_total'] > 0 else "Ít tham gia",
+        delta_color="off")
+
+    # Biểu đồ thanh chồng 3 bên × 10 phiên
+    if mf['dates'] and mf['foreign_10d']:
+        dates_x = mf['dates'] if mf['dates'] else list(range(len(mf['foreign_10d'])))
+        fig_stack = go.Figure()
+        fig_stack.add_trace(go.Bar(
+            x=dates_x, y=mf['foreign_10d'],
+            name='🦈 Khối Ngoại',
+            marker_color=['green' if v >= 0 else 'red' for v in mf['foreign_10d']]
+        ))
+        fig_stack.add_trace(go.Bar(
+            x=dates_x, y=mf['prop_10d'],
+            name='🏦 Tự Doanh',
+            marker_color=['royalblue' if v >= 0 else 'orange' for v in mf['prop_10d']]
+        ))
+        fig_stack.add_trace(go.Bar(
+            x=dates_x, y=mf['retail_10d'],
+            name='🐜 Nhỏ Lẻ (ƯT)',
+            marker_color='lightgray'
+        ))
+        # Đường tổng ròng Ngoại + Tự Doanh
+        combined = [f + p for f, p in zip(mf['foreign_10d'], mf['prop_10d'])]
+        fig_stack.add_trace(go.Scatter(
+            x=dates_x, y=combined,
+            name='📈 Tổng Tổ Chức',
+            line=dict(color='yellow', width=2, dash='dot'),
+            mode='lines+markers'
+        ))
+        fig_stack.update_layout(
+            barmode='group', height=350,
+            title="Dòng Tiền 3 Bên × 10 Phiên (Tỷ VNĐ)",
+            template='plotly_white', legend=dict(orientation='h'),
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+        st.plotly_chart(fig_stack, use_container_width=True)
+
+    st.divider()
+
+    # ================================================================
+    # PHẦN 2: TỐC ĐỘ DÒNG TIỀN
+    # ================================================================
+    st.write("### 2️⃣ Tốc Độ Dòng Tiền — Đang Tăng Tốc hay Giảm Tốc?")
+
+    speed_map = {
+        'ACCELERATING': ('🚀 ĐANG TĂNG TỐC', 'normal', 'Dòng tiền mạnh dần qua từng phiên — tín hiệu rất tích cực'),
+        'DECELERATING': ('🐢 ĐANG GIẢM TỐC', 'inverse', 'Dòng tiền yếu dần — cẩn thận, có thể sắp đảo chiều'),
+        'NEUTRAL':      ('➡️ ỔN ĐỊNH', 'off', 'Dòng tiền đều đều, chưa có dấu hiệu bứt phá'),
+    }
+    sp_label, sp_color, sp_note = speed_map.get(mf['speed_trend'], ('N/A', 'off', ''))
+    st.metric("Tốc Độ Dòng Tiền Khối Ngoại", sp_label,
+              delta=sp_note, delta_color=sp_color)
+
+    # Biểu đồ đường tốc độ (cumulative)
+    if mf['foreign_10d']:
+        cumulative = []
+        running    = 0
+        for v in mf['foreign_10d']:
+            running += v
+            cumulative.append(round(running, 2))
+
+        fig_speed = go.Figure()
+        fig_speed.add_trace(go.Scatter(
+            x=mf['dates'] or list(range(len(cumulative))),
+            y=cumulative,
+            fill='tozeroy',
+            fillcolor='rgba(0,200,100,0.15)' if cumulative[-1] > 0 else 'rgba(255,50,50,0.15)',
+            line=dict(color='green' if cumulative[-1] > 0 else 'red', width=2),
+            name='Tích Lũy Ròng (Tỷ VNĐ)'
+        ))
+        fig_speed.add_hline(y=0, line_dash='dash', line_color='gray')
+        fig_speed.update_layout(
+            height=280, title="Đường Tích Lũy Dòng Tiền Khối Ngoại (Tỷ VNĐ)",
+            template='plotly_white', margin=dict(l=20, r=20, t=40, b=20)
+        )
+        st.plotly_chart(fig_speed, use_container_width=True)
+
+    st.divider()
+
+    # ================================================================
+    # PHẦN 3: ƯỚC LƯỢNG PHÂN PHỐI THEO KHUNG GIỜ
+    # ================================================================
+    st.write("### 3️⃣ Ước Lượng Phân Phối Dòng Tiền Theo Khung Giờ")
+    st.caption("⚠️ Dữ liệu ước lượng dựa trên Vol lịch sử — không phải real-time intraday")
+
+    h1, h2, h3 = st.columns(3)
+    h1.metric("🔔 ATO (9:00–9:15)",    f"{mf.get('ato_val', 0):.2f} Tỷ", delta="Đầu phiên")
+    h2.metric("📊 Giữa Phiên (9:15–14:30)", f"{mf.get('mid_val', 0):.2f} Tỷ", delta="Trọng tâm")
+    h3.metric("🔔 ATC (14:30–14:45)",   f"{mf.get('atc_val', 0):.2f} Tỷ", delta="Cuối phiên")
+
+    atc_map = {
+        'ATC_DOMINANT': st.success("✅ **ATC chiếm ưu thế** — Tổ chức gom hàng vào cuối phiên để tránh bị lộ. Tín hiệu tích lũy âm thầm!"),
+        'ATO_DOMINANT': st.error("🚨 **ATO chiếm ưu thế** — Tổ chức xả hàng đầu phiên khi thanh khoản cao. Cẩn thận!"),
+        'NEUTRAL':      st.info("⚖️ Phân phối ATO/ATC đều nhau — chưa có tín hiệu rõ ràng từ tổ chức."),
+    }
+
+    # Biểu đồ tròn
+    fig_pie = go.Figure(go.Pie(
+        labels=['ATO (Đầu Phiên)', 'Giữa Phiên', 'ATC (Cuối Phiên)'],
+        values=[mf.get('ato_val', 0), mf.get('mid_val', 0), mf.get('atc_val', 0)],
+        hole=0.4,
+        marker_colors=['#ff7f7f', '#7fbfff', '#7fff7f']
+    ))
+    fig_pie.update_layout(
+        height=280, title="Tỷ Trọng Dòng Tiền Theo Khung Giờ",
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+    st.divider()
+
+    # ================================================================
+    # PHẦN 4: SO SÁNH VỚI MÃ CÙNG NGÀNH
+    # ================================================================
+    st.write("### 4️⃣ So Sánh Dòng Tiền Với Mã Cùng Ngành")
+
+    if mf['sector_total']:
+        ticker_sector = get_ticker_sector(ticker)
+        st.caption(f"Ngành: **{ticker_sector}** | Xếp hạng dòng tiền 5 ngày: **{mf['sector_rank']}**")
+
+        peers    = list(mf['sector_total'].keys())
+        peer_val = list(mf['sector_total'].values())
+        colors_p = ['gold' if p == ticker else ('green' if v >= 0 else 'red')
+                    for p, v in zip(peers, peer_val)]
+
+        fig_peer = go.Figure(go.Bar(
+            x=peers, y=peer_val,
+            marker_color=colors_p,
+            text=[f"{v:+.1f}T" for v in peer_val],
+            textposition='outside'
+        ))
+        fig_peer.add_hline(y=0, line_dash='dash', line_color='gray')
+        fig_peer.update_layout(
+            height=300,
+            title=f"Dòng Tiền Khối Ngoại 5 Ngày — So Sánh Cùng Ngành {ticker_sector} (Tỷ VNĐ)",
+            template='plotly_white',
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+        st.plotly_chart(fig_peer, use_container_width=True)
+
+        rank_num = int(mf['sector_rank'][1])
+        if rank_num <= 3:
+            st.success(f"🏆 **{ticker}** đang dẫn đầu ngành về dòng tiền — tay to ưu tiên mã này!")
         else:
-            net_v = 0.0
-            st.warning("⚠️ Không lấy được dữ liệu Khối Ngoại.")
-
-        st.divider()
-
-        # Phân nhóm 3 lớp
-        df_flow = get_price(ticker, days=30)
-        if valid(df_flow):
-            df_flow  = calc_indicators(df_flow)
-            last_fl  = df_flow.iloc[-1]
-            vol      = last_fl['vol_strength']
-            ret      = last_fl['return_1d']
-
-            flow_info = classify_flow_group(vol, ret, net_v)
-
-            st.write("#### 📊 Phân Tích Dòng Tiền 3 Nhóm")
-            g1, g2, g3 = st.columns(3)
-
-            inst_pct = flow_info['inst_pct']
-            if flow_info['group'] == "🦈 Cá Mập":
-                shark_pct = inst_pct
-                org_pct   = max(0, 1 - shark_pct - 0.2)
-            elif flow_info['group'] == "🏦 Tổ Chức Nội":
-                shark_pct = 0.05
-                org_pct   = inst_pct - shark_pct
-            else:
-                shark_pct, org_pct = 0.02, 0.13
-
-            retail_pct_final = max(0, 1 - shark_pct - org_pct)
-
-            g1.metric("🦈 Cá Mập",       f"{shark_pct*100:.1f}%",
-                      delta="Đang Mạnh" if flow_info['group'] == "🦈 Cá Mập" else "Ít Tham Gia",
-                      delta_color="normal" if flow_info['group'] == "🦈 Cá Mập" else "off")
-            g2.metric("🏦 Tổ Chức Nội",  f"{org_pct*100:.1f}%",
-                      delta="Tích Lũy" if flow_info['group'] == "🏦 Tổ Chức Nội" else "Bình Thường",
-                      delta_color="normal" if flow_info['group'] == "🏦 Tổ Chức Nội" else "off")
-            g3.metric("🐜 Nhỏ Lẻ",        f"{retail_pct_final*100:.1f}%",
-                      delta="⚠️ Đu Bám Nhiều" if retail_pct_final > 0.6 else "Ổn Định",
-                      delta_color="inverse" if retail_pct_final > 0.6 else "off")
-
-            st.info(f"**Nhóm chủ đạo:** {flow_info['group']} — {flow_info['description']}")
-            st.divider()
-
-            action_msg = f"**{flow_info['action']}**\n\n_{flow_info['action_note']}_"
-            if "GOM"    in flow_info['action']:  st.success(action_msg)
-            elif "XẢ"   in flow_info['action']:  st.error(action_msg)
-            else:                                 st.warning(action_msg)
+            st.warning(f"⚠️ **{ticker}** chưa nổi bật trong ngành về dòng tiền — tiền đang chảy vào mã khác nhiều hơn.")
+    else:
+        st.info(f"ℹ️ Chưa phân loại được ngành cho {ticker} hoặc không lấy được dữ liệu peer.")
 
 
 # ==============================================================================
