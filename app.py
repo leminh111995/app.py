@@ -1007,20 +1007,44 @@ def generate_report(ticker, last, ai_score, bt, buy_set, sell_set, foreign_trend
 # ==============================================================================
 
 def get_earnings_growth(ticker: str) -> float | None:
+    # Thử vnstock 4.x trước
+    for source in ['VCI', 'TCBS']:
+        try:
+            stk = Vnstock().stock(symbol=ticker, source=source)
+            df  = stk.finance.income_statement(period='quarter', lang='en').head(5)
+            profit_col = next(
+                (c for c in df.columns
+                 if any(k in str(c).lower() for k in
+                        ['sau thuế', 'posttax', 'net profit', 'earning', 'profit'])),
+                None
+            )
+            if profit_col and len(df) >= 5:
+                now_p  = float(df.iloc[0][profit_col])
+                prev_p = float(df.iloc[4][profit_col])
+                if prev_p != 0:
+                    return round((now_p - prev_p) / abs(prev_p) * 100, 1)
+        except Exception as e:
+            print(f"[WARN] Earnings vnstock4 {source} {ticker}: {e}")
+            continue
+
+    # Fallback vnstock 3.x
     try:
-        df = engine().stock.finance.income_statement(symbol=ticker, period='quarter', lang='en').head(5)
+        df = engine().stock.finance.income_statement(
+            symbol=ticker, period='quarter', lang='en').head(5)
         profit_col = next(
             (c for c in df.columns
              if any(k in str(c).lower() for k in ['sau thuế', 'posttax', 'net profit', 'earning'])),
             None
         )
-        if profit_col:
+        if profit_col and len(df) >= 5:
             now_p  = float(df.iloc[0][profit_col])
             prev_p = float(df.iloc[4][profit_col])
             if prev_p > 0:
                 return round((now_p - prev_p) / prev_p * 100, 1)
     except Exception as e:
-        print(f"[WARN] Earnings {ticker}: {e}")
+        print(f"[WARN] Earnings vnstock3 {ticker}: {e}")
+
+    # Fallback Yahoo
     try:
         g = yf.Ticker(f"{ticker}.VN").info.get('earningsQuarterlyGrowth')
         if g is not None:
@@ -1031,23 +1055,69 @@ def get_earnings_growth(ticker: str) -> float | None:
 
 def get_pe_roe(ticker: str) -> tuple:
     pe = roe = None
-    try:
-        row = engine().stock.finance.ratio(ticker, 'quarterly').iloc[-1]
-        raw_pe  = row.get('ticker_pe', row.get('pe'))
-        raw_roe = row.get('roe')
-        if raw_pe is not None:
-            v = float(raw_pe)
-            if not np.isnan(v) and v > 0: pe = v
-        if raw_roe is not None:
-            v = float(raw_roe)
-            if not np.isnan(v) and v > 0: roe = v
-    except Exception as e:
-        print(f"[WARN] PE/ROE {ticker}: {e}")
+
+    # Thử vnstock 4.x
+    for source in ['VCI', 'TCBS']:
+        try:
+            stk = Vnstock().stock(symbol=ticker, source=source)
+            df_ratio = stk.finance.ratio(period='quarterly', lang='en')
+            if valid(df_ratio):
+                row = df_ratio.iloc[-1]
+                # Thử nhiều tên cột PE khác nhau
+                for pe_col in ['pe', 'ticker_pe', 'P/E', 'p_e', 'priceToEarnings']:
+                    if pe_col in row and row[pe_col] is not None:
+                        try:
+                            v = float(row[pe_col])
+                            if not np.isnan(v) and 0 < v < 1000:
+                                pe = v
+                                break
+                        except Exception:
+                            pass
+                # Thử nhiều tên cột ROE
+                for roe_col in ['roe', 'ROE', 'returnOnEquity', 'return_on_equity']:
+                    if roe_col in row and row[roe_col] is not None:
+                        try:
+                            v = float(row[roe_col])
+                            if not np.isnan(v) and v != 0:
+                                roe = v
+                                break
+                        except Exception:
+                            pass
+                if pe is not None:
+                    break
+        except Exception as e:
+            print(f"[WARN] PE/ROE vnstock4 {source} {ticker}: {e}")
+            continue
+
+    # Fallback vnstock 3.x
+    if pe is None:
+        try:
+            row = engine().stock.finance.ratio(ticker, 'quarterly').iloc[-1]
+            for pe_col in ['ticker_pe', 'pe', 'P/E']:
+                if pe_col in row and row[pe_col] is not None:
+                    try:
+                        v = float(row[pe_col])
+                        if not np.isnan(v) and 0 < v < 1000:
+                            pe = v
+                            break
+                    except Exception:
+                        pass
+            if roe is None and 'roe' in row:
+                try:
+                    v = float(row['roe'])
+                    if not np.isnan(v) and v != 0:
+                        roe = v
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[WARN] PE/ROE vnstock3 {ticker}: {e}")
+
+    # Fallback Yahoo
     if pe is None:
         try:
             info = yf.Ticker(f"{ticker}.VN").info
-            pe   = info.get('trailingPE') or pe
-            roe  = roe or info.get('returnOnEquity')
+            pe  = info.get('trailingPE') or pe
+            roe = roe or info.get('returnOnEquity')
         except Exception:
             pass
     return pe, roe
@@ -2024,7 +2094,8 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.write(f"### 📈 Phân Tích Sức Khỏe Tài Chính — {ticker}")
-    with st.spinner("Đang quét báo cáo tài chính..."):
+    if st.button(f"📊 TẢI BÁO CÁO TÀI CHÍNH — {ticker}"):
+     with st.spinner("Đang quét báo cáo tài chính..."):
         growth = get_earnings_growth(ticker)
         if growth is not None:
             if growth >= CANSLIM_GREAT:
@@ -2068,7 +2139,8 @@ with tab3:
     st.write(f"### 🌊 Trung Tâm Phân Tích Dòng Tiền Chuyên Sâu — {ticker}")
     st.caption("Phân tích đủ 4 chiều: Tổng tiền × Tốc độ × Khung giờ × So sánh ngành — Kết luận dòng tiền ĐỦ MẠNH hay không")
 
-    with st.spinner("Đang phân tích toàn diện dòng tiền 10 phiên..."):
+    if st.button(f"🌊 PHÂN TÍCH DÒNG TIỀN — {ticker}"):
+     with st.spinner("Đang phân tích toàn diện dòng tiền 10 phiên..."):
         df_flow_raw = get_price(ticker, days=30)
         if valid(df_flow_raw):
             df_flow_raw = calc_indicators(df_flow_raw)
@@ -2522,8 +2594,12 @@ with tab6:
         st.warning("📭 Danh mục trống. Thêm vị thế đầu tiên ở trên!")
     else:
         st.write(f"#### 📋 Danh Mục Hiện Tại ({len(portfolio)} vị thế)")
-        with st.spinner("Đang cập nhật giá thị trường..."):
+        if st.button("🔄 Cập Nhật Giá Thị Trường"):
+         with st.spinner("Đang cập nhật giá thị trường..."):
             summary = calc_portfolio_summary()
+        else:
+            summary = []
+            st.info("💡 Bấm 'Cập Nhật Giá Thị Trường' để tải giá mới nhất.")
 
         if summary:
             df_port = pd.DataFrame(summary)
