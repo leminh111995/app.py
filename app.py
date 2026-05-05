@@ -303,13 +303,26 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 
 
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
+    """
+    Lấy dữ liệu Khối Ngoại — thử nhiều cú pháp vnstock 3.x và 4.x.
+    vnstock 4.x đổi hoàn toàn: cần .stock(symbol, source) trước rồi mới .trading.foreign()
+    """
     start, end = date_range(days)
-    for method in [
+    attempts = [
+        # vnstock 4.x — cú pháp mới (ưu tiên thử trước)
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='TCBS').trading.foreign(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign_trading(
+            start_date=start, end_date=end),
+        # vnstock 3.x — cú pháp cũ (fallback)
         lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
         lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
-    ]:
+    ]
+    for attempt in attempts:
         try:
-            df = method()
+            df = attempt()
             if valid(df):
                 return normalize_cols(df)
         except Exception:
@@ -318,13 +331,29 @@ def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
 
 
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
+    """
+    Lấy dữ liệu Tự Doanh — thử nhiều cú pháp vnstock 3.x và 4.x.
+    """
     start, end = date_range(days)
-    try:
-        df = engine().stock.trade.proprietary_trade(symbol=ticker, start=start, end=end)
-        if valid(df):
-            return normalize_cols(df)
-    except Exception as e:
-        print(f"[WARN] Proprietary {ticker}: {e}")
+    attempts = [
+        # vnstock 4.x
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.proprietary(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='TCBS').trading.proprietary(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.proprietary_trading(
+            start_date=start, end_date=end),
+        # vnstock 3.x
+        lambda: engine().stock.trade.proprietary_trade(symbol=ticker, start=start, end=end),
+        lambda: engine().stock.trading.proprietary(symbol=ticker, start=start, end=end),
+    ]
+    for attempt in attempts:
+        try:
+            df = attempt()
+            if valid(df):
+                return normalize_cols(df)
+        except Exception:
+            continue
     return None
 
 
@@ -2007,47 +2036,40 @@ with tab3:
     # Debug: kiểm tra API trả về gì
     with st.expander("🔧 Debug — Xem dữ liệu thô API (bấm nếu thấy 0.00 hết)"):
         start_d, end_d = date_range(FOREIGN_DAYS)
-        stk = engine().stock(symbol=ticker, source='VCI')
+        st.write("**Kết quả thử từng cú pháp API:**")
 
-        st.write("**Methods có sẵn trong vnstock 4.x:**")
-        try:
-            st.code(f"trading: {[m for m in dir(stk.trading) if not m.startswith('_')]}")
-        except Exception as e:
-            st.error(f"dir(trading): {e}")
-        try:
-            st.code(f"quote: {[m for m in dir(stk.quote) if not m.startswith('_')]}")
-        except Exception as e:
-            st.error(f"dir(quote): {e}")
-
-        st.divider()
-        st.write("**Thử từng endpoint:**")
-
-        # Danh sách tất cả cách gọi có thể có trong vnstock 4.x
-        attempts = [
-            ("trading.foreign(start, end)",
-             lambda: stk.trading.foreign(start_date=start_d, end_date=end_d)),
-            ("trading.foreign_trading(start, end)",
-             lambda: stk.trading.foreign_trading(start_date=start_d, end_date=end_d)),
-            ("trading.foreign_flow(start, end)",
-             lambda: stk.trading.foreign_flow(start_date=start_d, end_date=end_d)),
-            ("trading.price_board()",
-             lambda: stk.trading.price_board(symbols_list=[ticker])),
-            ("quote.history() cols",
-             lambda: stk.quote.history(start=start_d, end=end_d)),
+        debug_attempts = [
+            ("✨ VCI + trading.foreign(start_date, end_date)",
+             lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
+                 start_date=start_d, end_date=end_d)),
+            ("✨ TCBS + trading.foreign(start_date, end_date)",
+             lambda: Vnstock().stock(symbol=ticker, source='TCBS').trading.foreign(
+                 start_date=start_d, end_date=end_d)),
+            ("✨ VCI + trading.foreign_trading()",
+             lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign_trading(
+                 start_date=start_d, end_date=end_d)),
+            ("🔄 engine().stock.trade.foreign_trade()",
+             lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start_d, end=end_d)),
         ]
 
-        for name, fn in attempts:
+        found = False
+        for name, fn in debug_attempts:
             try:
                 result = fn()
                 if result is not None and hasattr(result, 'columns') and not result.empty:
-                    st.success(f"✅ **{name}** hoạt động!")
-                    st.write(f"Cột: `{list(result.columns)}`")
-                    st.dataframe(result.tail(2))
+                    st.success(f"✅ **{name}** — HOẠT ĐỘNG!")
+                    st.write(f"Tên cột: `{list(result.columns)}`")
+                    st.dataframe(result.tail(3))
+                    found = True
                     break
                 else:
                     st.warning(f"⚠️ {name} — trả về rỗng")
             except Exception as e:
-                st.error(f"❌ {name}: {e}")
+                st.error(f"❌ {name}: `{str(e)[:120]}`")
+
+        if not found:
+            st.error("❌ Tất cả API đều lỗi — vnstock 4.0.2 có thể đã đổi endpoint hoàn toàn. "
+                     "Chụp màn hình này gửi hỗ trợ.")
 
     # ================================================================
     # KẾT LUẬN DÒNG TIỀN — Hiển thị đầu tiên, nổi bật nhất
