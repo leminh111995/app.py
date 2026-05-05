@@ -281,6 +281,18 @@ def authenticate() -> bool:
 
 def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     start, end = date_range(days)
+
+    # Phương án A: vnstock 4.x — thử nhiều source
+    for source in ['VCI', 'TCBS']:
+        try:
+            df = Vnstock().stock(symbol=ticker, source=source).quote.history(
+                start=start, end=end)
+            if valid(df):
+                return normalize_cols(df)
+        except Exception:
+            continue
+
+    # Phương án B: vnstock 3.x cú pháp cũ
     try:
         df = engine().stock.quote.history(symbol=ticker, start=start, end=end)
         if valid(df):
@@ -288,12 +300,11 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     except Exception as e:
         print(f"[WARN] Vnstock price {ticker}: {e}")
 
+    # Phương án C: Yahoo Finance (bỏ VNINDEX vì Yahoo không hỗ trợ)
+    if ticker == "VNINDEX":
+        return None   # VNINDEX chỉ lấy qua vnstock, không qua Yahoo
     try:
-        # ^VNINDEX không còn hoạt động trên Yahoo — dùng VNINDEX.VN hoặc FVNINDEX
-        if ticker == "VNINDEX":
-            yf_sym = "FVNINDEX"   # ETF VN-Index trên Yahoo Finance
-        else:
-            yf_sym = f"{ticker}.VN"
+        yf_sym = f"{ticker}.VN"
         df = yf.download(yf_sym, period="3y", progress=False).reset_index()
         if valid(df):
             return normalize_cols(df)
@@ -1175,7 +1186,12 @@ def calc_beta_rs(df_ticker: pd.DataFrame, days: int = 60) -> dict:
     result = {'beta': None, 'rs_20': None, 'rs_label': '—', 'beta_label': '—'}
     try:
         df_vni = get_price("VNINDEX", days=days + 30)
+        if not valid(df_vni):
+            # Fallback: dùng VN30 ETF thay VNINDEX
+            df_vni = get_price("E1VFVN30", days=days + 30)
         if not valid(df_vni) or not valid(df_ticker):
+            result['beta_label'] = "N/A — Không lấy được dữ liệu VN-Index"
+            result['rs_label']   = "N/A — Không lấy được dữ liệu VN-Index"
             return result
 
         ret_t   = df_ticker['close'].pct_change().dropna().tail(days)
@@ -2037,6 +2053,7 @@ with tab3:
     with st.expander("🔧 Debug — Xem dữ liệu thô API (bấm nếu thấy 0.00 hết)"):
         start_d, end_d = date_range(FOREIGN_DAYS)
         st.write("**Kết quả thử từng cú pháp API:**")
+        st.caption("⏱️ Đang thử lần lượt — mỗi lần ~3-5 giây nếu API timeout")
 
         debug_attempts = [
             ("✨ VCI + trading.foreign(start_date, end_date)",
