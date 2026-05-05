@@ -281,46 +281,27 @@ def authenticate() -> bool:
 
 def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     """
-    Lấy dữ liệu giá — có cache 30 phút và timeout 8 giây mỗi attempt.
-    Thứ tự: vnstock 4.x (VCI) → vnstock 3.x → Yahoo (trừ VNINDEX)
+    Lấy dữ liệu giá — nhanh, không dùng threading.
+    Thứ tự: vnstock (engine) → Yahoo Finance.
     """
-    import threading
-
-    # Cache thủ công trong session_state — tránh gọi API lặp lại
+    # Cache trong session_state
     cache_key = f"price_{ticker}_{days}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
     start, end = date_range(days)
-    result_holder = [None]
 
-    def try_vnstock_4x():
-        try:
-            df = Vnstock().stock(symbol=ticker, source='VCI').quote.history(
-                start=start, end=end)
-            if valid(df):
-                result_holder[0] = normalize_cols(df)
-        except Exception as e:
-            print(f"[WARN] vnstock4 VCI {ticker}: {e}")
-
-    # Thử vnstock 4.x với timeout 8 giây
-    t = threading.Thread(target=try_vnstock_4x)
-    t.start()
-    t.join(timeout=8)
-    if result_holder[0] is not None:
-        st.session_state[cache_key] = result_holder[0]
-        return result_holder[0]
-
-    # Fallback: vnstock 3.x
+    # Phương án A: vnstock (engine tự xử lý version)
     try:
         df = engine().stock.quote.history(symbol=ticker, start=start, end=end)
         if valid(df):
-            st.session_state[cache_key] = normalize_cols(df)
-            return st.session_state[cache_key]
+            result = normalize_cols(df)
+            st.session_state[cache_key] = result
+            return result
     except Exception as e:
-        print(f"[WARN] vnstock3 {ticker}: {e}")
+        print(f"[WARN] vnstock {ticker}: {e}")
 
-    # Fallback: Yahoo Finance (không dùng cho VNINDEX)
+    # Phương án B: Yahoo Finance
     if ticker == "VNINDEX":
         return None
     try:
@@ -344,19 +325,15 @@ def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
-    attempts = [
-        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
-            start_date=start, end_date=end),
-        lambda: Vnstock().stock(symbol=ticker, source='TCBS').trading.foreign(
-            start_date=start, end_date=end),
-        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign_trading(
-            start_date=start, end_date=end),
+    # Thử engine() trực tiếp — nhanh nhất
+    for method in [
         lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
         lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
-    ]
-    for attempt in attempts:
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
+            start_date=start, end_date=end),
+    ]:
         try:
-            df = attempt()
+            df = method()
             if valid(df):
                 result = normalize_cols(df)
                 st.session_state[cache_key] = result
