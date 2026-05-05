@@ -2006,28 +2006,48 @@ with tab3:
 
     # Debug: kiểm tra API trả về gì
     with st.expander("🔧 Debug — Xem dữ liệu thô API (bấm nếu thấy 0.00 hết)"):
+        start_d, end_d = date_range(FOREIGN_DAYS)
+        stk = engine().stock(symbol=ticker, source='VCI')
+
+        st.write("**Methods có sẵn trong vnstock 4.x:**")
         try:
-            df_debug_for = get_foreign(ticker, FOREIGN_DAYS)
-            df_debug_pro = get_proprietary(ticker, FOREIGN_DAYS)
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                st.write("**Raw Khối Ngoại:**")
-                if valid(df_debug_for):
-                    st.write(f"Số dòng: {len(df_debug_for)}")
-                    st.write(f"Cột: {list(df_debug_for.columns)}")
-                    st.dataframe(df_debug_for.tail(3))
-                else:
-                    st.error("API Khối Ngoại không trả về dữ liệu")
-            with col_d2:
-                st.write("**Raw Tự Doanh:**")
-                if valid(df_debug_pro):
-                    st.write(f"Số dòng: {len(df_debug_pro)}")
-                    st.write(f"Cột: {list(df_debug_pro.columns)}")
-                    st.dataframe(df_debug_pro.tail(3))
-                else:
-                    st.error("API Tự Doanh không trả về dữ liệu")
+            st.code(f"trading: {[m for m in dir(stk.trading) if not m.startswith('_')]}")
         except Exception as e:
-            st.error(f"Debug lỗi: {e}")
+            st.error(f"dir(trading): {e}")
+        try:
+            st.code(f"quote: {[m for m in dir(stk.quote) if not m.startswith('_')]}")
+        except Exception as e:
+            st.error(f"dir(quote): {e}")
+
+        st.divider()
+        st.write("**Thử từng endpoint:**")
+
+        # Danh sách tất cả cách gọi có thể có trong vnstock 4.x
+        attempts = [
+            ("trading.foreign(start, end)",
+             lambda: stk.trading.foreign(start_date=start_d, end_date=end_d)),
+            ("trading.foreign_trading(start, end)",
+             lambda: stk.trading.foreign_trading(start_date=start_d, end_date=end_d)),
+            ("trading.foreign_flow(start, end)",
+             lambda: stk.trading.foreign_flow(start_date=start_d, end_date=end_d)),
+            ("trading.price_board()",
+             lambda: stk.trading.price_board(symbols_list=[ticker])),
+            ("quote.history() cols",
+             lambda: stk.quote.history(start=start_d, end=end_d)),
+        ]
+
+        for name, fn in attempts:
+            try:
+                result = fn()
+                if result is not None and hasattr(result, 'columns') and not result.empty:
+                    st.success(f"✅ **{name}** hoạt động!")
+                    st.write(f"Cột: `{list(result.columns)}`")
+                    st.dataframe(result.tail(2))
+                    break
+                else:
+                    st.warning(f"⚠️ {name} — trả về rỗng")
+            except Exception as e:
+                st.error(f"❌ {name}: {e}")
 
     # ================================================================
     # KẾT LUẬN DÒNG TIỀN — Hiển thị đầu tiên, nổi bật nhất
