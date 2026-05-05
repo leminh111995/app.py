@@ -363,21 +363,32 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     return None
 
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    """Khối Ngoại — MSN/KBS (vnstock 4.x), fallback cú pháp cũ."""
+    """
+    Khối Ngoại — thử tất cả source/method của vnstock 4.x.
+    Supported sources: MSN, KBS, VCI, FMP.
+    """
     start, end = date_range(days)
-    for method in [
+    attempts = [
         lambda: Vnstock().stock(symbol=ticker, source='MSN').trading.foreign(
             start_date=start, end_date=end),
         lambda: Vnstock().stock(symbol=ticker, source='KBS').trading.foreign(
             start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='FMP').trading.foreign(
+            start_date=start, end_date=end),
+        lambda: Vnstock().stock(symbol=ticker, source='MSN').trading.foreign_trading(
+            start_date=start, end_date=end),
         lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
         lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
-    ]:
+    ]
+    for attempt in attempts:
         try:
-            df = method()
+            df = attempt()
             if valid(df):
                 return normalize_cols(df)
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] foreign {ticker}: {e}")
             continue
     return None
 
@@ -2465,26 +2476,19 @@ with tab4:
 
                         break
 
+                # Làm tròn AI T+3
+                ai_display = f"{float(ai_s):.1f}%" if isinstance(ai_s, (int, float)) else str(ai_s)
+
                 row = {
-
-                    'Ticker':          t,
-
-                    'Thị Giá':         f"{last_s['close']:,.0f}",
-
-                    'Vol':             round(last_s['vol_strength'], 2),
-
-                    'RSI':             f"{last_s['rsi']:.1f}",
-
-                    'AI T+3':          f"{ai_s}%",
-
-                    'Weekly':          {"UP":"📈","DOWN":"📉","NEUTRAL":"➡️"}.get(weekly_s, "-"),
-
-                    'Lò Xo BB':        "🌀" if squeezed else "-",
-
-                    'Cạn Cung':        "💧" if supply   else "-",
-
-                    'Tổ Chức Gom':     "🦈" if smart    else "-",
-
+                    'Ticker':      t,
+                    'Thị Giá':    f"{last_s['close']:,.0f} đ",
+                    'Vol':         f"{last_s['vol_strength']:.2f}x",
+                    'RSI':         f"{last_s['rsi']:.1f}",
+                    'AI T+3':      ai_display,
+                    'Weekly':      {"UP":"📈 Tăng","DOWN":"📉 Giảm","NEUTRAL":"➡️ Ngang"}.get(weekly_s, "-"),
+                    'Lò Xo BB':   "✅ Nén" if squeezed else "—",
+                    'Cạn Cung':   "✅ Cạn" if supply   else "—",
+                    'Tổ Chức Gom':"✅ Gom" if smart    else "—",
                 }
 
                 if "Bùng Nổ"     in label: breakouts.append(row)
