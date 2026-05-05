@@ -109,7 +109,7 @@ ROE_EXCELLENT     = 0.25
 ROE_GOOD          = 0.15
 
 # Radar
-RADAR_MAX         = 150
+RADAR_MAX         = 100    # Giảm từ 150 → 100 để tăng tốc Radar
 SCAN_DAYS         = 100
 FOREIGN_DAYS      = 10    # [NÂNG CẤP #4] Tăng từ 5 → 10 phiên
 FOREIGN_NET_DAYS  = 10    # [NÂNG CẤP #4] Phân tích xu hướng 10 phiên
@@ -279,30 +279,44 @@ def authenticate() -> bool:
 # 2. TRUY XUẤT DỮ LIỆU
 # ==============================================================================
 
+@st.cache_data(ttl=1800)   # Cache 30 phút — tránh gọi API lặp lại cùng mã
 def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
-    start, end = date_range(days)
+    """
+    Lấy dữ liệu giá — có cache 30 phút và timeout 8 giây mỗi attempt.
+    Thứ tự: vnstock 4.x (VCI) → vnstock 3.x → Yahoo (trừ VNINDEX)
+    """
+    import threading
 
-    # Phương án A: vnstock 4.x — thử nhiều source
-    for source in ['VCI', 'TCBS']:
+    start, end = date_range(days)
+    result_holder = [None]
+
+    def try_vnstock_4x():
         try:
-            df = Vnstock().stock(symbol=ticker, source=source).quote.history(
+            df = Vnstock().stock(symbol=ticker, source='VCI').quote.history(
                 start=start, end=end)
             if valid(df):
-                return normalize_cols(df)
-        except Exception:
-            continue
+                result_holder[0] = normalize_cols(df)
+        except Exception as e:
+            print(f"[WARN] vnstock4 VCI {ticker}: {e}")
 
-    # Phương án B: vnstock 3.x cú pháp cũ
+    # Thử vnstock 4.x với timeout 8 giây
+    t = threading.Thread(target=try_vnstock_4x)
+    t.start()
+    t.join(timeout=8)
+    if result_holder[0] is not None:
+        return result_holder[0]
+
+    # Fallback: vnstock 3.x
     try:
         df = engine().stock.quote.history(symbol=ticker, start=start, end=end)
         if valid(df):
             return normalize_cols(df)
     except Exception as e:
-        print(f"[WARN] Vnstock price {ticker}: {e}")
+        print(f"[WARN] vnstock3 {ticker}: {e}")
 
-    # Phương án C: Yahoo Finance (bỏ VNINDEX vì Yahoo không hỗ trợ)
+    # Fallback: Yahoo Finance (không dùng cho VNINDEX)
     if ticker == "VNINDEX":
-        return None   # VNINDEX chỉ lấy qua vnstock, không qua Yahoo
+        return None
     try:
         yf_sym = f"{ticker}.VN"
         df = yf.download(yf_sym, period="3y", progress=False).reset_index()
@@ -313,6 +327,7 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     return None
 
 
+@st.cache_data(ttl=1800)
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     """
     Lấy dữ liệu Khối Ngoại — thử nhiều cú pháp vnstock 3.x và 4.x.
@@ -341,6 +356,7 @@ def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     return None
 
 
+@st.cache_data(ttl=1800)
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     """
     Lấy dữ liệu Tự Doanh — thử nhiều cú pháp vnstock 3.x và 4.x.
