@@ -279,13 +279,17 @@ def authenticate() -> bool:
 # 2. TRUY XUẤT DỮ LIỆU
 # ==============================================================================
 
-@st.cache_data(ttl=1800)   # Cache 30 phút — tránh gọi API lặp lại cùng mã
 def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     """
     Lấy dữ liệu giá — có cache 30 phút và timeout 8 giây mỗi attempt.
     Thứ tự: vnstock 4.x (VCI) → vnstock 3.x → Yahoo (trừ VNINDEX)
     """
     import threading
+
+    # Cache thủ công trong session_state — tránh gọi API lặp lại
+    cache_key = f"price_{ticker}_{days}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
 
     start, end = date_range(days)
     result_holder = [None]
@@ -304,13 +308,15 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     t.start()
     t.join(timeout=8)
     if result_holder[0] is not None:
+        st.session_state[cache_key] = result_holder[0]
         return result_holder[0]
 
     # Fallback: vnstock 3.x
     try:
         df = engine().stock.quote.history(symbol=ticker, start=start, end=end)
         if valid(df):
-            return normalize_cols(df)
+            st.session_state[cache_key] = normalize_cols(df)
+            return st.session_state[cache_key]
     except Exception as e:
         print(f"[WARN] vnstock3 {ticker}: {e}")
 
@@ -327,22 +333,24 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     return None
 
 
-@st.cache_data(ttl=1800)
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     """
     Lấy dữ liệu Khối Ngoại — thử nhiều cú pháp vnstock 3.x và 4.x.
     vnstock 4.x đổi hoàn toàn: cần .stock(symbol, source) trước rồi mới .trading.foreign()
     """
     start, end = date_range(days)
+    # Cache trong session_state
+    cache_key = f"foreign_{ticker}_{days}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
     attempts = [
-        # vnstock 4.x — cú pháp mới (ưu tiên thử trước)
         lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign(
             start_date=start, end_date=end),
         lambda: Vnstock().stock(symbol=ticker, source='TCBS').trading.foreign(
             start_date=start, end_date=end),
         lambda: Vnstock().stock(symbol=ticker, source='VCI').trading.foreign_trading(
             start_date=start, end_date=end),
-        # vnstock 3.x — cú pháp cũ (fallback)
         lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
         lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
     ]
@@ -350,13 +358,14 @@ def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
         try:
             df = attempt()
             if valid(df):
-                return normalize_cols(df)
+                result = normalize_cols(df)
+                st.session_state[cache_key] = result
+                return result
         except Exception:
             continue
     return None
 
 
-@st.cache_data(ttl=1800)
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
     """
     Lấy dữ liệu Tự Doanh — thử nhiều cú pháp vnstock 3.x và 4.x.
