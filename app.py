@@ -205,6 +205,50 @@ def to_billion(val) -> float:
     v = float(val or 0)
     return v / 1e9 if abs(v) > 1e6 else v
 
+
+def get_col(row, *keys, default=0):
+    """Lấy giá trị từ row — thử nhiều tên cột để tương thích mọi version vnstock."""
+    for key in keys:
+        if key in row and row[key] is not None:
+            try:
+                return float(row[key])
+            except (ValueError, TypeError):
+                continue
+    return float(default)
+
+
+def row_to_buy(row) -> float:
+    """Giá trị mua — tương thích vnstock 3.x, 4.x và các alias."""
+    return get_col(row,
+        'buy_value', 'buyValue', 'buyval',
+        'buy_vol',   'buyvol',   'buy',
+        'gtmua',     'gt_mua',
+    )
+
+
+def row_to_sell(row) -> float:
+    """Giá trị bán — tương thích vnstock 3.x, 4.x và các alias."""
+    return get_col(row,
+        'sell_value', 'sellValue', 'sellval',
+        'sell_vol',   'sellvol',   'sell',
+        'gtban',      'gt_ban',
+    )
+
+
+def row_to_net(row, buy=None, sell=None) -> float:
+    """Giá trị ròng — thử cột net trước, fallback tính buy-sell."""
+    net = get_col(row,
+        'net_value', 'netValue', 'netval',
+        'net_vol',   'netvol',   'net',
+        'gtron',     'gt_ron',
+    )
+    if net != 0:
+        return net
+    b = buy if buy is not None else row_to_buy(row)
+    s = sell if sell is not None else row_to_sell(row)
+    return b - s
+
+
 def engine() -> Vnstock:
     return st.session_state['vnstock_engine']
 
@@ -245,7 +289,11 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
         print(f"[WARN] Vnstock price {ticker}: {e}")
 
     try:
-        yf_sym = "^VNINDEX" if ticker == "VNINDEX" else f"{ticker}.VN"
+        # ^VNINDEX không còn hoạt động trên Yahoo — dùng VNINDEX.VN hoặc FVNINDEX
+        if ticker == "VNINDEX":
+            yf_sym = "FVNINDEX"   # ETF VN-Index trên Yahoo Finance
+        else:
+            yf_sym = f"{ticker}.VN"
         df = yf.download(yf_sym, period="3y", progress=False).reset_index()
         if valid(df):
             return normalize_cols(df)
@@ -405,9 +453,9 @@ def analyze_foreign_trend(df_for: pd.DataFrame) -> dict:
     net_vals = []
 
     for _, row in df.iterrows():
-        buy  = to_billion(row.get('buyval',  0))
-        sell = to_billion(row.get('sellval', 0))
-        net  = to_billion(row.get('netval', buy - sell))
+        buy  = to_billion(row_to_buy(row))
+        sell = to_billion(row_to_sell(row))
+        net  = to_billion(row_to_net(row, buy, sell))
         net_vals.append(net)
 
     if not net_vals:
@@ -945,11 +993,11 @@ def get_pe_roe(ticker: str) -> tuple:
 # ==============================================================================
 
 def calc_net_flow(df: pd.DataFrame, days: int = 3) -> float:
-    total_buy = total_sell = 0.0
+    """Tính dòng tiền ròng — dùng get_col để tự động thích nghi với mọi version vnstock."""
+    total_net = 0.0
     for _, row in df.tail(days).iterrows():
-        total_buy  += float(row.get('buyval',  0) or 0)
-        total_sell += float(row.get('sellval', 0) or 0)
-    return total_buy - total_sell
+        total_net += to_billion(row_to_net(row))
+    return total_net
 
 def classify_flow_group(vol: float, ret: float, net_flow: float) -> dict:
     if vol >= VOL_SHARK:
@@ -1399,18 +1447,18 @@ def analyze_money_flow_advanced(ticker: str, df: pd.DataFrame) -> dict:
 
     if valid(df_for):
         for _, row in df_for.tail(10).iterrows():
-            b = to_billion(row.get('buyval', 0))
-            s = to_billion(row.get('sellval', 0))
-            n = to_billion(row.get('netval', b - s))
+            b = to_billion(row_to_buy(row))
+            s = to_billion(row_to_sell(row))
+            n = to_billion(row_to_net(row, b, s))
             foreign_nets.append(n)
             if 'date' in df_for.columns:
                 dates.append(str(row.get('date', ''))[:10])
 
     if valid(df_pro):
         for _, row in df_pro.tail(10).iterrows():
-            b = to_billion(row.get('buyval', 0))
-            s = to_billion(row.get('sellval', 0))
-            n = to_billion(row.get('netval', b - s))
+            b = to_billion(row_to_buy(row))
+            s = to_billion(row_to_sell(row))
+            n = to_billion(row_to_net(row, b, s))
             prop_nets.append(n)
 
     # Pad nếu thiếu
@@ -1488,7 +1536,7 @@ def analyze_money_flow_advanced(ticker: str, df: pd.DataFrame) -> dict:
             try:
                 df_p = get_foreign(peer, 5)
                 if valid(df_p):
-                    peer_flow[peer] = round(calc_net_flow(df_p, 5), 2)
+                    peer_flow[peer] = round(calc_net_flow(df_p, 5), 2)  # đã dùng row_to_net
             except Exception:
                 pass
         peer_flow[ticker] = round(sum(foreign_nets[-5:]), 2)
@@ -1955,6 +2003,31 @@ with tab3:
         if valid(df_flow_raw):
             df_flow_raw = calc_indicators(df_flow_raw)
         mf = analyze_money_flow_advanced(ticker, df_flow_raw if valid(df_flow_raw) else pd.DataFrame())
+
+    # Debug: kiểm tra API trả về gì
+    with st.expander("🔧 Debug — Xem dữ liệu thô API (bấm nếu thấy 0.00 hết)"):
+        try:
+            df_debug_for = get_foreign(ticker, FOREIGN_DAYS)
+            df_debug_pro = get_proprietary(ticker, FOREIGN_DAYS)
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.write("**Raw Khối Ngoại:**")
+                if valid(df_debug_for):
+                    st.write(f"Số dòng: {len(df_debug_for)}")
+                    st.write(f"Cột: {list(df_debug_for.columns)}")
+                    st.dataframe(df_debug_for.tail(3))
+                else:
+                    st.error("API Khối Ngoại không trả về dữ liệu")
+            with col_d2:
+                st.write("**Raw Tự Doanh:**")
+                if valid(df_debug_pro):
+                    st.write(f"Số dòng: {len(df_debug_pro)}")
+                    st.write(f"Cột: {list(df_debug_pro.columns)}")
+                    st.dataframe(df_debug_pro.tail(3))
+                else:
+                    st.error("API Tự Doanh không trả về dữ liệu")
+        except Exception as e:
+            st.error(f"Debug lỗi: {e}")
 
     # ================================================================
     # KẾT LUẬN DÒNG TIỀN — Hiển thị đầu tiên, nổi bật nhất
