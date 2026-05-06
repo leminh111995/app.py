@@ -174,7 +174,7 @@ ROE_GOOD          = 0.15
 
 RADAR_MAX         = 150
 
-SCAN_DAYS         = 100
+SCAN_DAYS         = 300   # Cần ≥ 200 vì calc_indicators dùng MA200 + dropna
 
 FOREIGN_DAYS      = 10    # [NÂNG CẤP #4] Tăng từ 5 → 10 phiên
 
@@ -500,7 +500,12 @@ def calc_indicators(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     )
 
-    return df.dropna()
+    # Chỉ dropna các cột kỹ thuật cốt lõi — tránh MA200 làm rỗng df
+    core_cols = ['close', 'open', 'volume', 'ma20', 'ma50',
+                 'rsi', 'macd', 'signal', 'bb_width',
+                 'return_1d', 'vol_strength', 'volatility']
+    existing  = [c for c in core_cols if c in df.columns]
+    return df.dropna(subset=existing)
 
 # [NÂNG CẤP #5] Lọc đa khung thời gian — Weekly Trend
 
