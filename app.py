@@ -1604,17 +1604,8 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
 
     supply_ex = df['can_cung'].tail(5).any()
 
-    smart     = False
-
-    for get_fn in [get_foreign, get_proprietary]:
-
-        fd = get_fn(ticker, FOREIGN_DAYS)
-
-        if valid(fd) and calc_net_flow(fd, 3) > 0:
-
-            smart = True
-
-            break
+    # Bỏ get_foreign/proprietary — dùng PV Trend thay thế (không gọi API thêm)
+    smart   = df['pv_trend'].tail(5).sum() >= 2
 
     weapons = sum([squeezed, supply_ex, smart])
 
