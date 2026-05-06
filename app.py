@@ -631,7 +631,7 @@ def calc_total_score(
     price, ma20, rsi = last['close'], last['ma20'], last['rsi']
 
     # --- AI (0-25) ---
-    if isinstance(ai_score, float):
+    if _is_valid_score(ai_score):
         if   ai_score >= 70: ai_pts = 25
         elif ai_score >= 60: ai_pts = 20
         elif ai_score >= 50: ai_pts = 13
@@ -773,9 +773,9 @@ def generate_report(ticker, last, ai_score, bt, buy_set, sell_set, foreign_trend
     else:
         parts.append(f"📊 **RSI = {rsi:.1f} — Vùng Ổn Định.**")
     parts.append("#### 3. Xác Suất Định Lượng (AI & Backtest Thực Tế):")
-    if isinstance(ai_score, float):
-        ai_label = "Cửa sáng" if ai_score > AI_GOOD else "Rủi ro cao"
-        parts.append(f"- **AI XGBoost T+3:** **{ai_score}%** → *{ai_label}* (Walk-Forward + ADX/OBV validated)")
+    if _is_valid_score(ai_score):
+        ai_label = "Cửa sáng" if float(ai_score) > AI_GOOD else "Rủi ro cao"
+        parts.append(f"- **AI XGBoost T+3:** **{float(ai_score):.1f}%** → *{ai_label}* (Walk-Forward + ADX/OBV validated)")
     wr  = bt.get('winrate', 0)
     exp = bt.get('expectancy', 0)
     parts.append(f"- **Winrate (sau phí):** **{wr}%** | Kỳ vọng mỗi lệnh: **{exp:+.2f}%**")
@@ -787,11 +787,11 @@ def generate_report(ticker, last, ai_score, bt, buy_set, sell_set, foreign_trend
     parts.append(f"- **🛡️ ATR Trailing Stop:** **{sl_info['final_sl']:,.0f} VNĐ** ({sl_info['sl_pct']:+.1f}%)")
     parts.append("#### 💡 TỔNG KẾT:")
     price_bad = price < ma20
-    ai_good   = isinstance(ai_score, float) and ai_score > AI_GOOD
+    ai_good   = _is_valid_score(ai_score) and float(ai_score) > AI_GOOD
     wr_good   = wr >= ADV_WINRATE_GOOD
     if price_bad and ticker in buy_set:
         parts.append("⚠️ **GOM HÀNG RẢI ĐỈNH:** Có dòng tiền gom nhưng giá dưới MA20 — chờ bứt MA20 mới vào.")
-    elif wr < 40 and isinstance(ai_score, float) and ai_score < 50:
+    elif wr < 40 and _is_valid_score(ai_score) and float(ai_score) < 50:
         parts.append("⛔ **RỦI RO NGẬP TRÀN:** AI và lịch sử đều tiêu cực — tuyệt đối đứng ngoài.")
     elif not price_bad and ai_good and wr_good and weekly_trend == 'UP':
         parts.append("🚀 **ĐIỂM MUA VÀNG:** Nền đẹp + AI + lịch sử + tuần xác nhận — giải ngân 30–50%.")
@@ -925,7 +925,7 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
     ma20  = last['ma20']
     if vol > VOL_BREAKOUT:
         return "🚀 Bùng Nổ"
-    ai_ok = isinstance(ai_score, float) and ai_score > AI_OK
+    ai_ok = _is_valid_score(ai_score) and float(ai_score) > AI_OK
     base_ok = (
         VOL_ACC_MIN <= vol <= VOL_ACC_MAX and
         price >= ma20 * PRICE_NEAR_MA20   and
@@ -991,13 +991,18 @@ def _score_to_bar(score: float, max_score: float = 100) -> str:
     empty  = 10 - filled
     return "🟩" * filled + "⬜" * empty + f"  {score:.0f}/{max_score:.0f}"
 
+def _is_valid_score(ai_score) -> bool:
+    """Kiểm tra numpy.float64 lẫn Python float đều pass."""
+    return isinstance(ai_score, (float, np.floating)) and not np.isnan(float(ai_score))
+
 def _ai_badge(ai_score) -> str:
-    if not isinstance(ai_score, float):
+    if not _is_valid_score(ai_score):
         return "❓ N/A"
-    if   ai_score >= 70: return f"🔥 {ai_score}%"
-    elif ai_score >= 55: return f"✅ {ai_score}%"
-    elif ai_score >= 45: return f"🟡 {ai_score}%"
-    else:                return f"🔴 {ai_score}%"
+    v = float(ai_score)
+    if   v >= 70: return f"🔥 {v:.1f}% (Rất tốt)"
+    elif v >= 55: return f"✅ {v:.1f}% (Tốt)"
+    elif v >= 45: return f"🟡 {v:.1f}% (Trung bình)"
+    else:         return f"🔴 {v:.1f}% (Rủi ro)"
 
 def _rsi_badge(rsi: float) -> str:
     if   rsi > RSI_OVERBOUGHT: return f"🔴 {rsi:.1f} (Quá mua)"
