@@ -1,12 +1,9 @@
 # ==============================================================================
-# QUANT SYSTEM V22.0 - THE PREDATOR LEVIATHAN SUPREME
-# Tác giả: Minh | Nâng cấp V22.0 — thêm 5 cải tiến + hiển thị Radar nâng cao
-# NÂNG CẤP #10: ATR Trailing Stop thay SL cứng
-# NÂNG CẤP #11: ADX + OBV vào Features AI
-# NÂNG CẤP #12: Kelly Criterion Position Sizing
-# NÂNG CẤP #13: Cache AI Prediction per Ticker
-# NÂNG CẤP #14: Sharpe Ratio + Max Drawdown trong Backtest
-# NÂNG CẤP #15: Radar hiển thị trực quan — bảng màu, score bar, cards
+# QUANT SYSTEM V23.0 - THE PREDATOR LEVIATHAN SUPREME
+# Tác giả: Minh
+# V22: ATR Stop | ADX+OBV | Kelly | Cache AI | Sharpe+MaxDD | Radar Display
+# V23: RS Rating | RSI/MACD Divergence | Market Breadth | VWAP | 52W High
+#      Ichimoku Cloud | Chân Sóng Detection nâng cao
 # ==============================================================================
 
 # --- IMPORTS ---
@@ -117,6 +114,22 @@ FOREIGN_NET_DAYS  = 10
 
 # Chart
 CHART_DAYS        = 120
+
+# [V23] RS Rating
+RS_LOOKBACK       = 63          # ~3 tháng giao dịch
+RS_GOOD           = 70          # RS ≥ 70 = mạnh hơn thị trường
+
+# [V23] 52-Week High
+W52_NEAR_PCT      = 0.92        # trong vòng 8% đỉnh 52 tuần = gần đỉnh
+
+# [V23] Divergence
+DIV_LOOKBACK      = 20          # số phiên nhìn lại để tìm phân kỳ
+
+# [V23] Chân Sóng (Wave Bottom) — tiêu chí mở rộng
+WAVE_RSI_MAX      = 52          # RSI dưới 52 = chưa quá mua
+WAVE_RSI_MIN      = 28          # RSI trên 28 = không quá bán thái quá
+WAVE_PRICE_MA50   = 0.88        # giá ít nhất 88% MA50
+WAVE_SCORE_MIN    = 3           # cần ≥ 3 điểm chân sóng
 
 # Mã trụ thị trường
 PILLARS = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
@@ -915,23 +928,341 @@ def get_ticker_sector(ticker: str) -> str | None:
     return None
 
 # ==============================================================================
-# 16. RADAR — PHÂN LOẠI CỔ PHIẾU 3 TẦNG
+# [V23 #17] RS RATING — Xếp hạng sức mạnh so với VN-Index
 # ==============================================================================
+def calc_rs_rating(df: pd.DataFrame, df_vnindex: pd.DataFrame) -> float:
+    """
+    So sánh hiệu suất 63 phiên (≈3 tháng) của cổ phiếu vs VN-Index.
+    Trả về điểm 0–100 (kiểu IBD RS Rating).
+    """
+    try:
+        stock_ret  = (df['close'].iloc[-1] - df['close'].iloc[-RS_LOOKBACK]) / (df['close'].iloc[-RS_LOOKBACK] + 1e-9)
+        market_ret = (df_vnindex['close'].iloc[-1] - df_vnindex['close'].iloc[-RS_LOOKBACK]) / (df_vnindex['close'].iloc[-RS_LOOKBACK] + 1e-9)
+        # Điểm thô = outperform bao nhiêu %
+        excess = stock_ret - market_ret
+        # Chuẩn hóa về 0-100: excess +20% → 100, excess -20% → 0
+        score = (excess + 0.20) / 0.40 * 100
+        return round(max(0.0, min(100.0, score)), 1)
+    except Exception:
+        return 50.0   # neutral fallback
+
+
+def _rs_badge(rs: float) -> str:
+    if   rs >= 90: return f"🔥 {rs:.0f} (Siêu mạnh)"
+    elif rs >= 70: return f"✅ {rs:.0f} (Mạnh hơn thị trường)"
+    elif rs >= 50: return f"🟡 {rs:.0f} (Ngang thị trường)"
+    else:          return f"🔴 {rs:.0f} (Yếu hơn thị trường)"
+
+
+# ==============================================================================
+# [V23 #18] DIVERGENCE DETECTION — Phân kỳ RSI & MACD
+# ==============================================================================
+def detect_divergence(df: pd.DataFrame, lookback: int = DIV_LOOKBACK) -> dict:
+    """
+    Bullish divergence:  Giá lower low  nhưng RSI higher low  → sắp đảo chiều tăng
+    Bearish divergence:  Giá higher high nhưng RSI lower high → sắp đảo chiều giảm
+    """
+    result = {'bullish_rsi': False, 'bearish_rsi': False,
+              'bullish_macd': False, 'bearish_macd': False,
+              'label': '', 'signal': 'NONE'}
+    try:
+        window = df.tail(lookback)
+        if len(window) < lookback:
+            return result
+        close = window['close'].values
+        rsi   = window['rsi'].values
+        macd  = window['macd'].values
+
+        # Tìm đáy giá và đáy RSI trong nửa đầu vs nửa sau
+        mid = lookback // 2
+        price_prev_low = close[:mid].min()
+        price_last_low = close[mid:].min()
+        rsi_prev_low   = rsi[:mid].min()
+        rsi_last_low   = rsi[mid:].min()
+
+        price_prev_high = close[:mid].max()
+        price_last_high = close[mid:].max()
+        rsi_prev_high   = rsi[:mid].max()
+        rsi_last_high   = rsi[mid:].max()
+        macd_prev_high  = macd[:mid].max()
+        macd_last_high  = macd[mid:].max()
+
+        # Bullish RSI divergence
+        if price_last_low < price_prev_low * 0.99 and rsi_last_low > rsi_prev_low + 3:
+            result['bullish_rsi'] = True
+        # Bearish RSI divergence
+        if price_last_high > price_prev_high * 1.01 and rsi_last_high < rsi_prev_high - 3:
+            result['bearish_rsi'] = True
+        # Bullish MACD divergence
+        macd_prev_low = macd[:mid].min()
+        macd_last_low = macd[mid:].min()
+        if price_last_low < price_prev_low * 0.99 and macd_last_low > macd_prev_low + 0.01:
+            result['bullish_macd'] = True
+        # Bearish MACD divergence
+        if price_last_high > price_prev_high * 1.01 and macd_last_high < macd_prev_high - 0.01:
+            result['bearish_macd'] = True
+
+        if result['bullish_rsi'] or result['bullish_macd']:
+            indicators = []
+            if result['bullish_rsi']:  indicators.append("RSI")
+            if result['bullish_macd']: indicators.append("MACD")
+            result['signal'] = 'BULLISH'
+            result['label']  = f"📈 Phân Kỳ Dương ({'+'.join(indicators)}) — Giá giảm nhưng động lượng đang phục hồi"
+        elif result['bearish_rsi'] or result['bearish_macd']:
+            indicators = []
+            if result['bearish_rsi']:  indicators.append("RSI")
+            if result['bearish_macd']: indicators.append("MACD")
+            result['signal'] = 'BEARISH'
+            result['label']  = f"📉 Phân Kỳ Âm ({'+'.join(indicators)}) — Giá tăng nhưng động lượng suy yếu"
+        else:
+            result['label'] = "➡️ Không có phân kỳ rõ ràng"
+    except Exception as e:
+        print(f"[WARN] divergence: {e}")
+    return result
+
+
+# ==============================================================================
+# [V23 #20] VWAP — Volume Weighted Average Price
+# ==============================================================================
+def calc_vwap(df: pd.DataFrame, days: int = 20) -> pd.Series:
+    """
+    VWAP rolling 20 phiên — đường giá trung bình thực sự theo khối lượng.
+    Giá trên VWAP = phe mua chiếm ưu thế. Dưới VWAP = phe bán chiếm ưu thế.
+    """
+    typical = (df['high'] + df['low'] + df['close']) / 3
+    tp_vol  = typical * df['volume']
+    vwap    = tp_vol.rolling(days).sum() / df['volume'].rolling(days).sum()
+    return vwap
+
+
+# ==============================================================================
+# [V23 #21] 52-WEEK HIGH PROXIMITY
+# ==============================================================================
+def calc_52w_info(df: pd.DataFrame) -> dict:
+    """
+    Phân tích vị trí giá so với đỉnh & đáy 52 tuần (~252 phiên).
+    Gần đỉnh 52 tuần = tín hiệu CANSLIM mạnh nhất (Stage 2 breakout).
+    """
+    window_252 = df['close'].tail(252)
+    high_52w = window_252.max()
+    low_52w  = window_252.min()
+    price    = df['close'].iloc[-1]
+    pct_from_high = (price - high_52w) / high_52w * 100
+    pct_from_low  = (price - low_52w)  / low_52w  * 100
+    near_high = price >= high_52w * W52_NEAR_PCT
+    near_low  = price <= low_52w  * 1.08
+    if near_high:
+        label = f"🏆 Gần Đỉnh 52 Tuần ({pct_from_high:.1f}%) — Vùng Stage 2 Breakout"
+    elif near_low:
+        label = f"💧 Gần Đáy 52 Tuần (+{pct_from_low:.1f}%) — Vùng rủi ro"
+    else:
+        label = f"📍 Giữa vùng ({pct_from_high:.1f}% dưới đỉnh, +{pct_from_low:.1f}% từ đáy)"
+    return {
+        'high_52w':       round(high_52w, 0),
+        'low_52w':        round(low_52w,  0),
+        'pct_from_high':  round(pct_from_high, 1),
+        'pct_from_low':   round(pct_from_low,  1),
+        'near_high':      near_high,
+        'near_low':       near_low,
+        'label':          label,
+    }
+
+
+# ==============================================================================
+# [V23 #23] ICHIMOKU CLOUD
+# ==============================================================================
+def calc_ichimoku(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ichimoku Kinko Hyo — hệ thống xác định xu hướng đa tầng thời gian.
+    Tenkan (9) | Kijun (26) | Senkou A | Senkou B (52) | Chikou
+    """
+    high = df['high']
+    low  = df['low']
+    def mid(h, l, n): return (h.rolling(n).max() + l.rolling(n).min()) / 2
+    df = df.copy()
+    df['ichi_tenkan']  = mid(high, low, 9)
+    df['ichi_kijun']   = mid(high, low, 26)
+    df['ichi_senkouA'] = ((df['ichi_tenkan'] + df['ichi_kijun']) / 2).shift(26)
+    df['ichi_senkouB'] = mid(high, low, 52).shift(26)
+    df['ichi_chikou']  = df['close'].shift(-26)
+    return df
+
+
+def ichimoku_signal(last: pd.Series) -> dict:
+    """Đọc tín hiệu Ichimoku từ dòng cuối."""
+    price    = last['close']
+    tenkan   = last.get('ichi_tenkan',  np.nan)
+    kijun    = last.get('ichi_kijun',   np.nan)
+    senkou_a = last.get('ichi_senkouA', np.nan)
+    senkou_b = last.get('ichi_senkouB', np.nan)
+    if any(np.isnan(v) for v in [tenkan, kijun, senkou_a, senkou_b]):
+        return {'signal': 'UNKNOWN', 'label': '❓ Chưa đủ dữ liệu Ichimoku'}
+    cloud_top    = max(senkou_a, senkou_b)
+    cloud_bottom = min(senkou_a, senkou_b)
+    above_cloud  = price > cloud_top
+    below_cloud  = price < cloud_bottom
+    tenkan_cross = tenkan > kijun      # TK cắt KJ lên = bullish
+    cloud_bull   = senkou_a > senkou_b # Mây xanh = bullish cloud
+    if above_cloud and tenkan_cross and cloud_bull:
+        signal = 'STRONG_BULL'
+        label  = "☁️ Ichimoku: **Rất Tích Cực** — Giá trên mây, TK×KJ dương, mây xanh"
+    elif above_cloud and tenkan_cross:
+        signal = 'BULL'
+        label  = "☁️ Ichimoku: **Tích Cực** — Giá trên mây + TK cắt KJ lên"
+    elif above_cloud:
+        signal = 'NEUTRAL_BULL'
+        label  = "☁️ Ichimoku: **Trung Lập Tốt** — Giá trên mây nhưng TK/KJ chưa xác nhận"
+    elif below_cloud:
+        signal = 'BEAR'
+        label  = "☁️ Ichimoku: **Tiêu Cực** — Giá dưới mây, xu hướng giảm"
+    else:
+        signal = 'INSIDE_CLOUD'
+        label  = "☁️ Ichimoku: **Giằng Co** — Giá đang trong mây, chờ phá vỡ"
+    return {'signal': signal, 'label': label,
+            'above_cloud': above_cloud, 'cloud_bull': cloud_bull}
+
+
+# ==============================================================================
+# [V23 #19] MARKET BREADTH — Sức khỏe thị trường tổng thể
+# ==============================================================================
+@st.cache_data(ttl=1800)
+def calc_market_breadth(sample_tickers: tuple) -> dict:
+    """
+    Quét mẫu 50 mã để đo sức khỏe thị trường:
+    - % mã trên MA20
+    - % mã có RSI < 50 (chưa quá mua)
+    - Tỷ lệ tăng/giảm
+    """
+    above_ma20 = rsi_healthy = advancing = total = 0
+    for t in sample_tickers:
+        try:
+            df = get_price(t, days=60)
+            if not valid(df) or len(df) < 25:
+                continue
+            df = calc_indicators(df)
+            last = df.iloc[-1]
+            total += 1
+            if last['close'] > last['ma20']:           above_ma20   += 1
+            if last['rsi'] < 55:                       rsi_healthy  += 1
+            if last['return_1d'] > 0:                  advancing    += 1
+        except Exception:
+            continue
+    if total == 0:
+        return {'total': 0, 'pct_above_ma20': 0, 'pct_rsi_ok': 0,
+                'advance_decline': 0, 'market_status': 'UNKNOWN'}
+    pct_ma20 = above_ma20 / total * 100
+    pct_rsi  = rsi_healthy / total * 100
+    adr      = advancing / total * 100
+    if   pct_ma20 >= 70 and adr >= 60: status = "🟢 Thị Trường Mạnh (Bull Phase)"
+    elif pct_ma20 >= 50 and adr >= 50: status = "🟡 Thị Trường Trung Lập"
+    elif pct_ma20 < 40:                status = "🔴 Thị Trường Yếu (Bear Phase)"
+    else:                              status = "🟠 Thị Trường Phân Hóa"
+    return {
+        'total':           total,
+        'pct_above_ma20':  round(pct_ma20, 1),
+        'pct_rsi_ok':      round(pct_rsi,  1),
+        'advance_decline': round(adr,       1),
+        'market_status':   status,
+    }
+
+
+# ==============================================================================
+# [V23 #24] WAVE BOTTOM SCORE — Bộ dò chân sóng nâng cao
+# ==============================================================================
+def calc_wave_bottom_score(df: pd.DataFrame, last: pd.Series) -> dict:
+    """
+    Hệ thống điểm riêng để phát hiện cổ phiếu đang ở CHÂN SÓNG.
+    Mỗi điều kiện đúng = +1 điểm. Tổng ≥ WAVE_SCORE_MIN = chân sóng hợp lệ.
+
+    Tiêu chí rộng hơn Tầng 2 — bắt sớm hơn, trước khi weekly xác nhận.
+    """
+    score  = 0
+    flags  = []
+    price  = last['close']
+    ma20   = last['ma20']
+    ma50   = last.get('ma50', ma20)
+    rsi    = last['rsi']
+    bb_low = last['lower_band']
+    bb_wid = last['bb_width']
+    adx    = last.get('adx', 0)
+    obv_z  = last.get('obv_zscore', 0)
+
+    # 1. RSI trong vùng hồi phục (không quá mua, không quá bán thái quá)
+    if WAVE_RSI_MIN <= rsi <= WAVE_RSI_MAX:
+        score += 1
+        flags.append("RSI vùng hồi phục")
+
+    # 2. Giá gần/trên MA50 (nền trung hạn còn tốt)
+    if price >= ma50 * WAVE_PRICE_MA50:
+        score += 1
+        flags.append("Gần MA50")
+
+    # 3. BB đang co lại (Squeeze) — năng lượng đang tích tụ
+    bb_min30 = df['bb_width'].tail(30).min()
+    if bb_wid <= bb_min30 * 1.3:
+        score += 1
+        flags.append("BB Squeeze")
+
+    # 4. Cạn Cung — Vol thấp trên nến đỏ (người bán cạn kiệt)
+    if df['can_cung'].tail(7).sum() >= 2:
+        score += 1
+        flags.append("Cạn Cung")
+
+    # 5. OBV đang tích lũy dương (dòng tiền thực chảy vào)
+    if obv_z > 0.3:
+        score += 1
+        flags.append("OBV tích lũy")
+
+    # 6. ADX thấp = sideways = đang tích lũy nền (không phải downtrend mạnh)
+    if 10 < adx < 25:
+        score += 1
+        flags.append("ADX sideways")
+
+    # 7. Giá đang nằm giữa Lower BB và MA20 (vùng hỗ trợ kép)
+    if bb_low * 0.98 <= price <= ma20 * 1.02:
+        score += 1
+        flags.append("Nằm vùng hỗ trợ kép BB-MA20")
+
+    # 8. Giá tăng nhẹ phiên gần nhất trên Vol bình thường (rục rịch thoát đáy)
+    ret = last.get('return_1d', 0)
+    vol = last['vol_strength']
+    if ret > 0 and 0.7 <= vol <= 1.4:
+        score += 1
+        flags.append("Giá xanh nhẹ + Vol bình thường")
+
+    is_wave_bottom = score >= WAVE_SCORE_MIN
+    if is_wave_bottom:
+        label = f"🌊 Chân Sóng ({score}/8 điều kiện: {', '.join(flags)})"
+    else:
+        label = f"Chưa đủ tiêu chí chân sóng ({score}/8)"
+    return {
+        'score':           score,
+        'flags':           flags,
+        'is_wave_bottom':  is_wave_bottom,
+        'label':           label,
+    }
+
+
+# ==============================================================================
+# 16. RADAR — PHÂN LOẠI CỔ PHIẾU 4 TẦNG (V23: thêm Chân Sóng)
 def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -> str | None:
+    """
+    [V23] Phân loại 4 tầng:
+    🚀 Bùng Nổ | ⚖️ Danh Sách Chờ | 🌊 Chân Sóng (mới) | 👁️ Vùng Quan Sát
+    """
     last  = df.iloc[-1]
     vol   = last['vol_strength']
     rsi   = last['rsi']
     price = last['close']
     ma20  = last['ma20']
+
+    # TẦNG 1: Bùng Nổ
     if vol > VOL_BREAKOUT:
         return "🚀 Bùng Nổ"
+
     ai_ok = _is_valid_score(ai_score) and float(ai_score) > AI_OK
-    base_ok = (
-        VOL_ACC_MIN <= vol <= VOL_ACC_MAX and
-        price >= ma20 * PRICE_NEAR_MA20   and
-        rsi < RSI_WATCHLIST_MAX           and
-        ai_ok
-    )
+
+    # --- Kiểm tra vũ khí tích lũy ---
     bb_now    = last['bb_width']
     bb_min20  = df['bb_width'].tail(20).min()
     squeezed  = bb_now <= bb_min20 * BB_SQUEEZE_TOL
@@ -943,13 +1274,34 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
             smart = True
             break
     weapons = sum([squeezed, supply_ex, smart])
+
+    # TẦNG 2: Danh Sách Chờ — tiêu chí chặt, an toàn nhất
+    base_ok = (
+        VOL_ACC_MIN <= vol <= VOL_ACC_MAX and
+        price >= ma20 * PRICE_NEAR_MA20   and
+        rsi < RSI_WATCHLIST_MAX           and
+        ai_ok
+    )
     if base_ok and weapons >= 1 and weekly_trend in ('UP', 'NEUTRAL'):
         return "⚖️ Danh Sách Chờ"
+
+    # TẦNG 3: Chân Sóng [V23 #24] — bắt sớm trước khi weekly xác nhận
+    wave = calc_wave_bottom_score(df, last)
+    if wave['is_wave_bottom']:
+        # Thêm điều kiện loại trừ downtrend rõ ràng
+        ma50 = last.get('ma50', ma20)
+        not_downtrend = price >= ma50 * 0.85   # không quá xa MA50
+        rsi_not_crash = rsi >= 25              # RSI không quá bán thái quá
+        if not_downtrend and rsi_not_crash:
+            return "🌊 Chân Sóng"
+
+    # TẦNG 4: Vùng Quan Sát — tín hiệu sớm, cần theo dõi thêm
     early_signals = 0
     if ai_ok:                        early_signals += 1
     if rsi < RSI_WATCHLIST_MAX + 5:  early_signals += 1
     if price >= ma20 * 0.90:         early_signals += 1
     if weapons >= 1:                 early_signals += 1
+    if wave['score'] >= 2:           early_signals += 1   # [V23] wave partial
     if early_signals >= 2:
         return "👁️ Vùng Quan Sát"
     return None
@@ -1020,98 +1372,113 @@ def _vol_badge(vol: float) -> str:
     else:                      return f"🔵 {vol:.2f}x"
 
 def render_radar_card(row: dict, tier_color: str = "blue") -> None:
-    """Hiển thị 1 cổ phiếu dạng card thay vì dòng bảng."""
+    """[V23] Hiển thị 1 cổ phiếu dạng card — thêm RS Rating, Divergence, 52W, Chân Sóng."""
     ticker = row['Ticker']
     with st.container(border=True):
         c1, c2, c3, c4, c5 = st.columns([1.2, 1.5, 1.5, 1.5, 2.5])
         with c1:
             st.markdown(f"### `{ticker}`")
             st.caption(f"Thị giá: **{row['Thị Giá']}**")
+            rs = row.get('RS Raw', 50)
+            st.caption(_rs_badge(rs))
         with c2:
-            st.metric("🤖 AI T+3", row['AI T+3 Raw'])
+            st.metric("🤖 AI T+3", f"{row['AI T+3 Raw']:.1f}%" if _is_valid_score(row['AI T+3 Raw']) else "N/A")
             st.caption(_ai_badge(row['AI T+3 Raw']))
         with c3:
             st.metric("📊 RSI", f"{row['RSI Raw']:.1f}")
             st.caption(_rsi_badge(row['RSI Raw']))
         with c4:
-            st.metric("📦 Vol Strength", f"{row['Vol Raw']:.2f}x")
+            st.metric("📦 Vol", f"{row['Vol Raw']:.2f}x")
             st.caption(_vol_badge(row['Vol Raw']))
         with c5:
             st.caption(f"🗓️ Weekly: {_weekly_badge(row['Weekly Raw'])}")
+            # Badges tín hiệu đặc biệt
             badges = []
-            if row.get('Lò Xo BB'):   badges.append("🌀 BB Squeeze")
-            if row.get('Cạn Cung'):   badges.append("💧 Cạn Cung")
-            if row.get('Tổ Chức Gom'): badges.append("🦈 Tổ Chức Gom")
+            if row.get('Lò Xo BB'):       badges.append("🌀 BB Squeeze")
+            if row.get('Cạn Cung'):        badges.append("💧 Cạn Cung")
+            if row.get('Tổ Chức Gom'):     badges.append("🦈 Tổ Chức Gom")
+            if row.get('52W High'):        badges.append("🏆 Gần Đỉnh 52W")
+            if row.get('Div Bullish'):     badges.append("📈 Phân Kỳ Dương")
+            if row.get('Div Bearish'):     badges.append("📉 Phân Kỳ Âm")
+            if row.get('Wave Bottom'):     badges.append(f"🌊 Chân Sóng ({row.get('Wave Score',0)}/8)")
             if badges:
-                st.success(" | ".join(badges))
+                st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
+                if len(badges) > 3:
+                    st.caption(" | ".join(badges[3:]))
             else:
                 st.caption("Chưa có tín hiệu đặc biệt")
-            # ADX badge nếu có
             if row.get('ADX Raw', 0) > 25:
-                st.caption(f"📐 ADX: **{row.get('ADX Raw', 0):.1f}** (Xu hướng mạnh)")
+                st.caption(f"📐 ADX: **{row.get('ADX Raw',0):.1f}** (Xu hướng mạnh)")
 
 
 def render_radar_table(rows: list[dict]) -> None:
-    """Hiển thị bảng tổng hợp có màu sắc + column config."""
+    """[V23] Bảng tổng hợp với RS Rating, Divergence, 52W High, Chân Sóng."""
     if not rows:
         return
     display_rows = []
     for r in rows:
         ai_raw = r.get('AI T+3 Raw', 'N/A')
         display_rows.append({
-            'Ticker':         r['Ticker'],
-            'Thị Giá':        r['Thị Giá'],
-            'AI T+3 (%)':     ai_raw if isinstance(ai_raw, float) else 0.0,
-            'RSI':            round(r.get('RSI Raw', 0), 1),
-            'Vol':            round(r.get('Vol Raw', 0), 2),
-            'Weekly':         _weekly_badge(r.get('Weekly Raw', 'NEUTRAL')),
-            'ADX':            round(r.get('ADX Raw', 0), 1),
-            'BB Squeeze':     "🌀" if r.get('Lò Xo BB') else "—",
-            'Cạn Cung':       "💧" if r.get('Cạn Cung') else "—",
-            'Tổ Chức Gom':    "🦈" if r.get('Tổ Chức Gom') else "—",
+            'Ticker':       r['Ticker'],
+            'Thị Giá':      r['Thị Giá'],
+            'AI T+3 (%)':   float(ai_raw) if _is_valid_score(ai_raw) else 0.0,
+            'RS Rating':    r.get('RS Raw', 50),
+            'RSI':          round(r.get('RSI Raw', 0), 1),
+            'Vol':          round(r.get('Vol Raw', 0), 2),
+            'ADX':          round(r.get('ADX Raw', 0), 1),
+            'Weekly':       _weekly_badge(r.get('Weekly Raw', 'NEUTRAL')),
+            'BB Squeeze':   "🌀" if r.get('Lò Xo BB')    else "—",
+            'Cạn Cung':     "💧" if r.get('Cạn Cung')    else "—",
+            'Tổ Chức Gom':  "🦈" if r.get('Tổ Chức Gom') else "—",
+            '52W High':     "🏆" if r.get('52W High')    else "—",
+            'Div':          "📈" if r.get('Div Bullish') else ("📉" if r.get('Div Bearish') else "—"),
+            'Chân Sóng':    f"🌊{r.get('Wave Score',0)}" if r.get('Wave Bottom') else "—",
         })
     df_display = pd.DataFrame(display_rows)
     st.dataframe(
         df_display,
         use_container_width=True,
         column_config={
-            "Ticker": st.column_config.TextColumn("Mã CK", width="small"),
-            "Thị Giá": st.column_config.TextColumn("Thị Giá", width="small"),
-            "AI T+3 (%)": st.column_config.ProgressColumn(
-                "AI T+3",
-                help="Xác suất tăng ≥2% sau 3 phiên (XGBoost Walk-Forward)",
-                min_value=0,
-                max_value=100,
-                format="%.1f%%",
-            ),
-            "RSI": st.column_config.NumberColumn("RSI", format="%.1f", width="small"),
-            "Vol": st.column_config.NumberColumn("Vol Strength", format="%.2fx", width="small"),
-            "ADX": st.column_config.NumberColumn("ADX", format="%.1f",
-                help="ADX > 25 = xu hướng mạnh, đáng tin cậy hơn", width="small"),
-            "Weekly": st.column_config.TextColumn("Weekly", width="small"),
-            "BB Squeeze": st.column_config.TextColumn("Lò Xo BB", width="small"),
-            "Cạn Cung": st.column_config.TextColumn("Cạn Cung", width="small"),
-            "Tổ Chức Gom": st.column_config.TextColumn("Tổ Chức", width="small"),
+            "Ticker":       st.column_config.TextColumn("Mã CK", width="small"),
+            "Thị Giá":      st.column_config.TextColumn("Thị Giá", width="small"),
+            "AI T+3 (%)":   st.column_config.ProgressColumn(
+                "AI T+3", help="Xác suất tăng ≥2% sau 3 phiên",
+                min_value=0, max_value=100, format="%.1f%%"),
+            "RS Rating":    st.column_config.ProgressColumn(
+                "RS Rating", help="Sức mạnh so với VN-Index (0-100). ≥70 = mạnh hơn thị trường",
+                min_value=0, max_value=100, format="%.0f"),
+            "RSI":          st.column_config.NumberColumn("RSI",  format="%.1f", width="small"),
+            "Vol":          st.column_config.NumberColumn("Vol",  format="%.2fx", width="small"),
+            "ADX":          st.column_config.NumberColumn("ADX",  format="%.1f", width="small"),
+            "Weekly":       st.column_config.TextColumn("Weekly", width="small"),
+            "BB Squeeze":   st.column_config.TextColumn("BB Sqz", width="small"),
+            "Cạn Cung":     st.column_config.TextColumn("Cạn Cung", width="small"),
+            "Tổ Chức Gom":  st.column_config.TextColumn("Tổ Chức", width="small"),
+            "52W High":     st.column_config.TextColumn("52W ↑", width="small"),
+            "Div":          st.column_config.TextColumn("Div", width="small",
+                help="📈 Phân kỳ dương (sắp tăng) | 📉 Phân kỳ âm (cảnh báo)"),
+            "Chân Sóng":    st.column_config.TextColumn("Chân Sóng", width="small"),
         },
         hide_index=True,
     )
 
 
-def render_radar_summary_banner(breakouts, watchlist, watch_zone) -> None:
-    """Banner tổng kết nhanh kết quả quét."""
-    b, w, z = len(breakouts), len(watchlist), len(watch_zone)
-    total = b + w + z
-    c1, c2, c3, c4 = st.columns(4)
+def render_radar_summary_banner(breakouts, watchlist, wave_bottom, watch_zone) -> None:
+    """[V23] Banner tổng kết 4 tầng."""
+    b, w, wv, z = len(breakouts), len(watchlist), len(wave_bottom), len(watch_zone)
+    total = b + w + wv + z
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📊 Tổng tín hiệu", total)
     c2.metric("🚀 Bùng Nổ", b,
-              delta="⚠️ Cẩn thận mua đuổi" if b > 0 else None,
-              delta_color="off")
+              delta="⚠️ Cẩn thận mua đuổi" if b > 0 else None, delta_color="off")
     c3.metric("⚖️ Danh Sách Chờ", w,
               delta="✅ Ưu tiên nhóm này" if w > 0 else None,
               delta_color="normal" if w > 0 else "off")
-    c4.metric("👁️ Quan Sát", z,
-              delta="Theo dõi thêm" if z > 0 else None,
-              delta_color="off")
+    c4.metric("🌊 Chân Sóng", wv,
+              delta="🎯 Cơ hội sớm" if wv > 0 else None,
+              delta_color="normal" if wv > 0 else "off")
+    c5.metric("👁️ Quan Sát", z,
+              delta="Theo dõi thêm" if z > 0 else None, delta_color="off")
 
 # ==============================================================================
 # MAIN APPLICATION
@@ -1172,6 +1539,8 @@ with tab1:
                 st.error("❌ Không thể tải dữ liệu giá. Vui lòng F5 lại.")
                 st.stop()
             df   = calc_indicators(df_raw)
+            df   = calc_ichimoku(df)             # [V23 #23]
+            df['vwap'] = calc_vwap(df)           # [V23 #20]
             last = df.iloc[-1]
 
             # [NÂNG CẤP #13] Dùng cache cho AI
@@ -1184,6 +1553,14 @@ with tab1:
             sentiment     = analyze_news_sentiment(news_headlines)
             df_for        = get_foreign(ticker, FOREIGN_DAYS)
             foreign_trend = analyze_foreign_trend(df_for)
+
+            # [V23] New indicators
+            df_vnindex    = get_price('VNINDEX', days=RS_LOOKBACK + 10) or df
+            rs_rating     = calc_rs_rating(df, df_vnindex)
+            divergence    = detect_divergence(df)
+            info_52w      = calc_52w_info(df)
+            ichi_sig      = ichimoku_signal(last)
+            wave_info     = calc_wave_bottom_score(df, last)
 
             ticker_sector = get_ticker_sector(ticker)
             sector_score  = 7 if ticker_sector else 5
@@ -1378,6 +1755,62 @@ with tab1:
 
             st.divider()
 
+            # --- [V23] RS Rating + Divergence + 52W + Ichimoku ---
+            st.write("### 🆕 V23.0 — Phân Tích Nâng Cao")
+            v23_c1, v23_c2, v23_c3 = st.columns(3)
+
+            with v23_c1:
+                st.markdown("**📈 RS Rating (Sức mạnh so VN-Index)**")
+                st.metric("RS Rating", f"{rs_rating:.0f}/100",
+                          delta="Mạnh hơn thị trường ✓" if rs_rating >= RS_GOOD else "Yếu hơn thị trường ⚠️",
+                          delta_color="normal" if rs_rating >= RS_GOOD else "inverse")
+                st.progress(rs_rating / 100)
+                st.caption(_rs_badge(rs_rating))
+
+            with v23_c2:
+                st.markdown("**📊 Phân Kỳ RSI/MACD (Divergence)**")
+                if divergence['signal'] == 'BULLISH':
+                    st.success(divergence['label'])
+                elif divergence['signal'] == 'BEARISH':
+                    st.error(divergence['label'])
+                else:
+                    st.info(divergence['label'])
+
+            with v23_c3:
+                st.markdown("**🏆 Vị Trí 52 Tuần**")
+                st.metric("Đỉnh 52W", f"{info_52w['high_52w']:,.0f}",
+                          delta=f"{info_52w['pct_from_high']:.1f}% dưới đỉnh",
+                          delta_color="normal" if info_52w['near_high'] else "off")
+                st.metric("Đáy 52W", f"{info_52w['low_52w']:,.0f}",
+                          delta=f"+{info_52w['pct_from_low']:.1f}% từ đáy",
+                          delta_color="off")
+                if info_52w['near_high']: st.success(info_52w['label'])
+                elif info_52w['near_low']: st.warning(info_52w['label'])
+                else: st.caption(info_52w['label'])
+
+            st.divider()
+
+            # Ichimoku + Wave Bottom
+            ichi_c, wave_c = st.columns(2)
+            with ichi_c:
+                st.markdown("**☁️ Ichimoku Cloud**")
+                sig = ichi_sig['signal']
+                if 'BULL' in sig:   st.success(ichi_sig['label'])
+                elif sig == 'BEAR': st.error(ichi_sig['label'])
+                else:               st.warning(ichi_sig['label'])
+
+            with wave_c:
+                st.markdown("**🌊 Chân Sóng Score (V23)**")
+                st.progress(wave_info['score'] / 8)
+                st.caption(f"{wave_info['score']}/8 tiêu chí")
+                if wave_info['is_wave_bottom']:
+                    st.success(wave_info['label'])
+                else:
+                    if wave_info['flags']:
+                        st.info(f"Đạt được: {', '.join(wave_info['flags'])}\n\nCần thêm {WAVE_SCORE_MIN - wave_info['score']} tiêu chí nữa.")
+                    else:
+                        st.warning("Chưa có tiêu chí chân sóng nào đạt.")
+
             # --- Cẩm nang ---
             st.write("### 📖 CẨM NANG — Bí Kíp Né Bẫy Giá (False Breakout)")
             with st.expander("🚀 Mở rộng để đọc bí kíp — Dành riêng cho Minh"):
@@ -1416,7 +1849,7 @@ with tab1:
             st.divider()
 
             # --- Master Chart ---
-            st.write("### 📊 Biểu Đồ Kỹ Thuật Đa Lớp")
+            st.write("### 📊 Biểu Đồ Kỹ Thuật Đa Lớp (VWAP + Ichimoku)")
             chart = df.tail(CHART_DAYS)
             x     = chart['date']
             fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
@@ -1428,25 +1861,43 @@ with tab1:
             for ma_col, color, name in [('ma20','orange','MA20'), ('ma200','purple','MA200')]:
                 fig.add_trace(go.Scatter(x=x, y=chart[ma_col],
                     line=dict(color=color, width=1.5), name=name), row=1, col=1)
+            # [V23 #20] VWAP
+            if 'vwap' in chart.columns:
+                fig.add_trace(go.Scatter(x=x, y=chart['vwap'],
+                    line=dict(color='cyan', width=1.5, dash='dot'), name='VWAP'), row=1, col=1)
+            # Bollinger Bands
             fig.add_trace(go.Scatter(x=x, y=chart['upper_band'],
                 line=dict(color='gray', dash='dash', width=0.8), name='Trần BOL'), row=1, col=1)
             fig.add_trace(go.Scatter(x=x, y=chart['lower_band'],
                 line=dict(color='gray', dash='dash', width=0.8),
                 fill='tonexty', fillcolor='rgba(128,128,128,0.1)', name='Đáy BOL'), row=1, col=1)
+            # [V23 #23] Ichimoku Cloud
+            if 'ichi_senkouA' in chart.columns and 'ichi_senkouB' in chart.columns:
+                fig.add_trace(go.Scatter(x=x, y=chart['ichi_senkouA'],
+                    line=dict(color='rgba(0,200,0,0)', width=0),
+                    fillcolor='rgba(0,200,0,0.15)', fill='tonexty',
+                    name='Kumo (Mây)', showlegend=True), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x, y=chart['ichi_senkouB'],
+                    line=dict(color='rgba(200,0,0,0.4)', width=1),
+                    name='Senkou B'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x, y=chart['ichi_tenkan'],
+                    line=dict(color='red', width=1, dash='dot'), name='Tenkan'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=x, y=chart['ichi_kijun'],
+                    line=dict(color='blue', width=1, dash='dot'), name='Kijun'), row=1, col=1)
             # Volume
             fig.add_trace(go.Bar(x=x, y=chart['volume'],
                 name='KL', marker_color='gray'), row=2, col=1)
-            # ADX [NÂNG CẤP #11]
+            # ADX
             if 'adx' in chart.columns:
                 fig.add_trace(go.Scatter(x=x, y=chart['adx'],
                     line=dict(color='royalblue', width=1.5), name='ADX'), row=3, col=1)
                 fig.add_hline(y=25, line_dash="dot", line_color="red",
-                              annotation_text="ADX=25 (Xu hướng mạnh)", row=3, col=1)
-            fig.update_layout(height=850, template='plotly_white',
+                              annotation_text="ADX=25", row=3, col=1)
+            fig.update_layout(height=900, template='plotly_white',
                                xaxis_rangeslider_visible=False,
                                margin=dict(l=40, r=40, t=50, b=40))
             fig.update_yaxes(title_text="Giá", row=1, col=1)
-            fig.update_yaxes(title_text="KL", row=2, col=1)
+            fig.update_yaxes(title_text="KL",  row=2, col=1)
             fig.update_yaxes(title_text="ADX", row=3, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1586,13 +2037,39 @@ with tab4:
         horizontal=True
     )
 
-    if st.button("🔥 KÍCH HOẠT RADAR TRUY QUÉT 3 TẦNG (REAL-TIME)"):
-        scan_list = tickers[:RADAR_MAX]
+    if st.button("🔥 KÍCH HOẠT RADAR TRUY QUÉT 4 TẦNG (REAL-TIME) — V23.0"):
+        # [V19] Market Breadth trước khi scan
+        st.write("#### 🏥 Sức Khỏe Thị Trường (Market Breadth)")
+        with st.spinner("Đang đo sức khỏe thị trường..."):
+            sample_50 = tuple(list(dict.fromkeys(tickers))[:50])
+            breadth   = calc_market_breadth(sample_50)
+        if breadth['total'] > 0:
+            mb1, mb2, mb3, mb4 = st.columns(4)
+            mb1.metric("Trạng thái thị trường", breadth['market_status'])
+            mb2.metric("% Mã trên MA20", f"{breadth['pct_above_ma20']:.1f}%",
+                       delta="Mạnh ✓" if breadth['pct_above_ma20'] >= 60 else "Yếu ⚠️",
+                       delta_color="normal" if breadth['pct_above_ma20'] >= 60 else "inverse")
+            mb3.metric("% RSI lành mạnh (<55)", f"{breadth['pct_rsi_ok']:.1f}%",
+                       delta="Chưa quá mua ✓" if breadth['pct_rsi_ok'] >= 50 else "Đang nóng",
+                       delta_color="normal" if breadth['pct_rsi_ok'] >= 50 else "off")
+            mb4.metric("Tỷ lệ mã tăng/giảm", f"{breadth['advance_decline']:.1f}%",
+                       delta="Nhiều mã xanh ✓" if breadth['advance_decline'] >= 55 else "Phân hóa",
+                       delta_color="normal" if breadth['advance_decline'] >= 55 else "off")
+            st.caption(f"💡 Dựa trên {breadth['total']} mã mẫu. "
+                       "Breadth > 60% = thị trường bull thực sự, an toàn để tìm mua. "
+                       "Breadth < 40% = cẩn thận, chỉ mua mã RS Rating cao.")
+        st.divider()
+
+        scan_list = list(dict.fromkeys(tickers))[:RADAR_MAX]
         st.caption(f"🔭 Đang quét {len(scan_list)} mã trên HOSE...")
-        progress   = st.progress(0)
-        breakouts  = []
-        watchlist  = []
-        watch_zone = []
+        progress    = st.progress(0)
+        breakouts   = []
+        watchlist   = []
+        wave_bottom = []   # [V23 #24] Tầng mới
+        watch_zone  = []
+
+        # Lấy VN-Index 1 lần cho RS Rating
+        df_vnidx = get_price('VNINDEX', days=RS_LOOKBACK + 10)
 
         for i, t in enumerate(scan_list):
             try:
@@ -1606,6 +2083,8 @@ with tab4:
                 if label is None:
                     continue
                 last_s   = df_s.iloc[-1]
+
+                # Tín hiệu cơ bản
                 bb_now   = last_s['bb_width']
                 bb_min20 = df_s['bb_width'].tail(20).min()
                 squeezed = bb_now <= bb_min20 * BB_SQUEEZE_TOL
@@ -1616,20 +2095,34 @@ with tab4:
                     if valid(fd) and calc_net_flow(fd, 3) > 0:
                         smart = True
                         break
+
+                # [V23] RS Rating, Divergence, 52W, Wave Bottom
+                rs_s    = calc_rs_rating(df_s, df_vnidx) if valid(df_vnidx) else 50.0
+                div_s   = detect_divergence(df_s)
+                w52_s   = calc_52w_info(df_s)
+                wave_s  = calc_wave_bottom_score(df_s, last_s)
+
                 row = {
-                    'Ticker':         t,
-                    'Thị Giá':        f"{last_s['close']:,.0f}",
-                    'Vol Raw':        float(last_s['vol_strength']),
-                    'RSI Raw':        float(last_s['rsi']),
-                    'AI T+3 Raw':     ai_s,
-                    'Weekly Raw':     weekly_s,
-                    'ADX Raw':        float(last_s.get('adx', 0)),
-                    'Lò Xo BB':       bool(squeezed),
-                    'Cạn Cung':       bool(supply),
-                    'Tổ Chức Gom':    bool(smart),
+                    'Ticker':       t,
+                    'Thị Giá':      f"{last_s['close']:,.0f}",
+                    'Vol Raw':      float(last_s['vol_strength']),
+                    'RSI Raw':      float(last_s['rsi']),
+                    'AI T+3 Raw':   ai_s,
+                    'Weekly Raw':   weekly_s,
+                    'ADX Raw':      float(last_s.get('adx', 0)),
+                    'RS Raw':       rs_s,
+                    'Lò Xo BB':     bool(squeezed),
+                    'Cạn Cung':     bool(supply),
+                    'Tổ Chức Gom':  bool(smart),
+                    '52W High':     bool(w52_s['near_high']),
+                    'Div Bullish':  bool(div_s['signal'] == 'BULLISH'),
+                    'Div Bearish':  bool(div_s['signal'] == 'BEARISH'),
+                    'Wave Bottom':  bool(wave_s['is_wave_bottom']),
+                    'Wave Score':   wave_s['score'],
                 }
                 if "Bùng Nổ"     in label: breakouts.append(row)
                 elif "Danh Sách" in label: watchlist.append(row)
+                elif "Chân Sóng" in label: wave_bottom.append(row)   # [V23]
                 elif "Quan Sát"  in label: watch_zone.append(row)
             except Exception as e:
                 print(f"[WARN] Scan {t}: {e}")
@@ -1637,7 +2130,7 @@ with tab4:
 
         # --- Banner tổng kết ---
         st.divider()
-        render_radar_summary_banner(breakouts, watchlist, watch_zone)
+        render_radar_summary_banner(breakouts, watchlist, wave_bottom, watch_zone)
         st.divider()
 
         use_cards = "Card" in view_mode
@@ -1647,12 +2140,11 @@ with tab4:
         st.caption("⚠️ Vol đã nổ mạnh — cẩn thận mua đuổi đỉnh. Chờ điều chỉnh về MA20 mới vào.")
         if breakouts:
             if use_cards:
-                for r in breakouts:
-                    render_radar_card(r, "red")
+                for r in breakouts: render_radar_card(r, "red")
             else:
                 render_radar_table(breakouts)
         else:
-            st.success("✅ Không có mã bùng nổ hôm nay — thị trường chưa nóng quá mức.")
+            st.success("✅ Không có mã bùng nổ hôm nay.")
 
         st.divider()
 
@@ -1661,49 +2153,65 @@ with tab4:
         st.caption("Nền đẹp + Weekly xác nhận + Tổ chức đang gom. Đây là nhóm ưu tiên nhất.")
         if watchlist:
             if use_cards:
-                for r in watchlist:
-                    render_radar_card(r, "green")
+                for r in watchlist: render_radar_card(r, "green")
             else:
                 render_radar_table(watchlist)
-            st.success(
-                f"✅ **Robot khuyên:** {len(watchlist)} mã đủ tiêu chuẩn khắt khe. "
-                "Kết hợp với Tab 1 để phân tích chi tiết từng mã trước khi vào lệnh."
-            )
+            st.success(f"✅ {len(watchlist)} mã đủ tiêu chuẩn. Phân tích chi tiết từng mã ở Tab 1 trước khi vào lệnh.")
         else:
-            st.info("Hôm nay chưa có mã đủ tiêu chuẩn khắt khe — thị trường cần thêm thời gian tích lũy.")
+            st.info("Hôm nay chưa có mã đủ tiêu chuẩn — thị trường cần thêm thời gian tích lũy.")
 
         st.divider()
 
-        # ── TẦNG 3: VÙNG QUAN SÁT ──
-        st.write("### 👁️ Tầng 3 — Vùng Quan Sát (Tín hiệu sớm)")
-        st.caption("Có 1–2 tín hiệu sớm. Chưa đủ điều kiện vào lệnh — theo dõi 2–3 phiên tiếp theo.")
+        # ── TẦNG 3: CHÂN SÓNG [V23 MỚI] ──
+        st.write("### 🌊 Tầng 3 — Chân Sóng (V23 — Bắt sóng sớm)")
+        st.caption(
+            "Phát hiện mã đang tích lũy nền, chưa bứt phá nhưng đủ tiêu chí chân sóng. "
+            "**Rủi ro cao hơn Tầng 2** — vào nhỏ (10–15% vốn), đặt SL chặt theo ATR."
+        )
+        if wave_bottom:
+            if use_cards:
+                for r in wave_bottom: render_radar_card(r, "blue")
+            else:
+                render_radar_table(wave_bottom)
+            st.info(
+                f"🌊 {len(wave_bottom)} mã đang ở vùng chân sóng tiềm năng. "
+                "Chờ thêm 1–2 phiên xác nhận (Vol nổ + Nến xanh) trước khi vào lệnh chính thức."
+            )
+        else:
+            st.write("Không có mã chân sóng hôm nay.")
+
+        st.divider()
+
+        # ── TẦNG 4: VÙNG QUAN SÁT ──
+        st.write("### 👁️ Tầng 4 — Vùng Quan Sát (Tín hiệu sớm)")
+        st.caption("Có 1–2 tín hiệu sớm. Chưa đủ điều kiện — theo dõi 2–3 phiên tiếp theo.")
         if watch_zone:
             if use_cards:
-                for r in watch_zone:
-                    render_radar_card(r, "blue")
+                for r in watch_zone: render_radar_card(r, "gray")
             else:
                 render_radar_table(watch_zone)
-            st.info(
-                f"💡 {len(watch_zone)} mã đang hình thành tín hiệu. "
-                "Khi AI ≥ 55% + Vol nổ + Weekly UP → upgrade lên Tầng 2."
-            )
+            st.info(f"💡 {len(watch_zone)} mã đang hình thành tín hiệu.")
         else:
             st.write("Không có mã trong vùng quan sát.")
 
         # ── Hướng dẫn đọc bảng ──
         st.divider()
-        with st.expander("📖 Hướng dẫn đọc bảng kết quả Radar V22.0"):
+        with st.expander("📖 Hướng dẫn đọc bảng kết quả Radar V23.0"):
             st.markdown("""
 | Cột | Ý nghĩa | Ngưỡng tốt |
 |-----|---------|-----------|
-| **AI T+3** | Thanh màu = xác suất tăng ≥2% sau T+3 (XGBoost Walk-Forward + ADX/OBV) | ≥ 55% = tốt, ≥ 70% = rất tốt |
-| **RSI** | Chỉ số quá mua/bán | 45–65 = lý tưởng |
-| **Vol Strength** | Khối lượng so với TB 10 phiên | 0.8–1.2x = tích lũy, > 1.3x = bùng nổ |
-| **ADX** | Sức mạnh xu hướng (V22.0 mới) | > 25 = xu hướng rõ ràng, đáng tin |
+| **AI T+3** | Xác suất tăng ≥2% sau 3 phiên (XGBoost) | ≥ 55% = tốt, ≥ 70% = rất tốt |
+| **RS Rating** | Sức mạnh so VN-Index 3 tháng (0–100) | ≥ 70 = mạnh hơn thị trường |
+| **RSI** | Chỉ số quá mua/bán | 35–52 = vùng hồi phục lý tưởng |
+| **Vol** | Khối lượng / TB 10 phiên | 0.8–1.2x = tích lũy, > 1.3x = bùng nổ |
+| **ADX** | Sức mạnh xu hướng | > 25 = xu hướng rõ ràng |
 | **Weekly** | Xu hướng khung tuần | 📈 TĂNG = an toàn nhất |
-| **BB Squeeze** 🌀 | Bollinger Band đang co lại — chuẩn bị bùng nổ | Có = tín hiệu tốt |
-| **Cạn Cung** 💧 | Vol thấp trên nến đỏ — người bán đã cạn | Có = tín hiệu tốt |
-| **Tổ Chức Gom** 🦈 | Ngoại/tự doanh mua ròng 3 phiên | Có = tín hiệu tốt |
+| **BB Sqz** 🌀 | Bollinger Band co lại — chuẩn bị bùng | Có = tốt |
+| **Cạn Cung** 💧 | Vol thấp trên nến đỏ — người bán cạn | Có = tốt |
+| **Tổ Chức** 🦈 | Ngoại/tự doanh mua ròng 3 phiên | Có = tốt |
+| **52W ↑** 🏆 | Giá gần đỉnh 52 tuần (trong 8%) | Có = CANSLIM mạnh |
+| **Div** | 📈 Phân kỳ dương (sắp tăng) / 📉 âm (cảnh báo) | 📈 = tốt |
+| **Chân Sóng** 🌊 | Điểm chân sóng /8 tiêu chí [V23] | ≥ 3 = đáng chú ý |
             """)
 
 # ==============================================================================
