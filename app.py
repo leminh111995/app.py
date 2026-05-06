@@ -1613,20 +1613,15 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
 
         return "⚖️ Danh Sách Chờ"
 
-    # Tầng 3: Vùng Quan Sát — chưa đủ nhưng có 1-2 tín hiệu sớm
-
+    # Tầng 3: Vùng Quan Sát — tiêu chí lỏng hơn, không cần AI
+    # Chỉ cần RSI ổn + giá gần MA20 + ít nhất 1 tín hiệu kỹ thuật
     early_signals = 0
-
-    if ai_ok:                          early_signals += 1
-
-    if rsi < RSI_WATCHLIST_MAX + 5:    early_signals += 1
-
-    if price >= ma20 * 0.90:           early_signals += 1
-
-    if weapons >= 1:                   early_signals += 1
+    if rsi < RSI_WATCHLIST_MAX + 8:    early_signals += 1   # RSI < 70
+    if price >= ma20 * 0.88:           early_signals += 1   # Giá không quá xa MA20
+    if squeezed or supply_ex:          early_signals += 1   # BB nén hoặc cạn cung
+    if vol > 0.7:                      early_signals += 1   # Vol không quá thấp
 
     if early_signals >= 2:
-
         return "👁️ Vùng Quan Sát"
 
     return None
@@ -2364,6 +2359,7 @@ with tab4:
 
         watch_zone = []   # Tầng 3 mới
 
+        skipped = 0
         for i, t in enumerate(scan_list):
 
             try:
@@ -2371,17 +2367,16 @@ with tab4:
                 df_s = get_price(t, days=SCAN_DAYS)
 
                 if not valid(df_s):
-
+                    skipped += 1
                     continue
 
-                df_s         = calc_indicators(df_s)
-
-                ai_s         = predict_ai_t3_fast(df_s)  # LightGBM nhanh hơn
-                weekly_s     = 'NEUTRAL'  # Bỏ weekly trend để tăng tốc
-                label        = classify_stock(t, df_s, ai_s, weekly_s)
+                df_s     = calc_indicators(df_s)
+                ai_s     = predict_ai_t3_fast(df_s)
+                weekly_s = 'NEUTRAL'
+                label    = classify_stock(t, df_s, ai_s, weekly_s)
 
                 if label is None:
-
+                    skipped += 1
                     continue
 
                 last_s   = df_s.iloc[-1]
@@ -2423,10 +2418,14 @@ with tab4:
                 print(f"[WARN] Scan {t}: {e}")
 
             progress.progress((i + 1) / len(scan_list))
+        st.caption(f"✅ Quét xong {len(scan_list)} mã | Lọt qua: {len(breakouts)+len(watchlist)+len(watch_zone)} | Bị loại: {skipped}")
 
         st.write("### 🚀 Tầng 1 — Bùng Nổ (Cẩn thận mua đuổi đỉnh như VIC)")
 
-        st.table(pd.DataFrame(breakouts)) if breakouts else st.write("Không tìm thấy mã bùng nổ hôm nay.")
+        if breakouts:
+            st.table(pd.DataFrame(breakouts))
+        else:
+            st.write("Không tìm thấy mã bùng nổ hôm nay.")
 
         st.write("### ⚖️ Tầng 2 — Danh Sách Chờ Chân Sóng (Cực kỳ an toàn)")
 
