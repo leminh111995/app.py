@@ -2442,54 +2442,62 @@ with tab3:
         if st.button("▶️ Chạy Debug API Ngay", key="debug_api"):
             debug_ticker = ticker
             st.write(f"**Đang test với mã: {debug_ticker}**")
-            VALID_SOURCES = ['VCI', 'KBS', 'MSN', 'FMP']
             start_d, end_d = date_range(15)
+            stk = Vnstock().stock(symbol=debug_ticker, source='VCI')
 
-            for src in VALID_SOURCES:
+            # Test 1: company.trading_stats
+            st.write("**Test 1: company.trading_stats**")
+            try:
+                df_ts = stk.company.trading_stats()
+                if valid(df_ts):
+                    st.success(f"✅ Cột: `{df_ts.columns.tolist()}`")
+                    st.dataframe(df_ts.head(5))
+                else:
+                    st.warning("Trả về rỗng")
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+            # Test 2: company.insider_deals
+            st.write("**Test 2: company.insider_deals**")
+            try:
+                df_id = stk.company.insider_deals()
+                if valid(df_id):
+                    st.success(f"✅ Cột: `{df_id.columns.tolist()}`")
+                    st.dataframe(df_id.head(5))
+                else:
+                    st.warning("Trả về rỗng")
+            except Exception as e:
+                st.error(f"❌ {e}")
+
+            # Test 3: quote.intraday
+            st.write("**Test 3: quote.intraday**")
+            try:
+                df_intra = stk.quote.intraday(symbol=debug_ticker)
+                if valid(df_intra):
+                    st.success(f"✅ Cột: `{df_intra.columns.tolist()}`")
+                    st.dataframe(df_intra.head(5))
+                else:
+                    st.warning("Trả về rỗng")
+            except Exception as e:
                 try:
-                    stk = Vnstock().stock(symbol=debug_ticker, source=src)
+                    df_intra = stk.quote.intraday()
+                    if valid(df_intra):
+                        st.success(f"✅ (no symbol) Cột: `{df_intra.columns.tolist()}`")
+                        st.dataframe(df_intra.head(5))
+                except Exception as e2:
+                    st.error(f"❌ {e} | {e2}")
 
-                    # In tất cả top-level modules
-                    top_attrs = [a for a in dir(stk) if not a.startswith('_')]
-                    st.info(f"**{src} top-level:** `{top_attrs}`")
-
-                    # In methods của từng module
-                    for mod_name in ['quote', 'trading', 'finance', 'company', 'fund', 'trade']:
-                        try:
-                            mod = getattr(stk, mod_name)
-                            methods = [m for m in dir(mod) if not m.startswith('_')]
-                            st.write(f"→ `{src}.{mod_name}` methods: `{methods}`")
-                        except Exception:
-                            pass
-
-                    # Thử price_board — có thể chứa dữ liệu ngoại
-                    try:
-                        pb = stk.trading.price_board(symbols_list=[debug_ticker])
-                        if valid(pb):
-                            st.success(f"✅ {src}.trading.price_board → cols: `{pb.columns.tolist()}`")
-                            st.dataframe(pb.head(3))
-                    except Exception as e:
-                        st.error(f"❌ {src}.trading.price_board → {e}")
-
-                    # Thử tất cả method của quote
-                    for method in ['intraday', 'history', 'foreign', 'foreign_trade',
-                                   'order_matching', 'price', 'tick']:
-                        try:
-                            fn  = getattr(stk.quote, method)
-                            df_t = fn(start=start_d, end=end_d) if method in ['intraday','history','foreign','foreign_trade'] \
-                                   else fn()
-                            if valid(df_t):
-                                st.success(
-                                    f"✅ **{src}.quote.{method}** → "
-                                    f"{len(df_t)} hàng | Cột: `{df_t.columns.tolist()}`"
-                                )
-                                st.dataframe(df_t.tail(3))
-                        except Exception as e:
-                            st.error(f"❌ {src}.quote.{method} → {e}")
-
-                except Exception as e:
-                    st.error(f"❌ Source {src} init fail: {e}")
-                st.divider()
+            # Test 4: trading.price_board
+            st.write("**Test 4: trading.price_board**")
+            try:
+                df_pb = stk.trading.price_board(symbols_list=[debug_ticker])
+                if valid(df_pb):
+                    st.success(f"✅ Cột: `{df_pb.columns.tolist()}`")
+                    st.dataframe(df_pb)
+                else:
+                    st.warning("Trả về rỗng")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
 # ==============================================================================
 # TAB 4: RADAR TRUY QUÉT [NÂNG CẤP #15 — Hiển Thị Nâng Cao]
