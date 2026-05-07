@@ -223,12 +223,48 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
     except Exception as e:
         print(f"[WARN] Vnstock price {ticker}: {e}")
     try:
-        yf_sym = "^VNINDEX" if ticker == "VNINDEX" else f"{ticker}.VN"
-        df = yf.download(yf_sym, period="3y", progress=False).reset_index()
+        yf_sym  = "^VNINDEX" if ticker == "VNINDEX" else f"{ticker}.VN"
+        # Tính period động thay vì cứng "3y"
+        yf_days = max(days + 30, 90)
+        period  = f"{min(yf_days // 365 + 1, 5)}y"
+        df = yf.download(yf_sym, period=period, progress=False).reset_index()
         if valid(df):
             return normalize_cols(df)
     except Exception as e:
         print(f"[WARN] Yahoo price {ticker}: {e}")
+    return None
+
+
+@st.cache_data(ttl=3600)
+def get_vnindex_cached() -> pd.DataFrame | None:
+    """
+    Lấy dữ liệu VN-Index với nhiều phương án fallback.
+    Cache 1 giờ — dùng chung cho tất cả RS Rating calculations.
+    """
+    # Phương án 1: Vnstock market index
+    for sym in ['VNINDEX', 'VN-INDEX', 'VNI']:
+        try:
+            df = engine().stock.quote.history(symbol=sym, start='2023-01-01',
+                                               end=now_vn().strftime(DATE_FMT))
+            if valid(df) and len(df) >= 30:
+                df = normalize_cols(df)
+                print(f"[OK] VNINDEX via vnstock symbol={sym}")
+                return df
+        except Exception:
+            continue
+
+    # Phương án 2: yfinance ^VNINDEX
+    for yf_sym in ['^VNINDEX', 'VNINDEX', '^VNI']:
+        try:
+            df = yf.download(yf_sym, period='2y', progress=False).reset_index()
+            if valid(df) and len(df) >= 30:
+                df = normalize_cols(df)
+                print(f"[OK] VNINDEX via yfinance symbol={yf_sym}")
+                return df
+        except Exception:
+            continue
+
+    print("[WARN] Không lấy được VN-Index từ bất kỳ nguồn nào.")
     return None
 
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
@@ -930,21 +966,36 @@ def get_ticker_sector(ticker: str) -> str | None:
 # ==============================================================================
 # [V23 #17] RS RATING — Xếp hạng sức mạnh so với VN-Index
 # ==============================================================================
-def calc_rs_rating(df: pd.DataFrame, df_vnindex: pd.DataFrame) -> float:
+def calc_rs_rating(df: pd.DataFrame, df_vnindex: pd.DataFrame | None) -> float:
     """
-    So sánh hiệu suất 63 phiên (≈3 tháng) của cổ phiếu vs VN-Index.
-    Trả về điểm 0–100 (kiểu IBD RS Rating).
+    [V23 #17] RS Rating 0-100 so với VN-Index.
+    - Dùng tail(RS_LOOKBACK) thay vì iloc[-RS_LOOKBACK] để tránh crash khi df ngắn
+    - Nếu không có VN-Index, tính RS dựa trên hiệu suất tuyệt đối (không so sánh)
+    - Chuẩn hóa về 0-100: excess +20% → 100, excess -20% → 0
     """
     try:
-        stock_ret  = (df['close'].iloc[-1] - df['close'].iloc[-RS_LOOKBACK]) / (df['close'].iloc[-RS_LOOKBACK] + 1e-9)
-        market_ret = (df_vnindex['close'].iloc[-1] - df_vnindex['close'].iloc[-RS_LOOKBACK]) / (df_vnindex['close'].iloc[-RS_LOOKBACK] + 1e-9)
-        # Điểm thô = outperform bao nhiêu %
-        excess = stock_ret - market_ret
-        # Chuẩn hóa về 0-100: excess +20% → 100, excess -20% → 0
-        score = (excess + 0.20) / 0.40 * 100
+        # Lấy close trong RS_LOOKBACK phiên gần nhất
+        stock_window = df['close'].dropna().tail(RS_LOOKBACK)
+        if len(stock_window) < 20:      # cần ít nhất 20 phiên
+            return 50.0
+        stock_ret = (stock_window.iloc[-1] - stock_window.iloc[0]) / (stock_window.iloc[0] + 1e-9)
+
+        if valid(df_vnindex) and len(df_vnindex) >= 20:
+            mkt_window = df_vnindex['close'].dropna().tail(RS_LOOKBACK)
+            mkt_ret    = (mkt_window.iloc[-1] - mkt_window.iloc[0]) / (mkt_window.iloc[0] + 1e-9)
+        else:
+            # Fallback: không có VN-Index → chuẩn hóa hiệu suất tuyệt đối
+            # Giả định thị trường tăng trung bình 8%/63 phiên (~15%/năm)
+            mkt_ret = 0.08
+
+        excess = stock_ret - mkt_ret
+        # Map excess [-20%, +20%] → [0, 100]
+        score  = (excess + 0.20) / 0.40 * 100
         return round(max(0.0, min(100.0, score)), 1)
-    except Exception:
-        return 50.0   # neutral fallback
+
+    except Exception as e:
+        print(f"[WARN] calc_rs_rating: {e}")
+        return 50.0
 
 
 def _rs_badge(rs: float) -> str:
@@ -1555,7 +1606,7 @@ with tab1:
             foreign_trend = analyze_foreign_trend(df_for)
 
             # [V23] New indicators
-            df_vnindex    = get_price('VNINDEX', days=RS_LOOKBACK + 10) or df
+            df_vnindex    = get_vnindex_cached()
             rs_rating     = calc_rs_rating(df, df_vnindex)
             divergence    = detect_divergence(df)
             info_52w      = calc_52w_info(df)
@@ -2228,8 +2279,8 @@ with tab4:
         wave_bottom = []   # [V23 #24] Tầng mới
         watch_zone  = []
 
-        # Lấy VN-Index 1 lần cho RS Rating
-        df_vnidx = get_price('VNINDEX', days=RS_LOOKBACK + 10)
+        # Lấy VN-Index 1 lần (cached) cho RS Rating toàn bộ scan
+        df_vnidx = get_vnindex_cached()
 
         for i, t in enumerate(scan_list):
             try:
@@ -2257,7 +2308,7 @@ with tab4:
                         break
 
                 # [V23] RS Rating, Divergence, 52W, Wave Bottom
-                rs_s    = calc_rs_rating(df_s, df_vnidx) if valid(df_vnidx) else 50.0
+                rs_s    = calc_rs_rating(df_s, df_vnidx)
                 div_s   = detect_divergence(df_s)
                 w52_s   = calc_52w_info(df_s)
                 wave_s  = calc_wave_bottom_score(df_s, last_s)
