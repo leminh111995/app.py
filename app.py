@@ -1481,13 +1481,13 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
             st.caption(f"🗓️ Weekly: {_weekly_badge(row['Weekly Raw'])}")
             # Badges tín hiệu đặc biệt
             badges = []
-            if row.get('Lò Xo BB'):       badges.append("🌀 BB Squeeze")
-            if row.get('Cạn Cung'):        badges.append("💧 Cạn Cung")
-            if row.get('Tổ Chức Gom'):     badges.append("🦈 Tổ Chức Gom")
-            if row.get('52W High'):        badges.append("🏆 Gần Đỉnh 52W")
-            if row.get('Div Bullish'):     badges.append("📈 Phân Kỳ Dương")
-            if row.get('Div Bearish'):     badges.append("📉 Phân Kỳ Âm")
-            if row.get('Wave Bottom'):     badges.append(f"🌊 Chân Sóng ({row.get('Wave Score',0)}/8)")
+            if row.get('Lò Xo BB'):       badges.append("✅ BB Squeeze")
+            if row.get('Cạn Cung'):        badges.append("✅ Cạn Cung")
+            if row.get('Tổ Chức Gom'):     badges.append("✅ Tổ Chức Gom")
+            if row.get('52W High'):        badges.append("✅ Gần Đỉnh 52W")
+            if row.get('Div Bullish'):     badges.append("✅ Phân Kỳ Dương")
+            if row.get('Div Bearish'):     badges.append("⚠️ Phân Kỳ Âm")
+            if row.get('Wave Bottom'):     badges.append(f"✅ Chân Sóng ({row.get('Wave Score',0)}/8)")
             if badges:
                 st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
                 if len(badges) > 3:
@@ -1529,12 +1529,12 @@ def render_radar_table(rows: list[dict]) -> None:
             'Vol':          f"{r.get('Vol Raw', 0):.2f}x",
             'ADX':          round(r.get('ADX Raw', 0), 1),
             'Weekly':       _weekly_badge(r.get('Weekly Raw', 'NEUTRAL')),
-            'BB Sqz':       "🌀" if r.get('Lò Xo BB')    else "—",
-            'Cạn Cung':     "💧" if r.get('Cạn Cung')    else "—",
-            'Tổ Chức':      "🦈" if r.get('Tổ Chức Gom') else "—",
-            '52W↑':         "🏆" if r.get('52W High')    else "—",
-            'Div':          "📈" if r.get('Div Bullish') else ("📉" if r.get('Div Bearish') else "—"),
-            'Chân Sóng':    f"🌊{r.get('Wave Score',0)}/8" if r.get('Wave Bottom') else "—",
+            'BB Sqz':       "✅" if r.get('Lò Xo BB')    else "—",
+            'Cạn Cung':     "✅" if r.get('Cạn Cung')    else "—",
+            'Tổ Chức':      "✅" if r.get('Tổ Chức Gom') else "—",
+            '52W↑':         "✅" if r.get('52W High')    else "—",
+            'Div':          "✅" if r.get('Div Bullish') else ("⚠️" if r.get('Div Bearish') else "—"),
+            'Chân Sóng':    f"✅{r.get('Wave Score',0)}/8" if r.get('Wave Bottom') else "—",
         })
     df_display = pd.DataFrame(display_rows)
     st.dataframe(
