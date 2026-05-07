@@ -1498,47 +1498,59 @@ def render_radar_table(rows: list[dict]) -> None:
     display_rows = []
     for r in rows:
         ai_raw = r.get('AI T+3 Raw', 'N/A')
-        ai_val = float(ai_raw) if _is_valid_score(ai_raw) else None
+        if _is_valid_score(ai_raw):
+            v = float(ai_raw)
+            if   v >= 70: ai_text = f"🔥 {v:.1f}%"
+            elif v >= 55: ai_text = f"✅ {v:.1f}%"
+            elif v >= 45: ai_text = f"🟡 {v:.1f}%"
+            else:         ai_text = f"🔴 {v:.1f}%"
+        else:
+            ai_text = "⏳ N/A"
+
+        rs = r.get('RS Raw', 50)
+        if   rs >= 80: rs_text = f"🔥 {rs:.0f}"
+        elif rs >= 65: rs_text = f"✅ {rs:.0f}"
+        elif rs >= 45: rs_text = f"🟡 {rs:.0f}"
+        else:          rs_text = f"🔴 {rs:.0f}"
+
         display_rows.append({
             'Ticker':       r['Ticker'],
             'Thị Giá':      r['Thị Giá'],
-            'AI T+3 (%)':   ai_val if ai_val is not None else float('nan'),
-            'RS Rating':    r.get('RS Raw', 50),
+            'AI T+3':       ai_text,
+            'RS Rating':    rs_text,
             'RSI':          round(r.get('RSI Raw', 0), 1),
-            'Vol':          round(r.get('Vol Raw', 0), 2),
+            'Vol':          f"{r.get('Vol Raw', 0):.2f}x",
             'ADX':          round(r.get('ADX Raw', 0), 1),
             'Weekly':       _weekly_badge(r.get('Weekly Raw', 'NEUTRAL')),
-            'BB Squeeze':   "🌀" if r.get('Lò Xo BB')    else "—",
+            'BB Sqz':       "🌀" if r.get('Lò Xo BB')    else "—",
             'Cạn Cung':     "💧" if r.get('Cạn Cung')    else "—",
-            'Tổ Chức Gom':  "🦈" if r.get('Tổ Chức Gom') else "—",
-            '52W High':     "🏆" if r.get('52W High')    else "—",
+            'Tổ Chức':      "🦈" if r.get('Tổ Chức Gom') else "—",
+            '52W↑':         "🏆" if r.get('52W High')    else "—",
             'Div':          "📈" if r.get('Div Bullish') else ("📉" if r.get('Div Bearish') else "—"),
-            'Chân Sóng':    f"🌊{r.get('Wave Score',0)}" if r.get('Wave Bottom') else "—",
+            'Chân Sóng':    f"🌊{r.get('Wave Score',0)}/8" if r.get('Wave Bottom') else "—",
         })
     df_display = pd.DataFrame(display_rows)
     st.dataframe(
         df_display,
         use_container_width=True,
         column_config={
-            "Ticker":       st.column_config.TextColumn("Mã CK", width="small"),
-            "Thị Giá":      st.column_config.TextColumn("Thị Giá", width="small"),
-            "AI T+3 (%)":   st.column_config.ProgressColumn(
-                "AI T+3", help="Xác suất tăng ≥2% sau 3 phiên",
-                min_value=0, max_value=100, format="%.1f%%"),
-            "RS Rating":    st.column_config.ProgressColumn(
-                "RS Rating", help="Sức mạnh so với VN-Index (0-100). ≥70 = mạnh hơn thị trường",
-                min_value=0, max_value=100, format="%.0f"),
-            "RSI":          st.column_config.NumberColumn("RSI",  format="%.1f", width="small"),
-            "Vol":          st.column_config.NumberColumn("Vol",  format="%.2fx", width="small"),
-            "ADX":          st.column_config.NumberColumn("ADX",  format="%.1f", width="small"),
-            "Weekly":       st.column_config.TextColumn("Weekly", width="small"),
-            "BB Squeeze":   st.column_config.TextColumn("BB Sqz", width="small"),
-            "Cạn Cung":     st.column_config.TextColumn("Cạn Cung", width="small"),
-            "Tổ Chức Gom":  st.column_config.TextColumn("Tổ Chức", width="small"),
-            "52W High":     st.column_config.TextColumn("52W ↑", width="small"),
-            "Div":          st.column_config.TextColumn("Div", width="small",
-                help="📈 Phân kỳ dương (sắp tăng) | 📉 Phân kỳ âm (cảnh báo)"),
-            "Chân Sóng":    st.column_config.TextColumn("Chân Sóng", width="small"),
+            "Ticker":    st.column_config.TextColumn("Mã CK",    width="small"),
+            "Thị Giá":   st.column_config.TextColumn("Thị Giá",  width="small"),
+            "AI T+3":    st.column_config.TextColumn("🤖 AI T+3",
+                help="🔥≥70% Rất tốt | ✅≥55% Tốt | 🟡≥45% TB | 🔴<45% Yếu"),
+            "RS Rating": st.column_config.TextColumn("📈 RS",
+                help="Sức mạnh vs VN-Index 3 tháng. 🔥≥80 | ✅≥65 | 🟡≥45 | 🔴<45"),
+            "RSI":       st.column_config.NumberColumn("RSI",    format="%.1f", width="small"),
+            "Vol":       st.column_config.TextColumn("Vol",      width="small"),
+            "ADX":       st.column_config.NumberColumn("ADX",    format="%.1f", width="small",
+                help="ADX > 25 = xu hướng mạnh"),
+            "Weekly":    st.column_config.TextColumn("Weekly",   width="small"),
+            "BB Sqz":    st.column_config.TextColumn("BB Sqz",   width="small"),
+            "Cạn Cung":  st.column_config.TextColumn("Cạn Cung", width="small"),
+            "Tổ Chức":   st.column_config.TextColumn("Tổ Chức",  width="small"),
+            "52W↑":      st.column_config.TextColumn("52W↑",     width="small"),
+            "Div":       st.column_config.TextColumn("Div",      width="small"),
+            "Chân Sóng": st.column_config.TextColumn("Chân Sóng",width="small"),
         },
         hide_index=True,
     )
