@@ -108,7 +108,7 @@ ROE_GOOD          = 0.15
 
 # Radar
 RADAR_MAX         = 150
-SCAN_DAYS         = 100
+SCAN_DAYS         = 200   # đủ cho AI_MIN_ROWS=200
 FOREIGN_DAYS      = 10
 FOREIGN_NET_DAYS  = 10
 
@@ -373,7 +373,11 @@ def calc_indicators(df_raw: pd.DataFrame) -> pd.DataFrame:
     df['return_1d']    = close.pct_change()
     vol_avg10          = volume.rolling(10).mean()
     df['vol_strength'] = volume / (vol_avg10 + 1e-9)
-    df['money_flow']   = close * volume
+    # money_flow chuẩn hóa z-score — tránh giá trị hàng tỷ làm lệch AI
+    raw_mf             = close * volume
+    mf_mean            = raw_mf.rolling(20).mean()
+    mf_std             = raw_mf.rolling(20).std()
+    df['money_flow']   = (raw_mf - mf_mean) / (mf_std + 1e-9)
     df['volatility']   = df['return_1d'].rolling(20).std()
     df['vol_avg_20']   = volume.rolling(20).mean()
 
@@ -530,27 +534,33 @@ def _run_xgb(df: pd.DataFrame) -> float | str:
     df2 = df.copy()
     df2['target'] = (df2['close'].shift(-3) > df2['close'] * AI_PROFIT_T3).astype(int)
     df2 = df2.dropna()
-    # [NÂNG CẤP #11] 10 features thay vì 8
     features = [
         'rsi', 'macd', 'signal', 'return_1d', 'volatility',
         'vol_strength', 'money_flow', 'pv_trend',
-        'adx', 'obv_zscore',          # mới
+        'adx', 'obv_zscore',
     ]
-    # Chỉ dùng features có trong df2
     features = [f for f in features if f in df2.columns]
     X = df2[features].values
     y = df2['target'].values
-    tscv   = TimeSeriesSplit(n_splits=5)
-    model  = XGBClassifier(
-        n_estimators     = 200,
-        max_depth        = 4,
-        learning_rate    = 0.05,
-        subsample        = 0.8,
-        colsample_bytree = 0.8,
-        use_label_encoder= False,
-        eval_metric      = 'logloss',
-        random_state     = 42,
-        verbosity        = 0,
+
+    # Tính scale_pos_weight để xử lý class imbalance
+    n_neg = max(1, (y == 0).sum())
+    n_pos = max(1, (y == 1).sum())
+    spw   = round(n_neg / n_pos, 2)
+
+    tscv  = TimeSeriesSplit(n_splits=5)
+    model = XGBClassifier(
+        n_estimators      = 200,
+        max_depth         = 4,
+        learning_rate     = 0.05,
+        subsample         = 0.8,
+        colsample_bytree  = 0.8,
+        scale_pos_weight  = spw,      # xử lý mất cân bằng lớp
+        min_child_weight  = 5,        # tránh overfit trên tập nhỏ
+        use_label_encoder = False,
+        eval_metric       = 'logloss',
+        random_state      = 42,
+        verbosity         = 0,
     )
     for train_idx, _ in tscv.split(X):
         if len(train_idx) < 100:
@@ -1488,10 +1498,11 @@ def render_radar_table(rows: list[dict]) -> None:
     display_rows = []
     for r in rows:
         ai_raw = r.get('AI T+3 Raw', 'N/A')
+        ai_val = float(ai_raw) if _is_valid_score(ai_raw) else None
         display_rows.append({
             'Ticker':       r['Ticker'],
             'Thị Giá':      r['Thị Giá'],
-            'AI T+3 (%)':   float(ai_raw) if _is_valid_score(ai_raw) else 0.0,
+            'AI T+3 (%)':   ai_val if ai_val is not None else float('nan'),
             'RS Rating':    r.get('RS Raw', 50),
             'RSI':          round(r.get('RSI Raw', 0), 1),
             'Vol':          round(r.get('Vol Raw', 0), 2),
