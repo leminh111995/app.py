@@ -401,7 +401,14 @@ def calc_indicators(df_raw: pd.DataFrame) -> pd.DataFrame:
     obv_std  = df['obv'].rolling(20).std()
     df['obv_zscore'] = (df['obv'] - obv_mean) / (obv_std + 1e-9)
 
-    return df.dropna()
+    # Chỉ dropna theo các cột AI thực sự cần — MA200 NaN không ảnh hưởng
+    ai_cols = [
+        'rsi', 'macd', 'signal', 'return_1d', 'volatility',
+        'vol_strength', 'money_flow', 'pv_trend', 'adx', 'obv_zscore',
+        'ma20', 'bb_width', 'upper_band', 'lower_band', 'atr',
+    ]
+    drop_cols = [c for c in ai_cols if c in df.columns]
+    return df.dropna(subset=drop_cols)
 
 
 def get_weekly_trend(df_daily: pd.DataFrame) -> str:
