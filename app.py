@@ -2435,6 +2435,57 @@ with tab3:
         elif "XẢ" in flow_info['action']:  st.error(action_msg)
         else:                               st.warning(action_msg)
 
+    # ── DEBUG PANEL (tạm thời — để tìm đúng API endpoint) ──
+    st.divider()
+    with st.expander("🔧 DEBUG — Kiểm Tra API Vnstock (bấm để mở)"):
+        st.caption("Panel tạm thời để kiểm tra API. Sẽ xóa sau khi fix xong.")
+        if st.button("▶️ Chạy Debug API Ngay", key="debug_api"):
+            debug_ticker = ticker
+            st.write(f"**Đang test với mã: {debug_ticker}**")
+
+            # 1. In ra tất cả methods của trading
+            try:
+                stk = Vnstock().stock(symbol=debug_ticker, source='VCI')
+                trading_methods = [m for m in dir(stk.trading) if not m.startswith('_')]
+                st.success(f"✅ VCI trading methods: `{trading_methods}`")
+            except Exception as e:
+                st.error(f"❌ VCI init fail: {e}")
+
+            try:
+                stk2 = Vnstock().stock(symbol=debug_ticker, source='TCBS')
+                trading_methods2 = [m for m in dir(stk2.trading) if not m.startswith('_')]
+                st.success(f"✅ TCBS trading methods: `{trading_methods2}`")
+            except Exception as e:
+                st.error(f"❌ TCBS init fail: {e}")
+
+            # 2. Thử từng method và in kết quả + tên cột
+            start_d, end_d = date_range(15)
+            test_methods = [
+                ('VCI', 'foreign_trade'),
+                ('VCI', 'foreign'),
+                ('VCI', 'proprietary_trade'),
+                ('VCI', 'proprietary'),
+                ('TCBS', 'foreign_trade'),
+                ('TCBS', 'foreign'),
+                ('TCBS', 'proprietary_trade'),
+                ('TCBS', 'proprietary'),
+            ]
+            for src, method in test_methods:
+                try:
+                    stk_t = Vnstock().stock(symbol=debug_ticker, source=src)
+                    fn    = getattr(stk_t.trading, method)
+                    df_t  = fn(start=start_d, end=end_d)
+                    if valid(df_t):
+                        st.success(
+                            f"✅ **{src}.trading.{method}** → "
+                            f"{len(df_t)} hàng | Cột: `{df_t.columns.tolist()}` | "
+                            f"Mẫu: {df_t.tail(2).to_dict('records')}"
+                        )
+                    else:
+                        st.warning(f"⚠️ {src}.trading.{method} → trả về rỗng")
+                except Exception as e:
+                    st.error(f"❌ {src}.trading.{method} → {type(e).__name__}: {e}")
+
 # ==============================================================================
 # TAB 4: RADAR TRUY QUÉT [NÂNG CẤP #15 — Hiển Thị Nâng Cao]
 # ==============================================================================
