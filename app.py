@@ -2442,49 +2442,54 @@ with tab3:
         if st.button("▶️ Chạy Debug API Ngay", key="debug_api"):
             debug_ticker = ticker
             st.write(f"**Đang test với mã: {debug_ticker}**")
-
-            # 1. In ra tất cả methods của trading
-            try:
-                stk = Vnstock().stock(symbol=debug_ticker, source='VCI')
-                trading_methods = [m for m in dir(stk.trading) if not m.startswith('_')]
-                st.success(f"✅ VCI trading methods: `{trading_methods}`")
-            except Exception as e:
-                st.error(f"❌ VCI init fail: {e}")
-
-            try:
-                stk2 = Vnstock().stock(symbol=debug_ticker, source='TCBS')
-                trading_methods2 = [m for m in dir(stk2.trading) if not m.startswith('_')]
-                st.success(f"✅ TCBS trading methods: `{trading_methods2}`")
-            except Exception as e:
-                st.error(f"❌ TCBS init fail: {e}")
-
-            # 2. Thử từng method và in kết quả + tên cột
+            VALID_SOURCES = ['VCI', 'KBS', 'MSN', 'FMP']
             start_d, end_d = date_range(15)
-            test_methods = [
-                ('VCI', 'foreign_trade'),
-                ('VCI', 'foreign'),
-                ('VCI', 'proprietary_trade'),
-                ('VCI', 'proprietary'),
-                ('TCBS', 'foreign_trade'),
-                ('TCBS', 'foreign'),
-                ('TCBS', 'proprietary_trade'),
-                ('TCBS', 'proprietary'),
-            ]
-            for src, method in test_methods:
+
+            for src in VALID_SOURCES:
                 try:
-                    stk_t = Vnstock().stock(symbol=debug_ticker, source=src)
-                    fn    = getattr(stk_t.trading, method)
-                    df_t  = fn(start=start_d, end=end_d)
-                    if valid(df_t):
-                        st.success(
-                            f"✅ **{src}.trading.{method}** → "
-                            f"{len(df_t)} hàng | Cột: `{df_t.columns.tolist()}` | "
-                            f"Mẫu: {df_t.tail(2).to_dict('records')}"
-                        )
-                    else:
-                        st.warning(f"⚠️ {src}.trading.{method} → trả về rỗng")
+                    stk = Vnstock().stock(symbol=debug_ticker, source=src)
+
+                    # In tất cả top-level modules
+                    top_attrs = [a for a in dir(stk) if not a.startswith('_')]
+                    st.info(f"**{src} top-level:** `{top_attrs}`")
+
+                    # In methods của từng module
+                    for mod_name in ['quote', 'trading', 'finance', 'company', 'fund', 'trade']:
+                        try:
+                            mod = getattr(stk, mod_name)
+                            methods = [m for m in dir(mod) if not m.startswith('_')]
+                            st.write(f"→ `{src}.{mod_name}` methods: `{methods}`")
+                        except Exception:
+                            pass
+
+                    # Thử price_board — có thể chứa dữ liệu ngoại
+                    try:
+                        pb = stk.trading.price_board(symbols_list=[debug_ticker])
+                        if valid(pb):
+                            st.success(f"✅ {src}.trading.price_board → cols: `{pb.columns.tolist()}`")
+                            st.dataframe(pb.head(3))
+                    except Exception as e:
+                        st.error(f"❌ {src}.trading.price_board → {e}")
+
+                    # Thử tất cả method của quote
+                    for method in ['intraday', 'history', 'foreign', 'foreign_trade',
+                                   'order_matching', 'price', 'tick']:
+                        try:
+                            fn  = getattr(stk.quote, method)
+                            df_t = fn(start=start_d, end=end_d) if method in ['intraday','history','foreign','foreign_trade'] \
+                                   else fn()
+                            if valid(df_t):
+                                st.success(
+                                    f"✅ **{src}.quote.{method}** → "
+                                    f"{len(df_t)} hàng | Cột: `{df_t.columns.tolist()}`"
+                                )
+                                st.dataframe(df_t.tail(3))
+                        except Exception as e:
+                            st.error(f"❌ {src}.quote.{method} → {e}")
+
                 except Exception as e:
-                    st.error(f"❌ {src}.trading.{method} → {type(e).__name__}: {e}")
+                    st.error(f"❌ Source {src} init fail: {e}")
+                st.divider()
 
 # ==============================================================================
 # TAB 4: RADAR TRUY QUÉT [NÂNG CẤP #15 — Hiển Thị Nâng Cao]
