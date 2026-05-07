@@ -129,7 +129,7 @@ DIV_LOOKBACK      = 20          # số phiên nhìn lại để tìm phân kỳ
 WAVE_RSI_MAX      = 52          # RSI dưới 52 = chưa quá mua
 WAVE_RSI_MIN      = 28          # RSI trên 28 = không quá bán thái quá
 WAVE_PRICE_MA50   = 0.88        # giá ít nhất 88% MA50
-WAVE_SCORE_MIN    = 3           # cần ≥ 3 điểm chân sóng
+WAVE_SCORE_MIN    = 4           # cần ≥ 4 điểm / 11 tiêu chí
 
 # Mã trụ thị trường
 PILLARS = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
@@ -1237,12 +1237,17 @@ def calc_market_breadth(sample_tickers: tuple) -> dict:
 # ==============================================================================
 # [V23 #24] WAVE BOTTOM SCORE — Bộ dò chân sóng nâng cao
 # ==============================================================================
-def calc_wave_bottom_score(df: pd.DataFrame, last: pd.Series) -> dict:
+def calc_wave_bottom_score(
+    df: pd.DataFrame,
+    last: pd.Series,
+    smart_flow: bool = False,      # Tổ Chức gom (ngoại/tự doanh mua ròng)
+    near_52w_high: bool = False,   # Gần đỉnh 52 tuần
+    div_bullish: bool = False,     # Phân kỳ dương RSI/MACD
+) -> dict:
     """
-    Hệ thống điểm riêng để phát hiện cổ phiếu đang ở CHÂN SÓNG.
-    Mỗi điều kiện đúng = +1 điểm. Tổng ≥ WAVE_SCORE_MIN = chân sóng hợp lệ.
-
-    Tiêu chí rộng hơn Tầng 2 — bắt sớm hơn, trước khi weekly xác nhận.
+    [V23] Hệ thống 11 tiêu chí chân sóng.
+    8 tiêu chí kỹ thuật + 3 tiêu chí bổ sung (Tổ Chức, 52W, Div).
+    Cần ≥ WAVE_SCORE_MIN điểm = chân sóng hợp lệ.
     """
     score  = 0
     flags  = []
@@ -1309,23 +1314,41 @@ def calc_wave_bottom_score(df: pd.DataFrame, last: pd.Series) -> dict:
         score += 1
         flags.append("Nằm vùng hỗ trợ kép BB-MA20")
 
-    # 8. Giá tăng nhẹ phiên gần nhất trên Vol bình thường (rục rịch thoát đáy)
+    # 8. Nến xanh nhẹ + Vol bình thường (rục rịch thoát đáy)
     ret = last.get('return_1d', 0)
     vol = last['vol_strength']
     if ret > 0 and 0.7 <= vol <= 1.4:
         score += 1
         flags.append("Giá xanh nhẹ + Vol bình thường")
 
+    # ── 3 TIÊU CHÍ BỔ SUNG (V23) ──
+    # 9. Tổ Chức gom (Ngoại/Tự doanh mua ròng)
+    if smart_flow:
+        score += 1
+        flags.append("Tổ Chức gom")
+
+    # 10. Gần đỉnh 52 tuần (trong 8%) — Stage 2 sắp breakout
+    if near_52w_high:
+        score += 1
+        flags.append("Gần đỉnh 52W")
+
+    # 11. Phân kỳ dương RSI/MACD — động lượng đang phục hồi
+    if div_bullish:
+        score += 1
+        flags.append("Phân kỳ dương")
+
     is_wave_bottom = score >= WAVE_SCORE_MIN
+    total_criteria = 11
     if is_wave_bottom:
-        label = f"🌊 Chân Sóng ({score}/8 điều kiện: {', '.join(flags)})"
+        label = f"✅ Chân Sóng ({score}/{total_criteria}: {', '.join(flags)})"
     else:
-        label = f"Chưa đủ tiêu chí chân sóng ({score}/8)"
+        label = f"Chưa đủ tiêu chí ({score}/{total_criteria})"
     return {
-        'score':           score,
-        'flags':           flags,
-        'is_wave_bottom':  is_wave_bottom,
-        'label':           label,
+        'score':          score,
+        'total':          total_criteria,
+        'flags':          flags,
+        'is_wave_bottom': is_wave_bottom,
+        'label':          label,
     }
 
 
@@ -1371,8 +1394,15 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
     if base_ok and weapons >= 1 and weekly_trend in ('UP', 'NEUTRAL'):
         return "⚖️ Danh Sách Chờ"
 
-    # TẦNG 3: Chân Sóng [V23 #24] — bắt sớm trước khi weekly xác nhận
-    wave = calc_wave_bottom_score(df, last)
+    # TẦNG 3: Chân Sóng [V23] — tính đủ 11 tiêu chí
+    w52   = calc_52w_info(df)
+    div   = detect_divergence(df)
+    wave  = calc_wave_bottom_score(
+        df, last,
+        smart_flow    = smart,
+        near_52w_high = w52['near_high'],
+        div_bullish   = (div['signal'] == 'BULLISH'),
+    )
     if wave['is_wave_bottom']:
         ma50          = last.get('ma50', ma20)
         not_downtrend = price >= ma50 * 0.85      # không quá xa MA50
@@ -1534,7 +1564,7 @@ def render_radar_table(rows: list[dict]) -> None:
             'Tổ Chức':      "✅" if r.get('Tổ Chức Gom') else "—",
             '52W↑':         "✅" if r.get('52W High')    else "—",
             'Div':          "✅" if r.get('Div Bullish') else ("⚠️" if r.get('Div Bearish') else "—"),
-            'Chân Sóng':    f"✅{r.get('Wave Score',0)}/8" if r.get('Wave Bottom') else "—",
+            'Chân Sóng':    f"✅{r.get('Wave Score',0)}/11" if r.get('Wave Bottom') else "—",
         })
     df_display = pd.DataFrame(display_rows)
     st.dataframe(
@@ -2360,7 +2390,12 @@ with tab4:
                 rs_s    = calc_rs_rating(df_s, df_vnidx)
                 div_s   = detect_divergence(df_s)
                 w52_s   = calc_52w_info(df_s)
-                wave_s  = calc_wave_bottom_score(df_s, last_s)
+                wave_s  = calc_wave_bottom_score(
+                    df_s, last_s,
+                    smart_flow    = bool(smart),
+                    near_52w_high = bool(w52_s['near_high']),
+                    div_bullish   = bool(div_s['signal'] == 'BULLISH'),
+                )
 
                 row = {
                     'Ticker':       t,
