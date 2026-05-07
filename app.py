@@ -1941,81 +1941,241 @@ with tab2:
 # TAB 3: DÒNG TIỀN THÔNG MINH
 # ==============================================================================
 with tab3:
-    st.write(f"### 🌊 Smart Flow Specialist — Mổ Xẻ Hành Vi Dòng Tiền ({ticker})")
-    with st.spinner("Đang trích xuất dữ liệu Khối Ngoại 10 phiên..."):
-        df_for = get_foreign(ticker, FOREIGN_DAYS)
+    st.write(f"### 🌊 Smart Flow Specialist — Mổ Xẻ Dòng Tiền 3 Bên ({ticker})")
+    st.caption("So sánh **Khối Ngoại / Tự Doanh / Nhỏ Lẻ** theo từng phiên — xác định ai đang gom, ai đang xả.")
+
+    with st.spinner("Đang tổng hợp dữ liệu dòng tiền 3 bên..."):
+        df_for  = get_foreign(ticker,     FOREIGN_DAYS)
+        df_prop = get_proprietary(ticker, FOREIGN_DAYS)
+        df_price_flow = get_price(ticker, days=15)
+        if valid(df_price_flow):
+            df_price_flow = calc_indicators(df_price_flow)
         foreign_trend_t3 = analyze_foreign_trend(df_for)
-        if valid(df_for):
-            last_f = df_for.iloc[-1]
-            buy_v  = to_billion(last_f.get('buyval',  0))
-            sell_v = to_billion(last_f.get('sellval', 0))
-            net_v  = to_billion(last_f.get('netval', buy_v - sell_v))
-            st.write("#### 📊 Xu Hướng Khối Ngoại 10 Phiên")
-            ft = foreign_trend_t3
-            f1, f2, f3, f4 = st.columns(4)
-            f1.metric("Tổng Ròng 10 Phiên", f"{ft['net_total']:+.2f} Tỷ",
-                      delta="Mua Ròng ✓" if ft['net_total'] > 0 else "Bán Ròng ⚠️",
-                      delta_color="normal" if ft['net_total'] > 0 else "inverse")
-            f2.metric("Phiên Mua Liên Tiếp", f"{ft['consecutive_buy']} phiên")
-            f3.metric("Phiên Bán Liên Tiếp", f"{ft['consecutive_sell']} phiên")
-            f4.metric("Xu Hướng Tổng",       ft['trend'],
-                      delta="🦈 Tích Lũy Âm Thầm!" if ft['is_silent_accum'] else "",
-                      delta_color="normal" if ft['is_silent_accum'] else "off")
-            if ft['is_silent_accum']:   st.success(ft['summary'])
-            elif 'BUY' in ft['trend']:  st.info(ft['summary'])
-            elif 'SELL' in ft['trend']: st.error(ft['summary'])
-            else:                       st.warning(ft['summary'])
-            x_dates  = df_for['date'].tail(10) if 'date' in df_for.columns else df_for.index[-10:]
-            net_vals = []
-            for _, row in df_for.tail(10).iterrows():
-                b = to_billion(row.get('buyval', 0))
-                s = to_billion(row.get('sellval', 0))
-                n = to_billion(row.get('netval', b - s))
-                net_vals.append(n)
-            colors = ['green' if v > 0 else 'red' for v in net_vals]
-            fig_f  = go.Figure(go.Bar(x=x_dates, y=net_vals,
-                                       marker_color=colors, name="Ròng (Tỷ VNĐ)"))
-            fig_f.update_layout(height=300, title="Khối Ngoại Mua/Bán Ròng 10 Phiên (Tỷ VNĐ)",
-                                  margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig_f, use_container_width=True)
+
+    # ── Chuẩn bị dữ liệu 10 phiên ──
+    def _extract_flow(df_src, days=10):
+        """Trả về dict {date: {'buy': x, 'sell': y, 'net': z}} từ df ngoại/tự doanh."""
+        if not valid(df_src):
+            return {}
+        rows = {}
+        for _, r in df_src.tail(days).iterrows():
+            d   = str(r.get('date', r.name))[:10]
+            buy = to_billion(r.get('buyval',  0))
+            sel = to_billion(r.get('sellval', 0))
+            net = to_billion(r.get('netval',  buy - sel))
+            rows[d] = {'buy': buy, 'sell': sel, 'net': net}
+        return rows
+
+    flow_foreign = _extract_flow(df_for,  10)
+    flow_prop    = _extract_flow(df_prop, 10)
+
+    # Lấy danh sách ngày chung (ưu tiên theo ngày của ngoại)
+    all_dates = sorted(set(list(flow_foreign.keys()) + list(flow_prop.keys())))[-10:]
+
+    # Nhỏ Lẻ ước tính = Tổng giá trị thị trường - Ngoại - Tự doanh
+    retail_nets = []
+    foreign_nets, prop_nets = [], []
+    date_labels = []
+
+    for d in all_dates:
+        f_net = flow_foreign.get(d, {}).get('net', 0)
+        p_net = flow_prop.get(d,    {}).get('net', 0)
+
+        # Ước tính tổng giá trị phiên từ price data (close × volume)
+        retail_net = 0.0
+        if valid(df_price_flow) and 'date' in df_price_flow.columns:
+            day_row = df_price_flow[df_price_flow['date'].astype(str).str[:10] == d]
+            if not day_row.empty:
+                total_val = to_billion(day_row.iloc[0]['close'] * day_row.iloc[0]['volume'])
+                # Retail ≈ tổng phiên - |ngoại mua+bán| - |tự doanh mua+bán|
+                f_gross = to_billion(df_for.loc[df_for['date'].astype(str).str[:10] == d, 'buyval'].sum()
+                                     + df_for.loc[df_for['date'].astype(str).str[:10] == d, 'sellval'].sum()
+                                     ) if valid(df_for) and 'date' in df_for.columns else 0
+                p_gross = to_billion(df_prop.loc[df_prop['date'].astype(str).str[:10] == d, 'buyval'].sum()
+                                     + df_prop.loc[df_prop['date'].astype(str).str[:10] == d, 'sellval'].sum()
+                                     ) if valid(df_prop) and 'date' in df_prop.columns else 0
+                retail_net = (total_val - f_gross - p_gross) * 0.1  # rough proxy
+
+        foreign_nets.append(f_net)
+        prop_nets.append(p_net)
+        retail_nets.append(retail_net)
+        date_labels.append(d[-5:])   # MM-DD
+
+    # ── Chart 1: Grouped Bar — Net Flow 3 bên ──
+    st.write("#### 📊 Dòng Tiền Ròng 3 Bên — 10 Phiên Gần Nhất (Tỷ VNĐ)")
+    st.caption("Mua ròng (+) = thanh xanh | Bán ròng (−) = thanh đỏ theo từng bên")
+
+    fig_multi = go.Figure()
+    fig_multi.add_trace(go.Bar(
+        x=date_labels, y=foreign_nets,
+        name="🌏 Khối Ngoại",
+        marker_color=['rgba(0,180,0,0.85)' if v >= 0 else 'rgba(220,0,0,0.85)' for v in foreign_nets],
+        text=[f"{v:+.1f}" for v in foreign_nets],
+        textposition='outside',
+    ))
+    fig_multi.add_trace(go.Bar(
+        x=date_labels, y=prop_nets,
+        name="🏦 Tự Doanh",
+        marker_color=['rgba(0,100,255,0.75)' if v >= 0 else 'rgba(255,100,0,0.75)' for v in prop_nets],
+        text=[f"{v:+.1f}" for v in prop_nets],
+        textposition='outside',
+    ))
+    # Net tổng (Ngoại + Tự Doanh) dạng đường
+    combined = [f + p for f, p in zip(foreign_nets, prop_nets)]
+    fig_multi.add_trace(go.Scatter(
+        x=date_labels, y=combined,
+        name="📈 Tổng Ròng (Ngoại+TD)",
+        mode='lines+markers',
+        line=dict(color='gold', width=2.5),
+        marker=dict(size=8),
+    ))
+    fig_multi.update_layout(
+        barmode='group',
+        height=380,
+        template='plotly_white',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(l=20, r=20, t=50, b=20),
+        yaxis_title="Tỷ VNĐ",
+        xaxis_title="Phiên giao dịch",
+    )
+    fig_multi.add_hline(y=0, line_color='black', line_width=1)
+    st.plotly_chart(fig_multi, use_container_width=True)
+
+    # ── Đọc tín hiệu tổng hợp 3 bên ──
+    st.write("#### 🔍 Đọc Tín Hiệu Tổng Hợp")
+    f_total  = sum(foreign_nets)
+    p_total  = sum(prop_nets)
+    combined_total = f_total + p_total
+
+    sig_c1, sig_c2, sig_c3, sig_c4 = st.columns(4)
+    sig_c1.metric("🌏 Ngoại Ròng 10P",  f"{f_total:+.1f} Tỷ",
+                  delta="Mua ròng ✓" if f_total > 0 else "Bán ròng ⚠️",
+                  delta_color="normal" if f_total > 0 else "inverse")
+    sig_c2.metric("🏦 Tự Doanh Ròng 10P", f"{p_total:+.1f} Tỷ",
+                  delta="Gom hàng ✓" if p_total > 0 else "Thoát hàng ⚠️",
+                  delta_color="normal" if p_total > 0 else "inverse")
+    sig_c3.metric("📊 Tổng Smart Money", f"{combined_total:+.1f} Tỷ",
+                  delta="Tổ chức đồng thuận ✓" if combined_total > 0 else "Tổ chức rút lui ⚠️",
+                  delta_color="normal" if combined_total > 0 else "inverse")
+    # Đếm phiên đồng thuận gom (cả 2 bên cùng mua ròng)
+    consensus_buy  = sum(1 for f, p in zip(foreign_nets, prop_nets) if f > 0 and p > 0)
+    consensus_sell = sum(1 for f, p in zip(foreign_nets, prop_nets) if f < 0 and p < 0)
+    sig_c4.metric("🤝 Phiên Đồng Thuận",
+                  f"Gom: {consensus_buy} | Xả: {consensus_sell}",
+                  delta="Đồng gom mạnh! ✓" if consensus_buy >= 5 else
+                        ("Đồng xả! ⚠️" if consensus_sell >= 5 else "Phân hóa"),
+                  delta_color="normal" if consensus_buy >= 5 else
+                              ("inverse" if consensus_sell >= 5 else "off"))
+
+    # ── Box đọc vị tổng ──
+    if consensus_buy >= 6:
+        st.success(
+            f"🚨 **TÍN HIỆU VÀNG — Đồng Thuận Gom Mạnh!** "
+            f"Cả Khối Ngoại lẫn Tự Doanh cùng mua ròng **{consensus_buy}/10 phiên**. "
+            f"Smart money đang tích lũy phối hợp — xác suất tạo sóng rất cao."
+        )
+    elif f_total > 0 and p_total > 0:
+        st.success(
+            f"✅ **Tích Cực:** Cả 2 bên tổ chức đều mua ròng trong 10 phiên "
+            f"(Ngoại {f_total:+.1f}Tỷ | TD {p_total:+.1f}Tỷ). Nền tảng dòng tiền vững."
+        )
+    elif f_total > 0 and p_total < 0:
+        st.warning(
+            f"⚠️ **Phân Kỳ Dòng Tiền:** Khối Ngoại mua ròng ({f_total:+.1f}Tỷ) "
+            f"nhưng Tự Doanh đang xả ({p_total:+.1f}Tỷ). "
+            f"Nội bộ thị trường chưa đồng thuận — vào lệnh nhỏ, theo dõi thêm."
+        )
+    elif f_total < 0 and p_total > 0:
+        st.warning(
+            f"⚠️ **Phân Kỳ Dòng Tiền:** Tự Doanh gom ({p_total:+.1f}Tỷ) "
+            f"nhưng Khối Ngoại đang rút ({f_total:+.1f}Tỷ). "
+            f"Dòng tiền nội địa tích cực, nhưng thiếu lực ngoại."
+        )
+    elif consensus_sell >= 5:
+        st.error(
+            f"🚨 **CẢNH BÁO ĐỎ:** Cả 2 bên tổ chức đồng loạt xả hàng "
+            f"({consensus_sell}/10 phiên cùng bán ròng). Đứng ngoài chờ đáy."
+        )
+    else:
+        st.info("🟡 Dòng tiền tổ chức đang phân hóa — chưa có tín hiệu rõ ràng từ hai phía.")
+
+    st.divider()
+
+    # ── Chart 2: Stacked Buy/Sell — Ngoại chi tiết ──
+    st.write("#### 📊 Chi Tiết Mua/Bán Từng Bên (Gross Value)")
+    if valid(df_for) or valid(df_prop):
+        fig_detail = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=("🌏 Khối Ngoại — Mua vs Bán (Tỷ)", "🏦 Tự Doanh — Mua vs Bán (Tỷ)"),
+            shared_yaxes=False,
+        )
+        # Ngoại
+        if valid(df_for) and 'date' in df_for.columns:
+            f10 = df_for.tail(10)
+            f_dates = f10['date'].astype(str).str[-5:].tolist()
+            f_buys  = [to_billion(r.get('buyval',  0)) for _, r in f10.iterrows()]
+            f_sells = [-to_billion(r.get('sellval', 0)) for _, r in f10.iterrows()]
+            fig_detail.add_trace(go.Bar(x=f_dates, y=f_buys,  name="Ngoại Mua",
+                                        marker_color='rgba(0,180,0,0.8)'), row=1, col=1)
+            fig_detail.add_trace(go.Bar(x=f_dates, y=f_sells, name="Ngoại Bán",
+                                        marker_color='rgba(220,0,0,0.8)'), row=1, col=1)
+        # Tự Doanh
+        if valid(df_prop) and 'date' in df_prop.columns:
+            p10 = df_prop.tail(10)
+            p_dates = p10['date'].astype(str).str[-5:].tolist()
+            p_buys  = [to_billion(r.get('buyval',  0)) for _, r in p10.iterrows()]
+            p_sells = [-to_billion(r.get('sellval', 0)) for _, r in p10.iterrows()]
+            fig_detail.add_trace(go.Bar(x=p_dates, y=p_buys,  name="TD Mua",
+                                        marker_color='rgba(0,100,255,0.8)'), row=1, col=2)
+            fig_detail.add_trace(go.Bar(x=p_dates, y=p_sells, name="TD Bán",
+                                        marker_color='rgba(255,100,0,0.8)'), row=1, col=2)
+        fig_detail.update_layout(
+            barmode='relative', height=320, template='plotly_white',
+            margin=dict(l=20, r=20, t=50, b=20),
+            legend=dict(orientation='h', yanchor='bottom', y=1.05),
+        )
+        fig_detail.add_hline(y=0, line_color='black', line_width=0.8, row=1, col=1)
+        fig_detail.add_hline(y=0, line_color='black', line_width=0.8, row=1, col=2)
+        st.plotly_chart(fig_detail, use_container_width=True)
+    else:
+        st.warning("⚠️ Không có đủ dữ liệu để vẽ chart chi tiết.")
+
+    st.divider()
+
+    # ── Dòng tiền 3 nhóm + Gom/Xả (giữ nguyên từ V22) ──
+    net_v = sum(foreign_nets) if foreign_nets else 0.0
+    df_flow = get_price(ticker, days=30)
+    if valid(df_flow):
+        df_flow   = calc_indicators(df_flow)
+        last_fl   = df_flow.iloc[-1]
+        vol       = last_fl['vol_strength']
+        ret       = last_fl['return_1d']
+        flow_info = classify_flow_group(vol, ret, net_v)
+        st.write("#### 📊 Phân Tích Tỷ Trọng Dòng Tiền 3 Nhóm")
+        g1, g2, g3 = st.columns(3)
+        inst_pct = flow_info['inst_pct']
+        if flow_info['group'] == "🦈 Cá Mập":
+            shark_pct = inst_pct;  org_pct = max(0, 1 - shark_pct - 0.2)
+        elif flow_info['group'] == "🏦 Tổ Chức Nội":
+            shark_pct = 0.05;      org_pct = inst_pct - shark_pct
         else:
-            net_v = 0.0
-            st.warning("⚠️ Không lấy được dữ liệu Khối Ngoại.")
+            shark_pct, org_pct = 0.02, 0.13
+        retail_pct_final = max(0, 1 - shark_pct - org_pct)
+        g1.metric("🦈 Cá Mập",      f"{shark_pct*100:.1f}%",
+                  delta="Đang Mạnh" if flow_info['group'] == "🦈 Cá Mập" else "Ít Tham Gia",
+                  delta_color="normal" if flow_info['group'] == "🦈 Cá Mập" else "off")
+        g2.metric("🏦 Tổ Chức Nội", f"{org_pct*100:.1f}%",
+                  delta="Tích Lũy"  if flow_info['group'] == "🏦 Tổ Chức Nội" else "Bình Thường",
+                  delta_color="normal" if flow_info['group'] == "🏦 Tổ Chức Nội" else "off")
+        g3.metric("🐜 Nhỏ Lẻ",      f"{retail_pct_final*100:.1f}%",
+                  delta="⚠️ Đu Bám Nhiều" if retail_pct_final > 0.6 else "Ổn Định",
+                  delta_color="inverse" if retail_pct_final > 0.6 else "off")
+        st.info(f"**Nhóm chủ đạo:** {flow_info['group']} — {flow_info['description']}")
         st.divider()
-        df_flow = get_price(ticker, days=30)
-        if valid(df_flow):
-            df_flow  = calc_indicators(df_flow)
-            last_fl  = df_flow.iloc[-1]
-            vol      = last_fl['vol_strength']
-            ret      = last_fl['return_1d']
-            flow_info = classify_flow_group(vol, ret, net_v)
-            st.write("#### 📊 Phân Tích Dòng Tiền 3 Nhóm")
-            g1, g2, g3 = st.columns(3)
-            inst_pct = flow_info['inst_pct']
-            if flow_info['group'] == "🦈 Cá Mập":
-                shark_pct = inst_pct
-                org_pct   = max(0, 1 - shark_pct - 0.2)
-            elif flow_info['group'] == "🏦 Tổ Chức Nội":
-                shark_pct = 0.05
-                org_pct   = inst_pct - shark_pct
-            else:
-                shark_pct, org_pct = 0.02, 0.13
-            retail_pct_final = max(0, 1 - shark_pct - org_pct)
-            g1.metric("🦈 Cá Mập",      f"{shark_pct*100:.1f}%",
-                      delta="Đang Mạnh" if flow_info['group'] == "🦈 Cá Mập" else "Ít Tham Gia",
-                      delta_color="normal" if flow_info['group'] == "🦈 Cá Mập" else "off")
-            g2.metric("🏦 Tổ Chức Nội", f"{org_pct*100:.1f}%",
-                      delta="Tích Lũy" if flow_info['group'] == "🏦 Tổ Chức Nội" else "Bình Thường",
-                      delta_color="normal" if flow_info['group'] == "🏦 Tổ Chức Nội" else "off")
-            g3.metric("🐜 Nhỏ Lẻ",      f"{retail_pct_final*100:.1f}%",
-                      delta="⚠️ Đu Bám Nhiều" if retail_pct_final > 0.6 else "Ổn Định",
-                      delta_color="inverse" if retail_pct_final > 0.6 else "off")
-            st.info(f"**Nhóm chủ đạo:** {flow_info['group']} — {flow_info['description']}")
-            st.divider()
-            action_msg = f"**{flow_info['action']}**\n\n_{flow_info['action_note']}_"
-            if "GOM"  in flow_info['action']:  st.success(action_msg)
-            elif "XẢ" in flow_info['action']:  st.error(action_msg)
-            else:                               st.warning(action_msg)
+        action_msg = f"**{flow_info['action']}**\n\n_{flow_info['action_note']}_"
+        if "GOM"  in flow_info['action']:  st.success(action_msg)
+        elif "XẢ" in flow_info['action']:  st.error(action_msg)
+        else:                               st.warning(action_msg)
 
 # ==============================================================================
 # TAB 4: RADAR TRUY QUÉT [NÂNG CẤP #15 — Hiển Thị Nâng Cao]
