@@ -1238,6 +1238,24 @@ def calc_wave_bottom_score(df: pd.DataFrame, last: pd.Series) -> dict:
     adx    = last.get('adx', 0)
     obv_z  = last.get('obv_zscore', 0)
 
+    # ── HARD DISQUALIFIERS — loại ngay, không tính điểm ──
+    # Quá mua: RSI > WAVE_RSI_MAX (52) → đã bứt tốc, không phải chân sóng
+    if rsi > WAVE_RSI_MAX:
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ RSI {rsi:.1f} quá cao — đã bứt tốc, không phải chân sóng'}
+    # Quá bán cực đoan: RSI < WAVE_RSI_MIN → downtrend mạnh, chưa đủ an toàn
+    if rsi < WAVE_RSI_MIN:
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ RSI {rsi:.1f} quá thấp — downtrend mạnh'}
+    # Giá đã vượt MA20 > 5% → không còn là chân sóng nữa
+    if price > ma20 * 1.05:
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ Giá vượt MA20 quá 5% — cổ phiếu đã bứt phá'}
+    # ADX ≥ 35: xu hướng đang bùng nổ mạnh → không phải tích lũy nền
+    if adx >= 35:
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ ADX {adx:.1f} ≥ 35 — xu hướng bùng nổ, không phải nền'}
+
     # 1. RSI trong vùng hồi phục (không quá mua, không quá bán thái quá)
     if WAVE_RSI_MIN <= rsi <= WAVE_RSI_MAX:
         score += 1
@@ -1339,11 +1357,12 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
     # TẦNG 3: Chân Sóng [V23 #24] — bắt sớm trước khi weekly xác nhận
     wave = calc_wave_bottom_score(df, last)
     if wave['is_wave_bottom']:
-        # Thêm điều kiện loại trừ downtrend rõ ràng
-        ma50 = last.get('ma50', ma20)
-        not_downtrend = price >= ma50 * 0.85   # không quá xa MA50
-        rsi_not_crash = rsi >= 25              # RSI không quá bán thái quá
-        if not_downtrend and rsi_not_crash:
+        ma50          = last.get('ma50', ma20)
+        not_downtrend = price >= ma50 * 0.85      # không quá xa MA50
+        rsi_in_range  = WAVE_RSI_MIN <= rsi <= WAVE_RSI_MAX  # RSI phải trong vùng hồi phục
+        price_not_hot = price <= ma20 * 1.05      # giá không được vượt MA20 quá 5% (đã bứt tốc rồi)
+        adx_not_surge = last.get('adx', 0) < 35  # ADX < 35: chưa phải xu hướng bùng nổ
+        if not_downtrend and rsi_in_range and price_not_hot and adx_not_surge:
             return "🌊 Chân Sóng"
 
     # TẦNG 4: Vùng Quan Sát — tín hiệu sớm, cần theo dõi thêm
