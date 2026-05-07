@@ -267,29 +267,147 @@ def get_vnindex_cached() -> pd.DataFrame | None:
     print("[WARN] Không lấy được VN-Index từ bất kỳ nguồn nào.")
     return None
 
-def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
+def _normalize_flow_df(df: pd.DataFrame) -> pd.DataFrame | None:
+    """
+    Chuẩn hóa DataFrame dòng tiền về cột chuẩn: date, buyval, sellval, netval.
+    Xử lý tất cả tên cột có thể từ các source khác nhau của Vnstock.
+    """
+    if not valid(df):
+        return None
+    df = df.copy()
+    # Chuẩn hóa tên cột về lowercase không dấu
+    df.columns = [str(c).lower().strip() for c in df.columns]
+
+    # Map date
+    for c in ['date', 'tradingdate', 'trading_date', 'time', 'ngay']:
+        if c in df.columns:
+            df['date'] = pd.to_datetime(df[c]).dt.strftime('%Y-%m-%d')
+            break
+    else:
+        df['date'] = pd.to_datetime(df.index).strftime('%Y-%m-%d')
+
+    # Map buyval
+    for c in ['buyval', 'buy_val', 'buyvalue', 'buy_value', 'gtmua',
+              'totalbuyvol', 'buyvol', 'foreignbuyvalue', 'propbuyvol']:
+        if c in df.columns:
+            df['buyval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+            break
+    else:
+        df['buyval'] = 0.0
+
+    # Map sellval
+    for c in ['sellval', 'sell_val', 'sellvalue', 'sell_value', 'gtban',
+              'totalsellvol', 'sellvol', 'foreignsellvalue', 'propsellvol']:
+        if c in df.columns:
+            df['sellval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+            break
+    else:
+        df['sellval'] = 0.0
+
+    # Map netval
+    for c in ['netval', 'net_val', 'netvalue', 'net_value', 'gtrong',
+              'netvol', 'foreignnetvalue', 'propnetvol']:
+        if c in df.columns:
+            df['netval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+            break
+    else:
+        df['netval'] = df['buyval'] - df['sellval']
+
+    result = df[['date', 'buyval', 'sellval', 'netval']].dropna(subset=['date'])
+    return result if len(result) > 0 else None
+
+
+def fetch_all_flows(ticker: str, days: int = FOREIGN_DAYS) -> dict:
+    """
+    Thử TẤT CẢ endpoints có thể cho Foreign + Proprietary trong 1 lần gọi.
+    Trả về {'foreign': df | None, 'proprietary': df | None, 'source': str}
+    """
     start, end = date_range(days)
-    for method in [
+    SOURCES    = ['VCI', 'TCBS', 'SSI', 'FPTS']
+
+    # ── Tất cả cách lấy Foreign ──
+    foreign_attempts = [
         lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
         lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
-    ]:
+        lambda: engine().stock.trade.foreign(symbol=ticker, start=start, end=end),
+    ]
+    for src in SOURCES:
+        for method_name in ['trade.foreign_trade', 'trading.foreign_trade',
+                            'trading.foreign', 'trade.foreign']:
+            def _make_attempt(s=src, m=method_name):
+                def attempt():
+                    stk = Vnstock().stock(symbol=ticker, source=s)
+                    parts = m.split('.')
+                    obj = stk
+                    for p in parts[:-1]:
+                        obj = getattr(obj, p)
+                    return getattr(obj, parts[-1])(start=start, end=end)
+                return attempt
+            foreign_attempts.append(_make_attempt())
+
+    # ── Tất cả cách lấy Proprietary ──
+    prop_attempts = [
+        lambda: engine().stock.trade.proprietary_trade(symbol=ticker, start=start, end=end),
+        lambda: engine().stock.trading.proprietary(symbol=ticker, start=start, end=end),
+        lambda: engine().stock.trade.proprietary(symbol=ticker, start=start, end=end),
+    ]
+    for src in SOURCES:
+        for method_name in ['trade.proprietary_trade', 'trading.proprietary_trade',
+                            'trading.proprietary', 'trade.proprietary']:
+            def _make_prop(s=src, m=method_name):
+                def attempt():
+                    stk = Vnstock().stock(symbol=ticker, source=s)
+                    parts = m.split('.')
+                    obj = stk
+                    for p in parts[:-1]:
+                        obj = getattr(obj, p)
+                    return getattr(obj, parts[-1])(start=start, end=end)
+                return attempt
+            prop_attempts.append(_make_prop())
+
+    # ── Thử Foreign ──
+    df_foreign = None
+    foreign_src = 'none'
+    for i, attempt in enumerate(foreign_attempts):
         try:
-            df = method()
-            if valid(df):
-                return normalize_cols(df)
-        except Exception:
+            raw = attempt()
+            df_foreign = _normalize_flow_df(raw)
+            if df_foreign is not None and len(df_foreign) > 0:
+                foreign_src = f'attempt_{i}'
+                print(f"[OK] Foreign {ticker} via attempt_{i}")
+                break
+        except Exception as e:
+            print(f"[WARN] Foreign attempt_{i} {ticker}: {e}")
             continue
-    return None
+
+    # ── Thử Proprietary ──
+    df_prop = None
+    prop_src = 'none'
+    for i, attempt in enumerate(prop_attempts):
+        try:
+            raw = attempt()
+            df_prop = _normalize_flow_df(raw)
+            if df_prop is not None and len(df_prop) > 0:
+                prop_src = f'attempt_{i}'
+                print(f"[OK] Proprietary {ticker} via attempt_{i}")
+                break
+        except Exception as e:
+            print(f"[WARN] Prop attempt_{i} {ticker}: {e}")
+            continue
+
+    return {
+        'foreign':     df_foreign,
+        'proprietary': df_prop,
+        'source':      f'F:{foreign_src} P:{prop_src}',
+    }
+
+
+# Giữ lại get_foreign/get_proprietary để tương thích với code cũ
+def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
+    return fetch_all_flows(ticker, days)['foreign']
 
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    start, end = date_range(days)
-    try:
-        df = engine().stock.trade.proprietary_trade(symbol=ticker, start=start, end=end)
-        if valid(df):
-            return normalize_cols(df)
-    except Exception as e:
-        print(f"[WARN] Proprietary {ticker}: {e}")
-    return None
+    return fetch_all_flows(ticker, days)['proprietary']
 
 # ==============================================================================
 # 3. CHỈ BÁO KỸ THUẬT (có thêm ATR, ADX, OBV — NÂNG CẤP #10 #11)
@@ -2074,120 +2192,148 @@ with tab3:
     st.write(f"### 🌊 Smart Flow Specialist — Mổ Xẻ Dòng Tiền 3 Bên ({ticker})")
     st.caption("So sánh **Khối Ngoại / Tự Doanh / Nhỏ Lẻ** theo từng phiên — xác định ai đang gom, ai đang xả.")
 
-    with st.spinner("Đang tổng hợp dữ liệu dòng tiền 3 bên..."):
-        df_for  = get_foreign(ticker,     FOREIGN_DAYS)
-        df_prop = get_proprietary(ticker, FOREIGN_DAYS)
-        df_price_flow = get_price(ticker, days=15)
+    with st.spinner("Đang tổng hợp dữ liệu dòng tiền 3 bên (thử tất cả nguồn)..."):
+        flows        = fetch_all_flows(ticker, FOREIGN_DAYS)
+        df_for       = flows['foreign']
+        df_prop      = flows['proprietary']
+        df_price_flow = get_price(ticker, days=20)
         if valid(df_price_flow):
             df_price_flow = calc_indicators(df_price_flow)
         foreign_trend_t3 = analyze_foreign_trend(df_for)
 
     # ── Chuẩn bị dữ liệu 10 phiên ──
-    def _extract_flow(df_src, days=10):
-        """Trả về dict {date: {'buy': x, 'sell': y, 'net': z}} từ df ngoại/tự doanh."""
+    def _extract_flow(df_src, n=10):
+        """Trả về list [{date, buy, sell, net}] đã chuẩn hóa."""
         if not valid(df_src):
-            return {}
-        rows = {}
-        for _, r in df_src.tail(days).iterrows():
+            return []
+        result = []
+        for _, r in df_src.tail(n).iterrows():
             d   = str(r.get('date', r.name))[:10]
             buy = to_billion(r.get('buyval',  0))
             sel = to_billion(r.get('sellval', 0))
             net = to_billion(r.get('netval',  buy - sel))
-            rows[d] = {'buy': buy, 'sell': sel, 'net': net}
-        return rows
+            result.append({'date': d, 'buy': buy, 'sell': sel, 'net': net})
+        return sorted(result, key=lambda x: x['date'])
 
-    flow_foreign = _extract_flow(df_for,  10)
-    flow_prop    = _extract_flow(df_prop, 10)
+    rows_for  = _extract_flow(df_for,  10)
+    rows_prop = _extract_flow(df_prop, 10)
 
-    # Lấy danh sách ngày chung (ưu tiên theo ngày của ngoại)
-    all_dates = sorted(set(list(flow_foreign.keys()) + list(flow_prop.keys())))[-10:]
+    # Tạo timeline chung từ price data (đảm bảo luôn có ngày)
+    price_dates = []
+    if valid(df_price_flow) and 'date' in df_price_flow.columns:
+        price_dates = [str(d)[:10] for d in df_price_flow['date'].tail(10).tolist()]
 
-    # Nhỏ Lẻ ước tính = Tổng giá trị thị trường - Ngoại - Tự doanh
-    retail_nets = []
-    foreign_nets, prop_nets = [], []
-    date_labels = []
+    # Hợp nhất ngày từ cả 3 nguồn
+    all_dates_set = set(price_dates)
+    all_dates_set.update([r['date'] for r in rows_for])
+    all_dates_set.update([r['date'] for r in rows_prop])
+    all_dates = sorted(all_dates_set)[-10:]
+
+    # Map theo ngày
+    map_for  = {r['date']: r for r in rows_for}
+    map_prop = {r['date']: r for r in rows_prop}
+
+    foreign_nets, prop_nets, retail_nets, date_labels = [], [], [], []
 
     for d in all_dates:
-        f_net = flow_foreign.get(d, {}).get('net', 0)
-        p_net = flow_prop.get(d,    {}).get('net', 0)
+        f_net  = map_for.get(d,  {}).get('net',  0.0)
+        p_net  = map_prop.get(d, {}).get('net',  0.0)
+        f_buy  = map_for.get(d,  {}).get('buy',  0.0)
+        f_sell = map_for.get(d,  {}).get('sell', 0.0)
+        p_buy  = map_prop.get(d, {}).get('buy',  0.0)
+        p_sell = map_prop.get(d, {}).get('sell', 0.0)
 
-        # Ước tính tổng giá trị phiên từ price data (close × volume)
+        # Nhỏ Lẻ ước tính = Tổng phiên - Ngoại gross - Tự Doanh gross
         retail_net = 0.0
         if valid(df_price_flow) and 'date' in df_price_flow.columns:
             day_row = df_price_flow[df_price_flow['date'].astype(str).str[:10] == d]
             if not day_row.empty:
-                total_val = to_billion(day_row.iloc[0]['close'] * day_row.iloc[0]['volume'])
-                # Retail ≈ tổng phiên - |ngoại mua+bán| - |tự doanh mua+bán|
-                f_gross = to_billion(df_for.loc[df_for['date'].astype(str).str[:10] == d, 'buyval'].sum()
-                                     + df_for.loc[df_for['date'].astype(str).str[:10] == d, 'sellval'].sum()
-                                     ) if valid(df_for) and 'date' in df_for.columns else 0
-                p_gross = to_billion(df_prop.loc[df_prop['date'].astype(str).str[:10] == d, 'buyval'].sum()
-                                     + df_prop.loc[df_prop['date'].astype(str).str[:10] == d, 'sellval'].sum()
-                                     ) if valid(df_prop) and 'date' in df_prop.columns else 0
-                retail_net = (total_val - f_gross - p_gross) * 0.1  # rough proxy
+                total_val  = to_billion(day_row.iloc[0]['close'] * day_row.iloc[0]['volume'])
+                inst_gross = (f_buy + f_sell + p_buy + p_sell)
+                retail_net = max(0, total_val - inst_gross) * np.sign(
+                    day_row.iloc[0].get('return_1d', 0) or 0
+                )
 
         foreign_nets.append(f_net)
         prop_nets.append(p_net)
         retail_nets.append(retail_net)
-        date_labels.append(d[-5:])   # MM-DD
+        date_labels.append(d[5:])   # MM-DD
+
+    has_foreign = any(v != 0 for v in foreign_nets)
+    has_prop    = any(v != 0 for v in prop_nets)
+    has_any     = has_foreign or has_prop
 
     # ── Chart 1: Grouped Bar — Net Flow 3 bên ──
     st.write("#### 📊 Dòng Tiền Ròng 3 Bên — 10 Phiên Gần Nhất (Tỷ VNĐ)")
-    st.caption("Mua ròng (+) = thanh xanh | Bán ròng (−) = thanh đỏ theo từng bên")
+    st.caption("Mua ròng (+) = thanh xanh | Bán ròng (−) = thanh đỏ | Đường vàng = tổng Smart Money")
 
-    fig_multi = go.Figure()
-    fig_multi.add_trace(go.Bar(
-        x=date_labels, y=foreign_nets,
-        name="🌏 Khối Ngoại",
-        marker_color=['rgba(0,180,0,0.85)' if v >= 0 else 'rgba(220,0,0,0.85)' for v in foreign_nets],
-        text=[f"{v:+.1f}" for v in foreign_nets],
-        textposition='outside',
-    ))
-    fig_multi.add_trace(go.Bar(
-        x=date_labels, y=prop_nets,
-        name="🏦 Tự Doanh",
-        marker_color=['rgba(0,100,255,0.75)' if v >= 0 else 'rgba(255,100,0,0.75)' for v in prop_nets],
-        text=[f"{v:+.1f}" for v in prop_nets],
-        textposition='outside',
-    ))
-    # Net tổng (Ngoại + Tự Doanh) dạng đường
-    combined = [f + p for f, p in zip(foreign_nets, prop_nets)]
-    fig_multi.add_trace(go.Scatter(
-        x=date_labels, y=combined,
-        name="📈 Tổng Ròng (Ngoại+TD)",
-        mode='lines+markers',
-        line=dict(color='gold', width=2.5),
-        marker=dict(size=8),
-    ))
-    fig_multi.update_layout(
-        barmode='group',
-        height=380,
-        template='plotly_white',
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        margin=dict(l=20, r=20, t=50, b=20),
-        yaxis_title="Tỷ VNĐ",
-        xaxis_title="Phiên giao dịch",
-    )
-    fig_multi.add_hline(y=0, line_color='black', line_width=1)
-    st.plotly_chart(fig_multi, use_container_width=True)
+    if not date_labels:
+        st.warning("⚠️ Chưa có dữ liệu ngày giao dịch. Thử lại sau hoặc chọn mã khác.")
+    elif not has_any:
+        # Fallback: hiện bảng text thông báo nguồn nào fail
+        st.warning(
+            f"⚠️ Chưa lấy được dữ liệu Khối Ngoại và Tự Doanh cho **{ticker}**.\n\n"
+            f"Nguyên nhân có thể: API Vnstock đang bảo trì hoặc mã này chưa có dữ liệu giao dịch tổ chức.\n\n"
+            f"💡 Thử lại sau 5 phút hoặc kiểm tra mã khác như SSI, VCB, FPT."
+        )
+    else:
+        fig_multi = go.Figure()
+        if has_foreign:
+            fig_multi.add_trace(go.Bar(
+                x=date_labels, y=foreign_nets,
+                name="🌏 Khối Ngoại",
+                marker_color=['rgba(0,180,0,0.85)' if v >= 0 else 'rgba(220,0,0,0.85)'
+                              for v in foreign_nets],
+                text=[f"{v:+.1f}" for v in foreign_nets],
+                textposition='outside',
+            ))
+        if has_prop:
+            fig_multi.add_trace(go.Bar(
+                x=date_labels, y=prop_nets,
+                name="🏦 Tự Doanh",
+                marker_color=['rgba(0,100,255,0.75)' if v >= 0 else 'rgba(255,100,0,0.75)'
+                              for v in prop_nets],
+                text=[f"{v:+.1f}" for v in prop_nets],
+                textposition='outside',
+            ))
+        combined = [f + p for f, p in zip(foreign_nets, prop_nets)]
+        fig_multi.add_trace(go.Scatter(
+            x=date_labels, y=combined,
+            name="📈 Tổng Ròng",
+            mode='lines+markers',
+            line=dict(color='gold', width=2.5),
+            marker=dict(size=8),
+        ))
+        fig_multi.update_layout(
+            barmode='group', height=380, template='plotly_white',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(l=20, r=20, t=50, b=20),
+            yaxis_title="Tỷ VNĐ", xaxis_title="Phiên",
+        )
+        fig_multi.add_hline(y=0, line_color='black', line_width=1)
+        st.plotly_chart(fig_multi, use_container_width=True)
+
+        if not has_foreign:
+            st.caption("⚠️ Chưa lấy được dữ liệu Khối Ngoại — chỉ hiện Tự Doanh.")
+        if not has_prop:
+            st.caption("⚠️ Chưa lấy được dữ liệu Tự Doanh — chỉ hiện Khối Ngoại.")
 
     # ── Đọc tín hiệu tổng hợp 3 bên ──
     st.write("#### 🔍 Đọc Tín Hiệu Tổng Hợp")
-    f_total  = sum(foreign_nets)
-    p_total  = sum(prop_nets)
+    f_total        = sum(foreign_nets)
+    p_total        = sum(prop_nets)
     combined_total = f_total + p_total
 
     sig_c1, sig_c2, sig_c3, sig_c4 = st.columns(4)
     sig_c1.metric("🌏 Ngoại Ròng 10P",  f"{f_total:+.1f} Tỷ",
-                  delta="Mua ròng ✓" if f_total > 0 else "Bán ròng ⚠️",
-                  delta_color="normal" if f_total > 0 else "inverse")
+                  delta="Mua ròng ✓" if f_total > 0 else ("N/A" if not has_foreign else "Bán ròng ⚠️"),
+                  delta_color="normal" if f_total > 0 else ("off" if not has_foreign else "inverse"))
     sig_c2.metric("🏦 Tự Doanh Ròng 10P", f"{p_total:+.1f} Tỷ",
-                  delta="Gom hàng ✓" if p_total > 0 else "Thoát hàng ⚠️",
-                  delta_color="normal" if p_total > 0 else "inverse")
+                  delta="Gom hàng ✓" if p_total > 0 else ("N/A" if not has_prop else "Thoát hàng ⚠️"),
+                  delta_color="normal" if p_total > 0 else ("off" if not has_prop else "inverse"))
     sig_c3.metric("📊 Tổng Smart Money", f"{combined_total:+.1f} Tỷ",
                   delta="Tổ chức đồng thuận ✓" if combined_total > 0 else "Tổ chức rút lui ⚠️",
                   delta_color="normal" if combined_total > 0 else "inverse")
-    # Đếm phiên đồng thuận gom (cả 2 bên cùng mua ròng)
     consensus_buy  = sum(1 for f, p in zip(foreign_nets, prop_nets) if f > 0 and p > 0)
     consensus_sell = sum(1 for f, p in zip(foreign_nets, prop_nets) if f < 0 and p < 0)
     sig_c4.metric("🤝 Phiên Đồng Thuận",
@@ -2197,75 +2343,57 @@ with tab3:
                   delta_color="normal" if consensus_buy >= 5 else
                               ("inverse" if consensus_sell >= 5 else "off"))
 
-    # ── Box đọc vị tổng ──
     if consensus_buy >= 6:
-        st.success(
-            f"🚨 **TÍN HIỆU VÀNG — Đồng Thuận Gom Mạnh!** "
-            f"Cả Khối Ngoại lẫn Tự Doanh cùng mua ròng **{consensus_buy}/10 phiên**. "
-            f"Smart money đang tích lũy phối hợp — xác suất tạo sóng rất cao."
-        )
+        st.success(f"🚨 **TÍN HIỆU VÀNG** — Cả 2 bên đồng gom **{consensus_buy}/10 phiên**. Smart money đang tích lũy phối hợp.")
     elif f_total > 0 and p_total > 0:
-        st.success(
-            f"✅ **Tích Cực:** Cả 2 bên tổ chức đều mua ròng trong 10 phiên "
-            f"(Ngoại {f_total:+.1f}Tỷ | TD {p_total:+.1f}Tỷ). Nền tảng dòng tiền vững."
-        )
+        st.success(f"✅ **Tích Cực:** Cả 2 bên mua ròng (Ngoại {f_total:+.1f}Tỷ | TD {p_total:+.1f}Tỷ).")
     elif f_total > 0 and p_total < 0:
-        st.warning(
-            f"⚠️ **Phân Kỳ Dòng Tiền:** Khối Ngoại mua ròng ({f_total:+.1f}Tỷ) "
-            f"nhưng Tự Doanh đang xả ({p_total:+.1f}Tỷ). "
-            f"Nội bộ thị trường chưa đồng thuận — vào lệnh nhỏ, theo dõi thêm."
-        )
+        st.warning(f"⚠️ **Phân Kỳ:** Ngoại gom ({f_total:+.1f}Tỷ) nhưng Tự Doanh xả ({p_total:+.1f}Tỷ).")
     elif f_total < 0 and p_total > 0:
-        st.warning(
-            f"⚠️ **Phân Kỳ Dòng Tiền:** Tự Doanh gom ({p_total:+.1f}Tỷ) "
-            f"nhưng Khối Ngoại đang rút ({f_total:+.1f}Tỷ). "
-            f"Dòng tiền nội địa tích cực, nhưng thiếu lực ngoại."
-        )
+        st.warning(f"⚠️ **Phân Kỳ:** Tự Doanh gom ({p_total:+.1f}Tỷ) nhưng Ngoại rút ({f_total:+.1f}Tỷ).")
     elif consensus_sell >= 5:
-        st.error(
-            f"🚨 **CẢNH BÁO ĐỎ:** Cả 2 bên tổ chức đồng loạt xả hàng "
-            f"({consensus_sell}/10 phiên cùng bán ròng). Đứng ngoài chờ đáy."
-        )
+        st.error(f"🚨 **CẢNH BÁO ĐỎ:** Cả 2 bên đồng xả {consensus_sell}/10 phiên — đứng ngoài chờ đáy.")
     else:
-        st.info("🟡 Dòng tiền tổ chức đang phân hóa — chưa có tín hiệu rõ ràng từ hai phía.")
+        st.info("🟡 Dòng tiền tổ chức phân hóa — chưa có tín hiệu rõ ràng từ hai phía.")
 
     st.divider()
 
-    # ── Chart 2: Stacked Buy/Sell — Ngoại chi tiết ──
+    # ── Chart 2: Chi tiết Mua/Bán gross từng bên ──
     st.write("#### 📊 Chi Tiết Mua/Bán Từng Bên (Gross Value)")
-    if valid(df_for) or valid(df_prop):
+    if has_any:
         fig_detail = make_subplots(
             rows=1, cols=2,
-            subplot_titles=("🌏 Khối Ngoại — Mua vs Bán (Tỷ)", "🏦 Tự Doanh — Mua vs Bán (Tỷ)"),
-            shared_yaxes=False,
+            subplot_titles=("🌏 Khối Ngoại (Tỷ)", "🏦 Tự Doanh (Tỷ)"),
         )
-        # Ngoại
-        if valid(df_for) and 'date' in df_for.columns:
-            f10 = df_for.tail(10)
-            f_dates = f10['date'].astype(str).str[-5:].tolist()
-            f_buys  = [to_billion(r.get('buyval',  0)) for _, r in f10.iterrows()]
-            f_sells = [-to_billion(r.get('sellval', 0)) for _, r in f10.iterrows()]
+        if has_foreign and rows_for:
+            f_dates = [r['date'][5:] for r in rows_for]
+            f_buys  = [r['buy']  for r in rows_for]
+            f_sells = [-r['sell'] for r in rows_for]
             fig_detail.add_trace(go.Bar(x=f_dates, y=f_buys,  name="Ngoại Mua",
-                                        marker_color='rgba(0,180,0,0.8)'), row=1, col=1)
+                                        marker_color='rgba(0,180,0,0.8)'),  row=1, col=1)
             fig_detail.add_trace(go.Bar(x=f_dates, y=f_sells, name="Ngoại Bán",
-                                        marker_color='rgba(220,0,0,0.8)'), row=1, col=1)
-        # Tự Doanh
-        if valid(df_prop) and 'date' in df_prop.columns:
-            p10 = df_prop.tail(10)
-            p_dates = p10['date'].astype(str).str[-5:].tolist()
-            p_buys  = [to_billion(r.get('buyval',  0)) for _, r in p10.iterrows()]
-            p_sells = [-to_billion(r.get('sellval', 0)) for _, r in p10.iterrows()]
+                                        marker_color='rgba(220,0,0,0.8)'),  row=1, col=1)
+        else:
+            fig_detail.add_annotation(text="Chưa có dữ liệu Khối Ngoại",
+                                       xref="x domain", yref="y domain",
+                                       x=0.5, y=0.5, row=1, col=1, showarrow=False)
+        if has_prop and rows_prop:
+            p_dates = [r['date'][5:] for r in rows_prop]
+            p_buys  = [r['buy']  for r in rows_prop]
+            p_sells = [-r['sell'] for r in rows_prop]
             fig_detail.add_trace(go.Bar(x=p_dates, y=p_buys,  name="TD Mua",
                                         marker_color='rgba(0,100,255,0.8)'), row=1, col=2)
             fig_detail.add_trace(go.Bar(x=p_dates, y=p_sells, name="TD Bán",
                                         marker_color='rgba(255,100,0,0.8)'), row=1, col=2)
+        else:
+            fig_detail.add_annotation(text="Chưa có dữ liệu Tự Doanh",
+                                       xref="x2 domain", yref="y2 domain",
+                                       x=0.5, y=0.5, row=1, col=2, showarrow=False)
         fig_detail.update_layout(
             barmode='relative', height=320, template='plotly_white',
             margin=dict(l=20, r=20, t=50, b=20),
             legend=dict(orientation='h', yanchor='bottom', y=1.05),
         )
-        fig_detail.add_hline(y=0, line_color='black', line_width=0.8, row=1, col=1)
-        fig_detail.add_hline(y=0, line_color='black', line_width=0.8, row=1, col=2)
         st.plotly_chart(fig_detail, use_container_width=True)
     else:
         st.warning("⚠️ Không có đủ dữ liệu để vẽ chart chi tiết.")
