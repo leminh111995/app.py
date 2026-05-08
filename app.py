@@ -1774,12 +1774,13 @@ news_raw       = st.sidebar.text_area("Tiêu đề tin tức:", height=120,
 news_headlines = [l.strip() for l in news_raw.splitlines() if l.strip()]
 
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
     "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU",
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
+    "📊 VN-INDEX & TƯƠNG QUAN",
 ])
 
 # ==============================================================================
@@ -2863,7 +2864,334 @@ with tab5:
             )
 
 # ==============================================================================
-# HẾT MÃ NGUỒN — QUANT SYSTEM V22.0 SUPREME
-# NÂNG CẤP: #10 ATR Stop | #11 ADX+OBV | #12 Kelly | #13 Cache AI | #14 Sharpe+MaxDD
-# NÂNG CẤP: #15 Radar Display — Table màu ProgressBar + Card View + Summary Banner
+# TAB 6: VN-INDEX & TƯƠNG QUAN
 # ==============================================================================
+with tab6:
+    st.subheader(f"📊 Phân Tích VN-Index & Tương Quan với {ticker}")
+
+    if st.button("🔄 Tải Dữ Liệu VN-Index & Phân Tích"):
+        with st.spinner("Đang tải dữ liệu VN-Index..."):
+            df_vni  = get_vnindex_cached()
+            df_stk  = get_price(ticker, days=300)
+            if valid(df_stk):
+                df_stk = calc_indicators(df_stk)
+
+        if not valid(df_vni):
+            st.error("❌ Không lấy được dữ liệu VN-Index. Thử lại sau.")
+            st.stop()
+
+        df_vni = calc_indicators(df_vni)
+        last_v = df_vni.iloc[-1]
+
+        # ── PHẦN 1: SNAPSHOT VNI ──
+        st.write("### 1️⃣ Snapshot VN-Index Hôm Nay")
+        price_vni  = last_v['close']
+        ret_1d     = last_v['return_1d'] * 100
+        ret_1w     = (df_vni['close'].iloc[-1] / df_vni['close'].iloc[-5]  - 1) * 100 if len(df_vni) >= 5  else 0
+        ret_1m     = (df_vni['close'].iloc[-1] / df_vni['close'].iloc[-21] - 1) * 100 if len(df_vni) >= 21 else 0
+        ret_ytd    = (df_vni['close'].iloc[-1] / df_vni['close'].iloc[-252]- 1) * 100 if len(df_vni) >= 252 else 0
+
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("VN-Index", f"{price_vni:,.1f}", delta=f"{ret_1d:+.2f}% hôm nay",
+                  delta_color="normal" if ret_1d >= 0 else "inverse")
+        s2.metric("1 Tuần",   f"{ret_1w:+.2f}%",  delta_color="normal" if ret_1w >= 0 else "inverse")
+        s3.metric("1 Tháng",  f"{ret_1m:+.2f}%",  delta_color="normal" if ret_1m >= 0 else "inverse")
+        s4.metric("YTD",      f"{ret_ytd:+.2f}%", delta_color="normal" if ret_ytd >= 0 else "inverse")
+        rsi_vni = last_v['rsi']
+        s5.metric("RSI VNI",  f"{rsi_vni:.1f}",
+                  delta="Quá Mua ⚠️" if rsi_vni > 70 else ("Quá Bán 💡" if rsi_vni < 30 else "Ổn Định ✓"),
+                  delta_color="inverse" if rsi_vni > 70 else ("normal" if rsi_vni < 30 else "off"))
+
+        st.divider()
+
+        # ── PHẦN 1.2: VỊ TRÍ KỸ THUẬT VNI ──
+        st.write("### 2️⃣ Vị Trí Kỹ Thuật VN-Index")
+        ma20_v  = last_v['ma20']
+        ma50_v  = last_v['ma50']
+        ma200_v = last_v.get('ma200', last_v['ma50'])
+        macd_v  = last_v['macd']
+        sig_v   = last_v['signal']
+        adx_v   = last_v.get('adx', 0)
+        ichi_v  = ichimoku_signal(last_v)
+
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("VNI vs MA20",  f"{price_vni:,.0f} / {ma20_v:,.0f}",
+                  delta="Trên MA20 ✓" if price_vni > ma20_v else "Dưới MA20 ⚠️",
+                  delta_color="normal" if price_vni > ma20_v else "inverse")
+        t2.metric("VNI vs MA50",  f"{price_vni:,.0f} / {ma50_v:,.0f}",
+                  delta="Trên MA50 ✓" if price_vni > ma50_v else "Dưới MA50 ⚠️",
+                  delta_color="normal" if price_vni > ma50_v else "inverse")
+        t3.metric("VNI vs MA200", f"{price_vni:,.0f} / {ma200_v:,.0f}",
+                  delta="Trên MA200 ✓" if price_vni > ma200_v else "Dưới MA200 ⚠️",
+                  delta_color="normal" if price_vni > ma200_v else "inverse")
+        t4.metric("MACD",         f"{macd_v:.1f}",
+                  delta="Cross Up ✓" if macd_v > sig_v else "Cross Down ⚠️",
+                  delta_color="normal" if macd_v > sig_v else "inverse")
+
+        # Xu hướng ngắn/trung/dài
+        weekly_vni = get_weekly_trend(df_vni)
+        st.write("#### Xu Hướng Đa Khung Thời Gian")
+        u1, u2, u3, u4 = st.columns(4)
+        u1.metric("Ngắn hạn (Daily)",  "📈 TĂNG" if price_vni > ma20_v  else "📉 GIẢM",
+                  delta_color="off")
+        u2.metric("Trung hạn (Weekly)", _weekly_badge(weekly_vni), delta_color="off")
+        u3.metric("Dài hạn (MA200)",   "📈 BULL" if price_vni > ma200_v else "📉 BEAR",
+                  delta_color="off")
+        u4.metric("ADX Sức Mạnh",      f"{adx_v:.1f}",
+                  delta="Xu hướng rõ ✓" if adx_v > 25 else "Sideways",
+                  delta_color="normal" if adx_v > 25 else "off")
+
+        # Ichimoku
+        if 'BULL' in ichi_v['signal']:   st.success(ichi_v['label'])
+        elif ichi_v['signal'] == 'BEAR': st.error(ichi_v['label'])
+        else:                            st.warning(ichi_v['label'])
+
+        st.divider()
+
+        # ── PHẦN 1.3: NHẬN XÉT TỔNG HỢP AUTO ──
+        st.write("### 3️⃣ Nhận Xét Tổng Hợp Thị Trường")
+
+        # Xác định trạng thái Bull/Bear/Sideway
+        bull_signals = sum([
+            price_vni > ma20_v,
+            price_vni > ma50_v,
+            price_vni > ma200_v,
+            macd_v > sig_v,
+            weekly_vni == 'UP',
+            rsi_vni > 50,
+        ])
+        if   bull_signals >= 5: market_state = "BULL MẠNH"
+        elif bull_signals >= 4: market_state = "TÍCH CỰC"
+        elif bull_signals >= 3: market_state = "TRUNG LẬP"
+        elif bull_signals >= 2: market_state = "THẬN TRỌNG"
+        else:                   market_state = "BEAR"
+
+        state_color = {
+            "BULL MẠNH": "success", "TÍCH CỰC": "success",
+            "TRUNG LẬP": "warning", "THẬN TRỌNG": "warning",
+            "BEAR": "error"
+        }[market_state]
+
+        # Nhận xét chi tiết
+        lines = []
+        lines.append(f"**Trạng thái tổng thể: {market_state}** ({bull_signals}/6 tín hiệu tích cực)")
+        lines.append("")
+
+        # MA
+        if price_vni > ma200_v:
+            lines.append(f"📈 VN-Index đang ở trên MA200 ({ma200_v:,.0f}) — cấu trúc tăng dài hạn còn nguyên vẹn.")
+        else:
+            lines.append(f"📉 VN-Index đang dưới MA200 ({ma200_v:,.0f}) — thị trường đang trong giai đoạn điều chỉnh dài hạn.")
+
+        if price_vni > ma20_v:
+            pct_above = (price_vni - ma20_v) / ma20_v * 100
+            lines.append(f"✅ Giá đang cách MA20 {pct_above:.1f}% — {'vùng an toàn, chưa xa MA20 quá.' if pct_above < 5 else 'đã xa MA20, cẩn thận điều chỉnh.'}")
+        else:
+            pct_below = (ma20_v - price_vni) / ma20_v * 100
+            lines.append(f"⚠️ Giá đang dưới MA20 {pct_below:.1f}% — phe bán đang kiểm soát ngắn hạn.")
+
+        # RSI
+        if rsi_vni > 70:
+            lines.append(f"🔴 RSI {rsi_vni:.1f} — thị trường đang quá mua. Tránh giải ngân mạnh, chờ RSI hạ về 55-60.")
+        elif rsi_vni < 35:
+            lines.append(f"💡 RSI {rsi_vni:.1f} — thị trường quá bán. Thường là cơ hội mua vào tốt nếu fundamental còn tốt.")
+        elif 45 <= rsi_vni <= 60:
+            lines.append(f"✅ RSI {rsi_vni:.1f} — vùng lý tưởng, thị trường chưa nóng, còn room để tăng tiếp.")
+        else:
+            lines.append(f"🟡 RSI {rsi_vni:.1f} — vùng trung lập, theo dõi thêm hướng tiếp theo.")
+
+        # MACD
+        if macd_v > sig_v:
+            lines.append(f"✅ MACD đang cắt lên Signal ({macd_v:.1f} > {sig_v:.1f}) — momentum tăng đang hình thành.")
+        else:
+            lines.append(f"⚠️ MACD đang cắt xuống Signal ({macd_v:.1f} < {sig_v:.1f}) — momentum đang suy yếu.")
+
+        # Kết luận hành động
+        lines.append("")
+        if market_state in ("BULL MẠNH", "TÍCH CỰC"):
+            lines.append("**💡 Kết Luận:** Thị trường đang ủng hộ. Có thể giải ngân vào các mã đã tích lũy nền đẹp (Tầng 2, 3 của Radar). Ưu tiên mã có RS Rating cao.")
+        elif market_state == "TRUNG LẬP":
+            lines.append("**💡 Kết Luận:** Thị trường phân hóa. Chọn lọc kỹ — chỉ vào các mã có tín hiệu rất rõ, vốn nhỏ (20-30%), SL chặt.")
+        else:
+            lines.append("**💡 Kết Luận:** Thị trường bất lợi. Giảm tỷ trọng, ưu tiên bảo toàn vốn. Chỉ nắm giữ mã có nền tảng cực mạnh.")
+
+        comment_text = "\n\n".join(lines)
+        if state_color == "success":   st.success(comment_text)
+        elif state_color == "warning": st.warning(comment_text)
+        else:                          st.error(comment_text)
+
+        st.divider()
+
+        # ── PHẦN 1.4: THANH KHOẢN ──
+        st.write("### 4️⃣ Thanh Khoản Thị Trường")
+        vol_10 = df_vni['volume'].tail(10).mean() if 'volume' in df_vni.columns else 0
+        vol_20 = df_vni['volume'].tail(20).mean() if 'volume' in df_vni.columns else 0
+        if vol_10 > 0 and vol_20 > 0:
+            liq1, liq2, liq3 = st.columns(3)
+            liq1.metric("Vol TB 10 phiên", f"{vol_10/1e9:.1f} Tỷ")
+            liq2.metric("Vol TB 20 phiên", f"{vol_20/1e9:.1f} Tỷ")
+            liq3.metric("Xu hướng thanh khoản",
+                        "🟢 Tiền đang vào" if vol_10 > vol_20 * 1.1
+                        else ("🔴 Tiền đang rút" if vol_10 < vol_20 * 0.9 else "🟡 Ổn định"),
+                        delta_color="off")
+            if vol_10 > vol_20 * 1.1:
+                st.success("✅ Thanh khoản 10 phiên cao hơn TB 20 phiên — dòng tiền đang đổ vào thị trường.")
+            elif vol_10 < vol_20 * 0.9:
+                st.warning("⚠️ Thanh khoản 10 phiên thấp hơn TB — thị trường đang thiếu dòng tiền mới.")
+            else:
+                st.info("🟡 Thanh khoản ổn định, không có biến động bất thường.")
+
+        st.divider()
+
+        # ── PHẦN 2: TƯƠNG QUAN MÃ VS VNI ──
+        st.write(f"### 5️⃣ Tương Quan {ticker} vs VN-Index")
+
+        if not valid(df_stk):
+            st.warning(f"⚠️ Không lấy được dữ liệu giá {ticker}.")
+        else:
+            # Ghép 2 df theo ngày
+            df_vni_r = df_vni[['date','close','return_1d']].copy().rename(
+                columns={'close':'close_vni','return_1d':'ret_vni'})
+            df_stk_r = df_stk[['date','close','return_1d']].copy().rename(
+                columns={'close':'close_stk','return_1d':'ret_stk'})
+            df_vni_r['date'] = df_vni_r['date'].astype(str).str[:10]
+            df_stk_r['date'] = df_stk_r['date'].astype(str).str[:10]
+            df_merged = pd.merge(df_vni_r, df_stk_r, on='date').dropna().tail(63)
+
+            if len(df_merged) < 20:
+                st.warning("⚠️ Không đủ dữ liệu chung để tính tương quan.")
+            else:
+                # Beta
+                cov   = np.cov(df_merged['ret_stk'], df_merged['ret_vni'])
+                beta  = cov[0,1] / (cov[1,1] + 1e-9)
+                beta  = round(beta, 2)
+
+                # Correlation
+                corr  = df_merged['ret_stk'].corr(df_merged['ret_vni'])
+                corr  = round(corr, 3)
+                r2    = round(corr ** 2 * 100, 1)
+
+                # RS Rating
+                rs_tab6 = calc_rs_rating(df_stk, df_vni)
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Beta (63 phiên)", f"{beta:.2f}",
+                          delta="Biến động mạnh hơn TT" if beta > 1.2
+                          else ("Phòng thủ" if beta < 0.8 else "Cân bằng"),
+                          delta_color="off")
+                c2.metric("Correlation (R)", f"{corr:.2f}",
+                          delta="Đồng pha cao" if corr > 0.7
+                          else ("Ngược chiều" if corr < -0.3 else "Tương quan trung bình"),
+                          delta_color="off")
+                c3.metric("R² (Giải thích)", f"{r2:.1f}%",
+                          delta=f"VNI giải thích {r2:.0f}% biến động {ticker}",
+                          delta_color="off")
+                c4.metric("RS Rating", f"{rs_tab6:.0f}/100",
+                          delta=_rs_badge(rs_tab6), delta_color="off")
+
+                # Giải thích Beta bằng chữ
+                st.write("#### 📝 Đọc Vị Tương Quan")
+                interp_lines = []
+
+                if beta > 1.5:
+                    interp_lines.append(f"⚡ **Beta {beta:.2f}** — {ticker} biến động **mạnh hơn thị trường {beta:.1f}x**. Khi VNI tăng 1%, {ticker} thường tăng ~{beta:.1f}%. Đây là mã **aggressive** — lời nhiều nhưng rủi ro cũng cao hơn.")
+                elif beta > 1.0:
+                    interp_lines.append(f"📈 **Beta {beta:.2f}** — {ticker} biến động nhỉnh hơn thị trường một chút. Phù hợp khi thị trường bull.")
+                elif beta > 0.5:
+                    interp_lines.append(f"🛡️ **Beta {beta:.2f}** — {ticker} ít biến động hơn thị trường. Mã **phòng thủ** — ít lời hơn khi bull nhưng cũng ít mất hơn khi bear.")
+                elif beta > 0:
+                    interp_lines.append(f"😴 **Beta {beta:.2f}** — {ticker} gần như không phản ứng với thị trường chung. Giá phụ thuộc chủ yếu vào yếu tố nội tại của doanh nghiệp.")
+                else:
+                    interp_lines.append(f"🔄 **Beta {beta:.2f}** — {ticker} có xu hướng **đi ngược thị trường**. Có thể dùng như hedge khi thị trường giảm.")
+
+                if corr > 0.8:
+                    interp_lines.append(f"🔗 **Correlation {corr:.2f}** — Gần như đồng hành hoàn toàn với VNI. Khi thị trường xấu, {ticker} rất khó thoát khỏi đà giảm chung.")
+                elif corr > 0.5:
+                    interp_lines.append(f"🔗 **Correlation {corr:.2f}** — Tương quan trung bình với VNI. {ticker} vẫn có yếu tố riêng ảnh hưởng đến giá.")
+                else:
+                    interp_lines.append(f"🔓 **Correlation {corr:.2f}** — Ít tương quan với VNI. {ticker} giao dịch theo câu chuyện riêng của mình.")
+
+                # Tín hiệu giao dịch theo VNI
+                interp_lines.append("")
+                if market_state in ("BULL MẠNH", "TÍCH CỰC") and beta > 1:
+                    interp_lines.append(f"✅ **Tín hiệu:** Thị trường đang Bull + Beta {beta:.1f} > 1 → {ticker} có tiềm năng outperform thị trường. Thời điểm thuận lợi nếu kỹ thuật mã đẹp.")
+                elif market_state in ("BULL MẠNH", "TÍCH CỰC") and beta <= 1:
+                    interp_lines.append(f"🟡 **Tín hiệu:** Thị trường Bull nhưng Beta {beta:.1f} thấp → {ticker} có thể underperform khi thị trường tăng mạnh. Cân nhắc tìm mã Beta cao hơn.")
+                elif market_state in ("BEAR", "THẬN TRỌNG") and beta < 1:
+                    interp_lines.append(f"🛡️ **Tín hiệu:** Thị trường Bear/thận trọng + Beta {beta:.1f} thấp → {ticker} có thể giữ giá tốt hơn thị trường. Phù hợp phòng thủ.")
+                else:
+                    interp_lines.append(f"⚠️ **Tín hiệu:** Thị trường Bear/thận trọng + Beta {beta:.1f} cao → {ticker} có thể giảm mạnh hơn thị trường. Cẩn thận tỷ trọng.")
+
+                for line in interp_lines:
+                    st.markdown(line)
+
+                st.divider()
+
+                # ── CHART: So sánh hiệu suất ──
+                st.write("#### 📈 So Sánh Hiệu Suất 63 Phiên (Normalized = 100)")
+                base_vni = df_merged['close_vni'].iloc[0]
+                base_stk = df_merged['close_stk'].iloc[0]
+                df_merged['norm_vni'] = df_merged['close_vni'] / base_vni * 100
+                df_merged['norm_stk'] = df_merged['close_stk'] / base_stk * 100
+
+                fig_corr = go.Figure()
+                fig_corr.add_trace(go.Scatter(
+                    x=df_merged['date'], y=df_merged['norm_vni'],
+                    name='VN-Index', line=dict(color='royalblue', width=2),
+                ))
+                fig_corr.add_trace(go.Scatter(
+                    x=df_merged['date'], y=df_merged['norm_stk'],
+                    name=ticker, line=dict(color='orange', width=2.5),
+                ))
+                fig_corr.add_hline(y=100, line_dash='dot', line_color='gray')
+                final_vni = df_merged['norm_vni'].iloc[-1]
+                final_stk = df_merged['norm_stk'].iloc[-1]
+                outperf   = final_stk - final_vni
+                fig_corr.add_annotation(
+                    x=df_merged['date'].iloc[-1],
+                    y=final_stk,
+                    text=f"{ticker}: {final_stk:.1f} ({'▲' if outperf > 0 else '▼'}{abs(outperf):.1f} vs VNI)",
+                    showarrow=True, arrowhead=2,
+                    font=dict(color='orange', size=12),
+                )
+                fig_corr.update_layout(
+                    height=400, template='plotly_white',
+                    title=f"Hiệu Suất So Sánh — {ticker} vs VN-Index (63 phiên gần nhất)",
+                    yaxis_title="Chỉ số (100 = điểm xuất phát)",
+                    margin=dict(l=20, r=20, t=50, b=20),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                )
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+                # Outperform label
+                if outperf > 5:
+                    st.success(f"🏆 **{ticker} đang OUTPERFORM VN-Index {outperf:.1f}% trong 63 phiên!** RS Rating xác nhận mã mạnh hơn thị trường.")
+                elif outperf > 0:
+                    st.info(f"✅ {ticker} nhỉnh hơn VNI {outperf:.1f}% trong 63 phiên — outperform nhẹ.")
+                elif outperf > -5:
+                    st.warning(f"🟡 {ticker} đang underperform VNI {abs(outperf):.1f}% — đang yếu hơn thị trường chung.")
+                else:
+                    st.error(f"🔴 {ticker} đang underperform VNI {abs(outperf):.1f}% — rất yếu so với thị trường. Cân nhắc chuyển sang mã RS cao hơn.")
+
+                # ── CHART VNI ──
+                st.divider()
+                st.write("#### 📊 Biểu Đồ VN-Index (120 Phiên)")
+                chart_vni = df_vni.tail(120)
+                xv = chart_vni['date']
+                fig_vni = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                fig_vni.add_trace(go.Candlestick(
+                    x=xv, open=chart_vni['open'], high=chart_vni['high'],
+                    low=chart_vni['low'], close=chart_vni['close'], name='VNI'
+                ), row=1, col=1)
+                for mc, col_name, nm in [('ma20','orange','MA20'),('ma50','purple','MA50'),('ma200','red','MA200')]:
+                    if mc in chart_vni.columns:
+                        fig_vni.add_trace(go.Scatter(x=xv, y=chart_vni[mc],
+                            line=dict(color=col_name, width=1.5), name=nm), row=1, col=1)
+                if 'volume' in chart_vni.columns:
+                    fig_vni.add_trace(go.Bar(x=xv, y=chart_vni['volume'],
+                        name='KL', marker_color='lightblue'), row=2, col=1)
+                fig_vni.update_layout(height=600, template='plotly_white',
+                                      xaxis_rangeslider_visible=False,
+                                      margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_vni, use_container_width=True)
