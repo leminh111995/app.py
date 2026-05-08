@@ -1472,7 +1472,7 @@ def calc_wave_bottom_score(
 
 # ==============================================================================
 # 16. RADAR — PHÂN LOẠI CỔ PHIẾU 4 TẦNG (V23: thêm Chân Sóng)
-def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -> str | None:
+def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, smart_flow: bool = False) -> str | None:
     """
     [V23] Phân loại 4 tầng:
     🚀 Bùng Nổ | ⚖️ Danh Sách Chờ | 🌊 Chân Sóng (mới) | 👁️ Vùng Quan Sát
@@ -1489,18 +1489,12 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
 
     ai_ok = _is_valid_score(ai_score) and float(ai_score) > AI_OK
 
-    # --- Kiểm tra vũ khí tích lũy ---
+    # --- Kiểm tra vũ khí tích lũy (không gọi API — dùng smart_flow từ ngoài) ---
     bb_now    = last['bb_width']
     bb_min20  = df['bb_width'].tail(20).min()
     squeezed  = bb_now <= bb_min20 * BB_SQUEEZE_TOL
     supply_ex = df['can_cung'].tail(5).any()
-    smart     = False
-    for get_fn in [get_foreign, get_proprietary]:
-        fd = get_fn(ticker, FOREIGN_DAYS)
-        if valid(fd) and calc_net_flow(fd, 3) > 0:
-            smart = True
-            break
-    weapons = sum([squeezed, supply_ex, smart])
+    weapons   = sum([squeezed, supply_ex, smart_flow])
 
     # TẦNG 2: Danh Sách Chờ — tiêu chí chặt, an toàn nhất
     base_ok = (
@@ -1512,12 +1506,12 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str) -
     if base_ok and weapons >= 1 and weekly_trend in ('UP', 'NEUTRAL'):
         return "⚖️ Danh Sách Chờ"
 
-    # TẦNG 3: Chân Sóng [V23] — tính đủ 11 tiêu chí
+    # TẦNG 3: Chân Sóng
     w52   = calc_52w_info(df)
     div   = detect_divergence(df)
     wave  = calc_wave_bottom_score(
         df, last,
-        smart_flow    = smart,
+        smart_flow    = smart_flow,
         near_52w_high = w52['near_high'],
         div_bullish   = (div['signal'] == 'BULLISH'),
     )
@@ -2270,12 +2264,82 @@ with tab3:
     if not date_labels:
         st.warning("⚠️ Chưa có dữ liệu ngày giao dịch. Thử lại sau hoặc chọn mã khác.")
     elif not has_any:
-        # Fallback: hiện bảng text thông báo nguồn nào fail
-        st.warning(
-            f"⚠️ Chưa lấy được dữ liệu Khối Ngoại và Tự Doanh cho **{ticker}**.\n\n"
-            f"Nguyên nhân có thể: API Vnstock đang bảo trì hoặc mã này chưa có dữ liệu giao dịch tổ chức.\n\n"
-            f"💡 Thử lại sau 5 phút hoặc kiểm tra mã khác như SSI, VCB, FPT."
-        )
+        # PHƯƠNG ÁN A: dùng company.trading_stats thay chart trống
+        st.info("ℹ️ API dòng tiền theo ngày không khả dụng. Hiển thị dữ liệu tổng hợp từ nguồn khác.")
+        try:
+            stk_ts  = Vnstock().stock(symbol=ticker, source='VCI')
+            df_ts   = stk_ts.company.trading_stats()
+            if valid(df_ts):
+                row_ts = df_ts.iloc[0]
+
+                # Room ngoại
+                f_pct   = float(row_ts.get('foreigner_percentage', 0) or 0) * 100
+                f_max   = float(row_ts.get('maximum_foreign_percentage', 0) or 0) * 100
+                f_room  = max(0, f_max - f_pct)
+                st.write("#### 🌏 Sở Hữu Khối Ngoại")
+                r1, r2, r3 = st.columns(3)
+                r1.metric("Tỷ lệ sở hữu hiện tại", f"{f_pct:.1f}%")
+                r2.metric("Giới hạn tối đa",        f"{f_max:.1f}%")
+                r3.metric("Room còn lại",            f"{f_room:.1f}%",
+                          delta="Còn nhiều room ✓" if f_room > 10 else "Gần hết room ⚠️",
+                          delta_color="normal" if f_room > 10 else "inverse")
+                if f_room < 5:
+                    st.warning("⚠️ Room ngoại gần cạn — khối ngoại khó mua thêm, có thể bị áp lực bán.")
+                elif f_room > 20:
+                    st.success("✅ Room ngoại còn nhiều — dư địa để khối ngoại tích lũy thêm.")
+
+                st.divider()
+
+                # Thanh khoản TB
+                avg_val = float(row_ts.get('average_match_value1_month', 0) or 0)
+                avg_vol = float(row_ts.get('average_match_volume1_month', 0) or 0)
+                st.write("#### 📊 Thanh Khoản Trung Bình 1 Tháng")
+                liq1, liq2 = st.columns(2)
+                liq1.metric("Giá trị khớp lệnh TB", f"{to_billion(avg_val):.1f} Tỷ/phiên")
+                liq2.metric("Khối lượng khớp lệnh TB", f"{avg_vol/1e6:.2f} Triệu cp/phiên")
+
+                st.divider()
+
+                # 52W High/Low + Free Float
+                hi52  = float(row_ts.get('highest_price1_year', 0) or 0)
+                lo52  = float(row_ts.get('lowest_price1_year',  0) or 0)
+                ff    = float(row_ts.get('free_float_percentage', 0) or 0) * 100
+                st.write("#### 📈 Biên Độ Giá 52 Tuần & Free Float")
+                w1, w2, w3 = st.columns(3)
+                w1.metric("Đỉnh 52 tuần",  f"{hi52:,.0f}")
+                w2.metric("Đáy 52 tuần",   f"{lo52:,.0f}")
+                w3.metric("Free Float",     f"{ff:.1f}%",
+                          delta="Thanh khoản tốt ✓" if ff > 30 else "Cổ phiếu khó mua ⚠️",
+                          delta_color="normal" if ff > 30 else "off")
+
+                # OBV từ price data
+                st.divider()
+                st.write("#### 📉 OBV — Dòng Tiền Tích Lũy (ước tính từ Price Data)")
+                df_obv = get_price(ticker, days=60)
+                if valid(df_obv):
+                    df_obv = calc_indicators(df_obv)
+                    last_obv = df_obv.iloc[-1]
+                    obv_z = last_obv.get('obv_zscore', 0)
+                    o1, o2 = st.columns(2)
+                    o1.metric("OBV Z-Score", f"{obv_z:.2f}",
+                              delta="Dòng tiền đang chảy vào ✓" if obv_z > 0.5
+                              else ("Dòng tiền rút ra ⚠️" if obv_z < -0.5 else "Trung lập"),
+                              delta_color="normal" if obv_z > 0.5
+                              else ("inverse" if obv_z < -0.5 else "off"))
+                    o2.metric("Vol Strength phiên cuối",
+                              f"{last_obv['vol_strength']:.2f}x",
+                              delta="Bùng nổ ✓" if last_obv['vol_strength'] > 1.3 else "Bình thường",
+                              delta_color="normal" if last_obv['vol_strength'] > 1.3 else "off")
+                    if obv_z > 0.5:
+                        st.success("✅ OBV tích lũy dương — dòng tiền thực đang chảy vào mã này.")
+                    elif obv_z < -0.5:
+                        st.error("🔴 OBV phân phối âm — dòng tiền đang rút khỏi mã này.")
+                    else:
+                        st.info("🟡 OBV trung lập — chưa có dòng tiền mạnh từ một phía.")
+            else:
+                st.warning("⚠️ Không lấy được dữ liệu trading_stats.")
+        except Exception as e:
+            st.warning(f"⚠️ Lỗi lấy dữ liệu: {e}")
     else:
         fig_multi = go.Figure()
         if has_foreign:
@@ -2561,22 +2625,16 @@ with tab4:
                 df_s     = calc_indicators(df_s)
                 ai_s     = predict_ai_t3(df_s)
                 weekly_s = get_weekly_trend(df_s)
-                label    = classify_stock(t, df_s, ai_s, weekly_s)
+                label    = classify_stock(t, df_s, ai_s, weekly_s, smart_flow=False)
                 if label is None:
                     continue
                 last_s   = df_s.iloc[-1]
 
-                # Tín hiệu cơ bản
+                # Tín hiệu kỹ thuật (chỉ dùng price data — không gọi API ngoại/tự doanh)
                 bb_now   = last_s['bb_width']
                 bb_min20 = df_s['bb_width'].tail(20).min()
                 squeezed = bb_now <= bb_min20 * BB_SQUEEZE_TOL
                 supply   = df_s['can_cung'].tail(5).any()
-                smart    = False
-                for fn in [get_foreign, get_proprietary]:
-                    fd = fn(t, FOREIGN_DAYS)
-                    if valid(fd) and calc_net_flow(fd, 3) > 0:
-                        smart = True
-                        break
 
                 # [V23] RS Rating, Divergence, 52W, Wave Bottom
                 rs_s    = calc_rs_rating(df_s, df_vnidx)
@@ -2584,7 +2642,7 @@ with tab4:
                 w52_s   = calc_52w_info(df_s)
                 wave_s  = calc_wave_bottom_score(
                     df_s, last_s,
-                    smart_flow    = bool(smart),
+                    smart_flow    = False,
                     near_52w_high = bool(w52_s['near_high']),
                     div_bullish   = bool(div_s['signal'] == 'BULLISH'),
                 )
@@ -2600,7 +2658,7 @@ with tab4:
                     'RS Raw':       rs_s,
                     'Lò Xo BB':     bool(squeezed),
                     'Cạn Cung':     bool(supply),
-                    'Tổ Chức Gom':  bool(smart),
+                    'Tổ Chức Gom':  False,   # không gọi API trong radar
                     '52W High':     bool(w52_s['near_high']),
                     'Div Bullish':  bool(div_s['signal'] == 'BULLISH'),
                     'Div Bearish':  bool(div_s['signal'] == 'BEARISH'),
