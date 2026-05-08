@@ -1524,7 +1524,9 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, s
         if not_downtrend and rsi_in_range and price_not_hot and adx_not_surge:
             return "🌊 Chân Sóng"
 
-    # TẦNG 4: Vùng Quan Sát — tín hiệu sớm, cần theo dõi thêm
+    # TẦNG 4: Quan Sát — RSI phải < 65, không mua vào vùng overbought
+    if rsi >= 65:
+        return None
     early_signals = 0
     if ai_ok:                        early_signals += 1
     if rsi < RSI_WATCHLIST_MAX + 5:  early_signals += 1
