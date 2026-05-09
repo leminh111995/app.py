@@ -247,42 +247,31 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def get_vnindex_cached() -> pd.DataFrame:
     """
-    Lấy VN-Index. 3 tầng fallback.
-    QUAN TRỌNG: Không dùng engine() vì cache không có st.session_state.
-    Dùng Vnstock() trực tiếp.
+    Lấy VN-Index proxy từ 10 mã thanh khoản cao nhất VN30.
+    Không dùng yfinance (bị block trên Streamlit Cloud).
+    Không dùng engine() (không hoạt động trong cache).
     """
     start = (datetime.now() - timedelta(days=400)).strftime(DATE_FMT)
     end   = datetime.now().strftime(DATE_FMT)
-    vci   = Vnstock().stock(symbol='ACB', source='VCI')  # khởi tạo 1 lần
+    vci   = Vnstock().stock(symbol='ACB', source='VCI')
 
-    # Tầng 1: Thử các symbol VNI trực tiếp
+    # Tầng 1: Thử symbol VNINDEX/VN30 trực tiếp
     for sym in ['VNINDEX', 'VN30', 'E1VFVN30']:
         try:
             df = vci.quote.history(symbol=sym, start=start, end=end)
             if df is not None and not df.empty and len(df) >= 30:
                 df.columns = [str(c).lower() for c in df.columns]
-                print(f"[OK] VNI Tầng 1: {sym}")
                 return df
-        except Exception as e:
-            print(f"[WARN] VNI T1 {sym}: {e}")
+        except Exception:
+            pass
 
-    # Tầng 2: yfinance
-    try:
-        df = yf.download('^VNINDEX', period='1y', timeout=8, progress=False).reset_index()
-        if df is not None and not df.empty and len(df) >= 30:
-            df.columns = [str(c).lower() for c in df.columns]
-            print("[OK] VNI Tầng 2: yfinance")
-            return df
-    except Exception as e:
-        print(f"[WARN] VNI T2 yfinance: {e}")
-
-    # Tầng 3: VN30 basket 30 mã — guaranteed vì đây là stock thường
-    print("[INFO] VNI Tầng 3: VN30 proxy basket")
+    # Tầng 2: 10 mã thanh khoản cao nhất — nhanh (~10 giây)
+    TOP10 = ["VCB", "HPG", "FPT", "MBB", "TCB", "VPB", "ACB", "VNM", "GAS", "SSI"]
     price_data = {}
-    for sym in VN30_BASKET:
+    for sym in TOP10:
         try:
             df_s = vci.quote.history(symbol=sym, start=start, end=end)
-            if df_s is not None and not df_s.empty and len(df_s) >= 30:
+            if df_s is not None and not df_s.empty:
                 df_s.columns = [str(c).lower() for c in df_s.columns]
                 if 'date' in df_s.columns and 'close' in df_s.columns:
                     df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
@@ -290,24 +279,20 @@ def get_vnindex_cached() -> pd.DataFrame:
         except Exception:
             continue
 
-    if len(price_data) < 5:
-        print(f"[WARN] VNI proxy: chỉ lấy được {len(price_data)} mã")
+    if len(price_data) < 3:
         return pd.DataFrame()
 
     df_basket = pd.DataFrame(price_data).dropna(how='all')
-    # Normalize về 1000 rồi lấy trung bình equal-weight
-    normalized    = df_basket.div(df_basket.iloc[0]) * 1000
-    close_proxy   = normalized.mean(axis=1)
-    df_vni_proxy  = pd.DataFrame({
-        'date':   df_basket.index,
-        'open':   close_proxy.values,
+    normalized = df_basket.div(df_basket.iloc[0]) * 1000
+    close_p    = normalized.mean(axis=1)
+    return pd.DataFrame({
+        'date':   df_basket.index.tolist(),
+        'open':   close_p.values,
         'high':   normalized.max(axis=1).values,
         'low':    normalized.min(axis=1).values,
-        'close':  close_proxy.values,
+        'close':  close_p.values,
         'volume': df_basket.sum(axis=1).values,
     }).reset_index(drop=True)
-    print(f"[OK] VNI proxy từ {len(price_data)}/{len(VN30_BASKET)} mã VN30")
-    return df_vni_proxy
 
 def _normalize_flow_df(df: pd.DataFrame) -> pd.DataFrame | None:
     """
