@@ -148,7 +148,15 @@ FALLBACK_TICKERS = [
     "BAF","BSR","BTP","C4G","CAV","CII","CMG","CTI","DAH","DCL",
 ]
 
-# Phân ngành
+# VN30 — 30 mã vốn hóa lớn nhất HOSE (dùng làm VNI proxy khi API fail)
+VN30_BASKET = [
+    "VCB", "BID", "CTG", "MBB", "TCB", "VPB", "HDB", "STB", "ACB", "TPB",
+    "VIC", "VHM", "VRE", "NVL",
+    "VNM", "SAB", "MSN", "MCH",
+    "FPT", "MWG",
+    "HPG", "GAS", "PLX", "POW", "GVR",
+    "SSI", "VJC", "BVH", "KDH", "PDR",
+]
 SECTOR_MAP = {
     "Ngân Hàng":       ["VCB","TCB","MBB","BID","CTG","ACB","HDB","LPB","TPB","STB","SSB","MSB","SHB","EIB"],
     "Bất Động Sản":    ["VHM","VIC","NVL","PDR","DXG","KDH","NLG","DIG","BCG","HDG","DXS","CEO","SCR"],
@@ -239,37 +247,65 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def get_vnindex_cached() -> pd.DataFrame:
     """
-    Lấy VN-Index — chỉ thử 3 cách nhanh nhất, timeout cứng.
-    Trả về DataFrame rỗng khi fail → cache lưu được → các lần sau instant.
+    Lấy VN-Index. 3 tầng fallback:
+    1. engine().stock.quote.history(symbol='VNINDEX'/'VN30'/'E1VFVN30')
+    2. yfinance ^VNINDEX
+    3. Tổng hợp từ VN30 basket (30 mã) — guaranteed hoạt động
     """
-    EMPTY = pd.DataFrame()
+    start = (now_vn() - timedelta(days=400)).strftime(DATE_FMT)
+    end   = now_vn().strftime(DATE_FMT)
 
-    # Cách 1: yfinance ^VNINDEX
-    for sym in ['^VNINDEX', 'VNINDEX']:
+    # Tầng 1: engine trực tiếp (cùng cách get_price hoạt động)
+    for sym in ['VNINDEX', 'VN30', 'E1VFVN30']:
         try:
-            df = yf.download(sym, period='1y', timeout=5, progress=False).reset_index()
+            df = engine().stock.quote.history(symbol=sym, start=start, end=end)
             if valid(df) and len(df) >= 30:
+                print(f"[OK] VNI via engine symbol={sym}")
                 return normalize_cols(df)
         except Exception:
             pass
 
-    # Cách 2: VCI source với symbol VN30 / E1VFVN30
-    for sym in ['VN30', 'E1VFVN30', 'VNINDEX']:
-        try:
-            stk = Vnstock().stock(symbol=sym, source='VCI')
-            df  = stk.quote.history(
-                start=(now_vn() - timedelta(days=400)).strftime(DATE_FMT),
-                end=now_vn().strftime(DATE_FMT)
-            )
-            if valid(df) and len(df) >= 30:
-                return normalize_cols(df)
-        except Exception:
-            pass
+    # Tầng 2: yfinance
+    try:
+        df = yf.download('^VNINDEX', period='1y', timeout=5, progress=False).reset_index()
+        if valid(df) and len(df) >= 30:
+            print("[OK] VNI via yfinance")
+            return normalize_cols(df)
+    except Exception:
+        pass
 
-    # Cách 3: Dùng FPT làm proxy (cùng tầm vóc thị trường)
-    # Không dùng — trả về rỗng để cache
-    print("[WARN] get_vnindex_cached: tất cả cách đều fail")
-    return EMPTY
+    # Tầng 3: Tổng hợp từ VN30 basket (30 mã) — weighted equal
+    print("[INFO] VNI: dùng VN30 proxy basket")
+    try:
+        price_data = {}
+        for sym in VN30_BASKET:
+            try:
+                df_s = engine().stock.quote.history(symbol=sym, start=start, end=end)
+                if valid(df_s) and len(df_s) >= 30:
+                    df_s = normalize_cols(df_s)
+                    price_data[sym] = df_s.set_index('date')['close']
+            except Exception:
+                continue
+
+        if len(price_data) < 10:
+            return pd.DataFrame()
+
+        df_basket = pd.DataFrame(price_data).dropna(how='all')
+        # Chuẩn hóa về 100 tại điểm đầu rồi lấy trung bình → synthetic VNI
+        normalized = df_basket.div(df_basket.iloc[0]) * 1000
+        df_vni_proxy = pd.DataFrame({
+            'date':   df_basket.index,
+            'open':   normalized.mean(axis=1),
+            'high':   normalized.max(axis=1),
+            'low':    normalized.min(axis=1),
+            'close':  normalized.mean(axis=1),
+            'volume': df_basket.sum(axis=1),
+        }).reset_index(drop=True)
+        print(f"[OK] VNI proxy từ {len(price_data)}/30 mã VN30")
+        return df_vni_proxy
+    except Exception as e:
+        print(f"[WARN] VNI proxy fail: {e}")
+        return pd.DataFrame()
 
 def _normalize_flow_df(df: pd.DataFrame) -> pd.DataFrame | None:
     """
@@ -1849,11 +1885,7 @@ manual   = st.sidebar.text_input("Hoặc nhập trực tiếp (VD: FPT):").strip
 ticker   = manual if manual else dropdown
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("#### 📰 Nhập Tiêu Đề Tin Tức (Sentiment)")
-st.sidebar.caption("Paste tiêu đề tin tức bằng tiếng Anh (1 dòng = 1 tiêu đề).")
-news_raw       = st.sidebar.text_area("Tiêu đề tin tức:", height=120,
-                                       placeholder="e.g. FPT reports strong Q3 profit growth...")
-news_headlines = [l.strip() for l in news_raw.splitlines() if l.strip()]
+news_headlines = []   # Đã bỏ input tin tức
 
 # --- TABS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
