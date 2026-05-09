@@ -1469,6 +1469,83 @@ def calc_wave_bottom_score(
 
 
 # ==============================================================================
+# ==============================================================================
+# CALIBRATION — Hiệu Chỉnh Ngưỡng Vol Theo Thống Kê Thực Tế
+# ==============================================================================
+def calibrate_vol_thresholds(sample_tickers: list, days: int = 252) -> dict:
+    """
+    Tính phân phối Vol thực tế từ dữ liệu lịch sử HOSE.
+    Trả về các ngưỡng percentile + winrate "Bán Tháo" thực tế.
+    """
+    all_vol_strengths  = []
+    sell_dump_outcomes = []   # [True=tiếp tục giảm, False=hồi phục]
+
+    progress_cal = st.progress(0)
+    status_cal   = st.empty()
+
+    for idx, t in enumerate(sample_tickers):
+        try:
+            status_cal.caption(f"⏳ Đang phân tích {t} ({idx+1}/{len(sample_tickers)})...")
+            df = get_price(t, days=days)
+            if not valid(df) or len(df) < 50:
+                continue
+            df = calc_indicators(df)
+            if 'vol_strength' not in df.columns:
+                continue
+
+            vols    = df['vol_strength'].dropna().values
+            returns = df['return_1d'].dropna().values
+            closes  = df['close'].values
+
+            all_vol_strengths.extend(vols.tolist())
+
+            # Tìm các ngày Vol cao + nến đỏ → theo dõi 3 phiên sau
+            p90_temp = np.percentile(vols, 90) if len(vols) > 10 else 2.0
+            for i in range(len(df) - 3):
+                v = df['vol_strength'].iloc[i]
+                r = df['return_1d'].iloc[i]
+                if v >= p90_temp and r < -0.005:   # Vol cao + giảm > 0.5%
+                    # 3 phiên sau: giá hồi hay tiếp tục giảm?
+                    ret_3d = (closes[min(i+3, len(closes)-1)] - closes[i]) / closes[i]
+                    sell_dump_outcomes.append(ret_3d < 0)   # True = tiếp tục giảm
+
+        except Exception as e:
+            print(f"[WARN] calibrate {t}: {e}")
+        progress_cal.progress((idx + 1) / len(sample_tickers))
+
+    progress_cal.empty()
+    status_cal.empty()
+
+    if len(all_vol_strengths) < 100:
+        return {'error': 'Không đủ dữ liệu'}
+
+    arr = np.array(all_vol_strengths)
+    p70 = round(float(np.percentile(arr, 70)), 2)
+    p80 = round(float(np.percentile(arr, 80)), 2)
+    p90 = round(float(np.percentile(arr, 90)), 2)
+    p95 = round(float(np.percentile(arr, 95)), 2)
+    p99 = round(float(np.percentile(arr, 99)), 2)
+
+    # Winrate bán tháo
+    n_dump    = len(sell_dump_outcomes)
+    winrate_dump = round(sum(sell_dump_outcomes) / n_dump * 100, 1) if n_dump > 0 else 0
+
+    return {
+        'n_samples':      len(arr),
+        'n_dump_events':  n_dump,
+        'p70':            p70,
+        'p80':            p80,
+        'p90':            p90,
+        'p95':            p95,
+        'p99':            p99,
+        'winrate_dump':   winrate_dump,   # % ngày "Bán Tháo" tiếp tục giảm sau 3 phiên
+        # Ngưỡng đề xuất:
+        'threshold_breakout':   p80,      # Vol > P80 = bùng nổ
+        'threshold_dump':       p90,      # Vol > P90 + đỏ = đáng lo
+        'threshold_heavy_dump': p95,      # Vol > P95 + đỏ = bán tháo thực sự
+    }
+
+
 # 16. RADAR — PHÂN LOẠI CỔ PHIẾU 4 TẦNG (V23: thêm Chân Sóng)
 def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, smart_flow: bool = False) -> str | None:
     """
@@ -1481,13 +1558,21 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, s
     price = last['close']
     ma20  = last['ma20']
 
+    # Dùng ngưỡng đã hiệu chỉnh nếu có, fallback về mặc định
+    vol_breakout   = st.session_state.get('cal_threshold_breakout',   VOL_BREAKOUT)
+    vol_dump       = st.session_state.get('cal_threshold_dump',       VOL_BREAKOUT * 1.5)
+    vol_heavy_dump = st.session_state.get('cal_threshold_heavy_dump', VOL_SHARK)
+
     # TẦNG 1: Bùng Nổ — phân biệt Mua vs Bán
-    if vol > VOL_BREAKOUT:
+    if vol > vol_breakout:
         ret = last.get('return_1d', 0)
         if ret >= 0:
             return "🚀 Bùng Nổ Mua"
         else:
-            return "🔴 Bán Tháo"
+            # Chỉ báo "Bán Tháo" khi Vol thực sự cao (P90+), còn Vol P80-P90 bỏ qua
+            if vol >= vol_dump:
+                return "🔴 Bán Tháo"
+            return None   # Vol vừa phải + đỏ nhẹ → bình thường, không xếp tầng
 
     ai_ok = _is_valid_score(ai_score) and float(ai_score) > AI_OK
 
@@ -2593,6 +2678,73 @@ with tab4:
         horizontal=True
     )
 
+    # ── HIỆU CHỈNH NGƯỠNG VOL ──
+    with st.expander("🔬 Hiệu Chỉnh Ngưỡng Vol Theo Thống Kê Thực Tế (chạy 1 lần/tuần)"):
+        st.caption(
+            "Hệ thống sẽ phân tích 50 mã HOSE để tìm ngưỡng Vol thực sự bất thường. "
+            "Mất ~5 phút. Kết quả được lưu cho đến khi reload app."
+        )
+        # Hiện ngưỡng đang dùng
+        cur_bo = st.session_state.get('cal_threshold_breakout',   VOL_BREAKOUT)
+        cur_du = st.session_state.get('cal_threshold_dump',       VOL_BREAKOUT * 1.5)
+        cur_hd = st.session_state.get('cal_threshold_heavy_dump', VOL_SHARK)
+        nc1, nc2, nc3 = st.columns(3)
+        nc1.metric("Ngưỡng Bùng Nổ Mua",  f"{cur_bo:.2f}x",
+                   delta="✅ Đã hiệu chỉnh" if 'cal_threshold_breakout' in st.session_state else "⚙️ Mặc định",
+                   delta_color="normal" if 'cal_threshold_breakout' in st.session_state else "off")
+        nc2.metric("Ngưỡng Bán Tháo",     f"{cur_du:.2f}x", delta_color="off")
+        nc3.metric("Ngưỡng Bán Tháo Nặng",f"{cur_hd:.2f}x", delta_color="off")
+
+        if st.button("▶️ Chạy Hiệu Chỉnh Ngưỡng (50 mã mẫu)"):
+            sample_cal = list(dict.fromkeys(tickers))[:50]
+            with st.spinner("Đang phân tích phân phối Vol lịch sử..."):
+                cal_result = calibrate_vol_thresholds(sample_cal, days=252)
+
+            if 'error' in cal_result:
+                st.error(f"❌ {cal_result['error']}")
+            else:
+                # Lưu vào session_state
+                st.session_state['cal_threshold_breakout']   = cal_result['threshold_breakout']
+                st.session_state['cal_threshold_dump']       = cal_result['threshold_dump']
+                st.session_state['cal_threshold_heavy_dump'] = cal_result['threshold_heavy_dump']
+                st.session_state['cal_result']               = cal_result
+
+                st.success("✅ Hiệu chỉnh hoàn tất! Ngưỡng mới sẽ được áp dụng cho lần quét tiếp theo.")
+
+                # Hiện kết quả
+                st.write("#### 📊 Phân Phối Vol Thực Tế HOSE")
+                r1, r2, r3, r4, r5 = st.columns(5)
+                r1.metric("P70",  f"{cal_result['p70']:.2f}x", delta="Vol hơi cao",       delta_color="off")
+                r2.metric("P80",  f"{cal_result['p80']:.2f}x", delta="→ Ngưỡng Bùng Nổ", delta_color="off")
+                r3.metric("P90",  f"{cal_result['p90']:.2f}x", delta="→ Ngưỡng Bán Tháo",delta_color="off")
+                r4.metric("P95",  f"{cal_result['p95']:.2f}x", delta="Bán Tháo Nặng",    delta_color="off")
+                r5.metric("P99",  f"{cal_result['p99']:.2f}x", delta="Cực hiếm",          delta_color="off")
+
+                st.write("#### 🔍 Winrate 'Bán Tháo' Thực Tế")
+                wr = cal_result['winrate_dump']
+                n  = cal_result['n_dump_events']
+                if wr >= 60:
+                    st.error(
+                        f"🔴 Khi Vol > P90 + nến đỏ, **{wr}% trường hợp** tiếp tục giảm trong 3 phiên tiếp theo "
+                        f"(thống kê từ {n} sự kiện). → Tín hiệu 'Bán Tháo' **đáng tin cậy**."
+                    )
+                elif wr >= 50:
+                    st.warning(
+                        f"🟡 Winrate bán tháo {wr}% ({n} sự kiện) — **hơi nghiêng về giảm tiếp** "
+                        f"nhưng chưa thực sự mạnh. Cân nhắc thêm RSI và ngành."
+                    )
+                else:
+                    st.info(
+                        f"🟢 Winrate bán tháo chỉ {wr}% ({n} sự kiện) — **thường hồi phục sau 3 phiên**. "
+                        f"Tín hiệu 'Bán Tháo' trên HOSE không đáng lo như tưởng."
+                    )
+
+                st.caption(
+                    f"📊 Phân tích từ {cal_result['n_samples']:,} phiên giao dịch "
+                    f"của {len(sample_cal)} mã HOSE đại diện trong 1 năm."
+                )
+
+    st.divider()
     col_quick, col_full = st.columns(2)
     run_quick = col_quick.button("⚡ Quét Nhanh (150 mã HOSE)")
     run_full  = col_full.button("🔭 Quét Toàn HOSE (~400 mã) — mất ~15 phút")
