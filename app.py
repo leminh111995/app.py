@@ -3054,21 +3054,37 @@ with tab6:
 
     if st.button("🔄 Xóa Cache VNI (bấm nếu lần trước lỗi)"):
         get_vnindex_cached.clear()
+        st.session_state.pop('vni_loaded', None)
         st.success("✅ Cache VNI đã xóa — bấm 'Tải Dữ Liệu' để tải lại.")
 
     if st.button("🔄 Tải Dữ Liệu VN-Index & Phân Tích"):
         with st.spinner("Đang tải dữ liệu VN-Index..."):
-            df_vni  = get_vnindex_cached()
-            df_stk  = get_price(ticker, days=300)
-            if valid(df_stk):
-                df_stk = calc_indicators(df_stk)
+            df_vni_raw = get_vnindex_cached()
+            df_stk_raw = get_price(ticker, days=300)
+            if valid(df_stk_raw):
+                df_stk_raw = calc_indicators(df_stk_raw)
 
-        if not valid(df_vni):
-            st.error("❌ Không lấy được dữ liệu VN-Index. Thử lại sau.")
-            st.stop()
+        if not valid(df_vni_raw):
+            st.error("❌ Không lấy được dữ liệu VN-Index. Bấm 'Xóa Cache VNI' rồi thử lại.")
+        else:
+            # Lưu vào session_state để giữ sau rerender
+            st.session_state['vni_loaded']  = True
+            st.session_state['vni_df']      = df_vni_raw
+            st.session_state['vni_stk_df']  = df_stk_raw
+            st.session_state['vni_ticker']  = ticker
 
-        df_vni = calc_indicators(df_vni)
-        last_v = df_vni.iloc[-1]
+    # Render nội dung từ session_state — giữ nguyên dù Streamlit rerender
+    if st.session_state.get('vni_loaded'):
+        df_vni   = calc_indicators(st.session_state['vni_df'])
+        df_stk   = st.session_state.get('vni_stk_df')
+        last_v   = df_vni.iloc[-1]
+        # Hiện thông báo nếu đang xem mã khác với mã đã load
+        loaded_ticker = st.session_state.get('vni_ticker', ticker)
+        if loaded_ticker != ticker:
+            st.info(f"ℹ️ Dữ liệu tương quan đang hiển thị cho **{loaded_ticker}**. Bấm 'Tải Dữ Liệu' để cập nhật cho {ticker}.")
+
+        if df_stk is not None:
+            df_stk = calc_indicators(df_stk) if 'rsi' not in df_stk.columns else df_stk
 
         # ── PHẦN 1: SNAPSHOT VNI ──
         st.write("### 1️⃣ Snapshot VN-Index Hôm Nay")
