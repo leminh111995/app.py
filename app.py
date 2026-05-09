@@ -3044,20 +3044,23 @@ with tab6:
         st.success("✅ Cache VNI đã xóa — bấm 'Tải Dữ Liệu' để tải lại.")
 
     if st.button("🔄 Tải Dữ Liệu VN-Index & Phân Tích"):
-        with st.spinner("Đang tải dữ liệu VN-Index..."):
-            df_vni_raw = get_vnindex_cached()
+        with st.spinner("Đang tải dữ liệu..."):
+            # Dùng E1VFVN30 (ETF bám VN30) — load nhanh như mọi mã thông thường
+            df_vni_raw = get_price('E1VFVN30', days=400)
+            if not valid(df_vni_raw):
+                df_vni_raw = get_price('VN30', days=400)   # fallback
             df_stk_raw = get_price(ticker, days=300)
             if valid(df_stk_raw):
                 df_stk_raw = calc_indicators(df_stk_raw)
 
         if not valid(df_vni_raw):
-            st.error("❌ Không lấy được dữ liệu VN-Index. Bấm 'Xóa Cache VNI' rồi thử lại.")
+            st.error("❌ Không lấy được dữ liệu E1VFVN30. Thử lại sau.")
         else:
-            # Lưu vào session_state để giữ sau rerender
             st.session_state['vni_loaded']  = True
             st.session_state['vni_df']      = df_vni_raw
             st.session_state['vni_stk_df']  = df_stk_raw
             st.session_state['vni_ticker']  = ticker
+            st.caption("📊 Dữ liệu VNI đang dùng: **E1VFVN30** (ETF bám VN30, tương quan ~95% với VN-Index)")
 
     # Render nội dung từ session_state — giữ nguyên dù Streamlit rerender
     if st.session_state.get('vni_loaded'):
