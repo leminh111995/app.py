@@ -874,9 +874,8 @@ def calc_total_score(
     sector_pts = min(10, sector_score)
 
     # --- Sentiment (0-10) ---
-    sent_pts = min(10, sentiment_score)
-
-    total = min(100, ai_pts + tech_pts + flow_pts + fin_pts + sector_pts + sent_pts)
+    sent_pts   = 0   # Đã bỏ sentiment input
+    total = min(100, ai_pts + tech_pts + flow_pts + fin_pts + sector_pts)
 
     if total >= SCORE_BUY_MIN and rsi < RSI_HOT:
         decision       = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
@@ -1981,39 +1980,28 @@ with tab1:
 
             # --- Bảng điểm ---
             st.write("### 🎯 Bảng Điểm Chi Tiết 0-100")
-            d1, d2, d3, d4, d5, d6 = st.columns(6)
+            d1, d2, d3, d4, d5 = st.columns(5)
             d1.metric("🤖 AI XGBoost",  f"{scoring['ai_pts']}/{SCORE_AI_MAX}")
             d2.metric("📈 Kỹ Thuật",    f"{scoring['tech_pts']}/{SCORE_TECH_MAX}")
             d3.metric("🌊 Khối Ngoại",  f"{scoring['flow_pts']}/{SCORE_FLOW_MAX}")
             d4.metric("🏢 Tài Chính",   f"{scoring['fin_pts']}/{SCORE_FINANCE_MAX}")
             d5.metric("🏭 Ngành",       f"{scoring['sector_pts']}/{SCORE_SECTOR_MAX}")
-            d6.metric("📰 Sentiment",   f"{scoring['sent_pts']}/{SCORE_SENT_MAX}")
 
-            # Thanh điểm từng hạng mục — dễ nhìn hơn
+            # Thanh điểm trực quan
             st.caption("Thanh điểm trực quan:")
             cols_bar = st.columns(3)
             items = [
-                ("🤖 AI",       scoring['ai_pts'],     SCORE_AI_MAX),
-                ("📈 Kỹ thuật", scoring['tech_pts'],   SCORE_TECH_MAX),
-                ("🌊 Ngoại",    scoring['flow_pts'],   SCORE_FLOW_MAX),
-                ("🏢 Tài chính",scoring['fin_pts'],    SCORE_FINANCE_MAX),
-                ("🏭 Ngành",    scoring['sector_pts'], SCORE_SECTOR_MAX),
-                ("📰 Sentiment",scoring['sent_pts'],   SCORE_SENT_MAX),
+                ("🤖 AI",        scoring['ai_pts'],     SCORE_AI_MAX),
+                ("📈 Kỹ thuật",  scoring['tech_pts'],   SCORE_TECH_MAX),
+                ("🌊 Ngoại",     scoring['flow_pts'],   SCORE_FLOW_MAX),
+                ("🏢 Tài chính", scoring['fin_pts'],    SCORE_FINANCE_MAX),
+                ("🏭 Ngành",     scoring['sector_pts'], SCORE_SECTOR_MAX),
             ]
             for i, (label, pts, max_pts) in enumerate(items):
                 with cols_bar[i % 3]:
                     st.markdown(f"**{label}**")
                     st.progress(pts / max_pts)
                     st.caption(f"{pts}/{max_pts} điểm")
-
-            st.divider()
-
-            # --- Sentiment ---
-            st.write("### 📰 Phân Tích Tâm Lý Tin Tức (VADER Sentiment)")
-            if news_headlines:
-                st.info(f"{sentiment['label']} | Điểm compound: {sentiment['compound']}")
-            else:
-                st.warning("💡 Chưa có tin tức. Paste tiêu đề vào sidebar để AI phân tích tâm lý.")
 
             st.divider()
 
@@ -2578,108 +2566,9 @@ with tab3:
 
     st.divider()
 
-    # ── Dòng tiền 3 nhóm + Gom/Xả (giữ nguyên từ V22) ──
-    net_v = sum(foreign_nets) if foreign_nets else 0.0
-    df_flow = get_price(ticker, days=30)
-    if valid(df_flow):
-        df_flow   = calc_indicators(df_flow)
-        last_fl   = df_flow.iloc[-1]
-        vol       = last_fl['vol_strength']
-        ret       = last_fl['return_1d']
-        flow_info = classify_flow_group(vol, ret, net_v)
-        st.write("#### 📊 Phân Tích Tỷ Trọng Dòng Tiền 3 Nhóm")
-        g1, g2, g3 = st.columns(3)
-        inst_pct = flow_info['inst_pct']
-        if flow_info['group'] == "🦈 Cá Mập":
-            shark_pct = inst_pct;  org_pct = max(0, 1 - shark_pct - 0.2)
-        elif flow_info['group'] == "🏦 Tổ Chức Nội":
-            shark_pct = 0.05;      org_pct = inst_pct - shark_pct
-        else:
-            shark_pct, org_pct = 0.02, 0.13
-        retail_pct_final = max(0, 1 - shark_pct - org_pct)
-        g1.metric("🦈 Cá Mập",      f"{shark_pct*100:.1f}%",
-                  delta="Đang Mạnh" if flow_info['group'] == "🦈 Cá Mập" else "Ít Tham Gia",
-                  delta_color="normal" if flow_info['group'] == "🦈 Cá Mập" else "off")
-        g2.metric("🏦 Tổ Chức Nội", f"{org_pct*100:.1f}%",
-                  delta="Tích Lũy"  if flow_info['group'] == "🏦 Tổ Chức Nội" else "Bình Thường",
-                  delta_color="normal" if flow_info['group'] == "🏦 Tổ Chức Nội" else "off")
-        g3.metric("🐜 Nhỏ Lẻ",      f"{retail_pct_final*100:.1f}%",
-                  delta="⚠️ Đu Bám Nhiều" if retail_pct_final > 0.6 else "Ổn Định",
-                  delta_color="inverse" if retail_pct_final > 0.6 else "off")
-        st.info(f"**Nhóm chủ đạo:** {flow_info['group']} — {flow_info['description']}")
-        st.divider()
-        action_msg = f"**{flow_info['action']}**\n\n_{flow_info['action_note']}_"
-        if "GOM"  in flow_info['action']:  st.success(action_msg)
-        elif "XẢ" in flow_info['action']:  st.error(action_msg)
-        else:                               st.warning(action_msg)
-
-    # ── DEBUG PANEL (tạm thời — để tìm đúng API endpoint) ──
-    st.divider()
-    with st.expander("🔧 DEBUG — Kiểm Tra API Vnstock (bấm để mở)"):
-        st.caption("Panel tạm thời để kiểm tra API. Sẽ xóa sau khi fix xong.")
-        if st.button("▶️ Chạy Debug API Ngay", key="debug_api"):
-            debug_ticker = ticker
-            st.write(f"**Đang test với mã: {debug_ticker}**")
-            start_d, end_d = date_range(15)
-            stk = Vnstock().stock(symbol=debug_ticker, source='VCI')
-
-            # Test 1: company.trading_stats
-            st.write("**Test 1: company.trading_stats**")
-            try:
-                df_ts = stk.company.trading_stats()
-                if valid(df_ts):
-                    st.success(f"✅ Cột: `{df_ts.columns.tolist()}`")
-                    st.dataframe(df_ts.head(5))
-                else:
-                    st.warning("Trả về rỗng")
-            except Exception as e:
-                st.error(f"❌ {e}")
-
-            # Test 2: company.insider_deals
-            st.write("**Test 2: company.insider_deals**")
-            try:
-                df_id = stk.company.insider_deals()
-                if valid(df_id):
-                    st.success(f"✅ Cột: `{df_id.columns.tolist()}`")
-                    st.dataframe(df_id.head(5))
-                else:
-                    st.warning("Trả về rỗng")
-            except Exception as e:
-                st.error(f"❌ {e}")
-
-            # Test 3: quote.intraday
-            st.write("**Test 3: quote.intraday**")
-            try:
-                df_intra = stk.quote.intraday(symbol=debug_ticker)
-                if valid(df_intra):
-                    st.success(f"✅ Cột: `{df_intra.columns.tolist()}`")
-                    st.dataframe(df_intra.head(5))
-                else:
-                    st.warning("Trả về rỗng")
-            except Exception as e:
-                try:
-                    df_intra = stk.quote.intraday()
-                    if valid(df_intra):
-                        st.success(f"✅ (no symbol) Cột: `{df_intra.columns.tolist()}`")
-                        st.dataframe(df_intra.head(5))
-                except Exception as e2:
-                    st.error(f"❌ {e} | {e2}")
-
-            # Test 4: trading.price_board
-            st.write("**Test 4: trading.price_board**")
-            try:
-                df_pb = stk.trading.price_board(symbols_list=[debug_ticker])
-                if valid(df_pb):
-                    st.success(f"✅ Cột: `{df_pb.columns.tolist()}`")
-                    st.dataframe(df_pb)
-                else:
-                    st.warning("Trả về rỗng")
-            except Exception as e:
-                st.error(f"❌ {e}")
 
 # ==============================================================================
-# TAB 4: RADAR TRUY QUÉT [NÂNG CẤP #15 — Hiển Thị Nâng Cao]
-# ==============================================================================
+# TAB 4: RADAR TRUY QUÉT
 with tab4:
     st.subheader("🔍 Máy Quét Định Lượng Robot Hunter V22.0 — Predator Leviathan")
     st.write(
