@@ -91,7 +91,7 @@ SCORE_FLOW_MAX    = 20
 SCORE_FINANCE_MAX = 15
 SCORE_SECTOR_MAX  = 10
 SCORE_SENT_MAX    = 10
-SCORE_BUY_MIN     = 65
+SCORE_BUY_MIN     = 58   # ngưỡng mua (tương đương 65/100 cũ, nay tổng max = 90)
 
 # Advisor
 ADV_AI_BUY        = 58.0
@@ -875,7 +875,7 @@ def calc_total_score(
 
     # --- Sentiment (0-10) ---
     sent_pts   = 0   # Đã bỏ sentiment input
-    total = min(100, ai_pts + tech_pts + flow_pts + fin_pts + sector_pts)
+    total = min(90, ai_pts + tech_pts + flow_pts + fin_pts + sector_pts)
 
     if total >= SCORE_BUY_MIN and rsi < RSI_HOT:
         decision       = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
@@ -1963,10 +1963,10 @@ with tab1:
                 st.subheader("🤖 ROBOT ĐỀ XUẤT:")
                 color = scoring['decision_color']
                 st.title(f":{color}[{scoring['decision']}]")
-                st.markdown(f"**📊 Điểm Tổng Hợp: {scoring['total']}/100**")
-                st.progress(scoring['total'] / 100)
+                st.markdown(f"**📊 Điểm Tổng Hợp: {scoring['total']}/90**")
+                st.progress(scoring['total'] / 90)
                 if scoring['total'] >= SCORE_BUY_MIN:
-                    st.success(f"✅ Đủ điều kiện giao dịch (≥ {SCORE_BUY_MIN}/100)")
+                    st.success(f"✅ Đủ điều kiện giao dịch (≥ {SCORE_BUY_MIN}/90)")
                 else:
                     st.warning(f"⏳ Chưa đủ ngưỡng ({scoring['total']}/{SCORE_BUY_MIN})")
 
