@@ -1952,34 +1952,90 @@ with tab1:
             )
             st.write(f"### 🎯 BẢN PHÂN TÍCH CHUYÊN MÔN TỰ ĐỘNG — MÃ {ticker}")
 
-            col_report, col_signal = st.columns([2, 1])
-            with col_report:
-                report = generate_report(
-                    ticker, last, ai_score, bt, buy_set, sell_set, foreign_trend, weekly_trend
-                )
-                st.info(report)
-
-            with col_signal:
+            # ── TÓM TẮT NHANH (mặc định hiện) ──
+            color = scoring['decision_color']
+            sum_c1, sum_c2 = st.columns([1, 2])
+            with sum_c1:
                 st.subheader("🤖 ROBOT ĐỀ XUẤT:")
-                color = scoring['decision_color']
                 st.title(f":{color}[{scoring['decision']}]")
-                st.markdown(f"**📊 Điểm Tổng Hợp: {scoring['total']}/90**")
+                st.markdown(f"**📊 Điểm: {scoring['total']}/90**")
                 st.progress(scoring['total'] / 90)
                 if scoring['total'] >= SCORE_BUY_MIN:
-                    st.success(f"✅ Đủ điều kiện giao dịch (≥ {SCORE_BUY_MIN}/90)")
+                    st.success(f"✅ Đủ điều kiện (≥ {SCORE_BUY_MIN}/90)")
                 else:
-                    st.warning(f"⏳ Chưa đủ ngưỡng ({scoring['total']}/{SCORE_BUY_MIN})")
-
-                # [NÂNG CẤP #12] Kelly
+                    st.warning(f"⏳ Chưa đủ ({scoring['total']}/{SCORE_BUY_MIN})")
                 st.divider()
-                st.metric("💰 Kelly Position Size", f"{kelly_pct}% vốn",
-                          delta="Half-Kelly — an toàn", delta_color="off")
-                st.caption("Kích thước vị thế tối ưu dựa trên lịch sử winrate & tỷ lệ lời/lỗ.")
+                st.metric("💰 Kelly Size", f"{kelly_pct}% vốn",
+                          delta="Half-Kelly", delta_color="off")
+
+            with sum_c2:
+                # 8 chỉ số cốt lõi dạng bảng gọn
+                ai_disp = f"{float(ai_score):.1f}%" if _is_valid_score(ai_score) else "N/A"
+                rsi_v   = last['rsi']
+                macd_up = last['macd'] > last['signal']
+                adx_v   = last.get('adx', 0)
+                atr_v   = float(last.get('atr', last['close'] * 0.02))
+                sl_disp = calc_trailing_stop(float(last['close']), atr_v)
+                weekly_label = {"UP":"📈 TĂNG","DOWN":"📉 GIẢM","NEUTRAL":"➡️ NGANG"}.get(weekly_trend,"N/A")
+                ft = foreign_trend
+
+                rows_summary = [
+                    ("🤖 AI T+3",        ai_disp,
+                     "🔥 Cửa sáng" if _is_valid_score(ai_score) and float(ai_score)>=60 else "⚠️ Thận trọng"),
+                    ("📊 RSI",           f"{rsi_v:.1f}",
+                     "✅ Lý tưởng" if rsi_v < 60 else ("🔴 Quá mua" if rsi_v > 70 else "🟡 Trung lập")),
+                    ("📈 MACD",          "Cross Up ✓" if macd_up else "Cross Down ⚠️", ""),
+                    ("📐 ADX",           f"{adx_v:.1f}",
+                     "Xu hướng mạnh ✓" if adx_v > 25 else "Sideways"),
+                    ("🛡️ ATR Stop",      f"{sl_disp['final_sl']:,.0f}",
+                     f"{sl_disp['sl_pct']:+.1f}%"),
+                    ("🗓️ Weekly",        weekly_label, ""),
+                    ("🌊 Khối Ngoại",    ft.get('trend','N/A'),
+                     "🦈 Tích lũy âm thầm!" if ft.get('is_silent_accum') else ""),
+                    ("💰 Kỳ vọng/lệnh", f"{bt['expectancy']:+.2f}%",
+                     "Dương ✓" if bt['expectancy'] > 0 else "Âm ⚠️"),
+                ]
+                for label, val, note in rows_summary:
+                    r1, r2, r3 = st.columns([2, 2, 3])
+                    r1.markdown(f"**{label}**")
+                    r2.markdown(val)
+                    if note:
+                        r3.caption(note)
+
+            # ── CHI TIẾT ĐẦY ĐỦ (expander) ──
+            with st.expander("📋 Xem Phân Tích Chi Tiết Đầy Đủ"):
+                col_report, col_signal2 = st.columns([2, 1])
+                with col_report:
+                    report = generate_report(
+                        ticker, last, ai_score, bt, buy_set, sell_set, foreign_trend, weekly_trend
+                    )
+                    st.info(report)
+                with col_signal2:
+                    st.write("#### Bảng Điểm Chi Tiết")
+                    d1, d2, d3, d4, d5 = st.columns(5)
+                    d1.metric("🤖 AI",    f"{scoring['ai_pts']}/{SCORE_AI_MAX}")
+                    d2.metric("📈 Kỹ thuật", f"{scoring['tech_pts']}/{SCORE_TECH_MAX}")
+                    d3.metric("🌊 Ngoại", f"{scoring['flow_pts']}/{SCORE_FLOW_MAX}")
+                    d4.metric("🏢 Tài chính", f"{scoring['fin_pts']}/{SCORE_FINANCE_MAX}")
+                    d5.metric("🏭 Ngành", f"{scoring['sector_pts']}/{SCORE_SECTOR_MAX}")
+                    cols_bar = st.columns(2)
+                    items = [
+                        ("🤖 AI",        scoring['ai_pts'],     SCORE_AI_MAX),
+                        ("📈 Kỹ thuật",  scoring['tech_pts'],   SCORE_TECH_MAX),
+                        ("🌊 Ngoại",     scoring['flow_pts'],   SCORE_FLOW_MAX),
+                        ("🏢 Tài chính", scoring['fin_pts'],    SCORE_FINANCE_MAX),
+                        ("🏭 Ngành",     scoring['sector_pts'], SCORE_SECTOR_MAX),
+                    ]
+                    for i, (lbl, pts, mx) in enumerate(items):
+                        with cols_bar[i % 2]:
+                            st.markdown(f"**{lbl}**")
+                            st.progress(pts / mx)
+                            st.caption(f"{pts}/{mx}")
 
             st.divider()
 
             # --- Bảng điểm ---
-            st.write("### 🎯 Bảng Điểm Chi Tiết 0-100")
+            st.write("### 🎯 Bảng Điểm Chi Tiết 0-90")
             d1, d2, d3, d4, d5 = st.columns(5)
             d1.metric("🤖 AI XGBoost",  f"{scoring['ai_pts']}/{SCORE_AI_MAX}")
             d2.metric("📈 Kỹ Thuật",    f"{scoring['tech_pts']}/{SCORE_TECH_MAX}")
