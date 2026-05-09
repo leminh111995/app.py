@@ -2800,7 +2800,8 @@ with tab4:
         watch_zone     = []
         running_strong = []
 
-        df_vnidx = get_vnindex_cached()
+        # RS Rating dùng benchmark cố định — không gọi VNI để giữ tốc độ
+        df_vnidx = pd.DataFrame()
 
         for i, t in enumerate(scan_list):
             try:
