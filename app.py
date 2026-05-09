@@ -237,36 +237,39 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 
 
 @st.cache_data(ttl=3600)
-def get_vnindex_cached() -> pd.DataFrame | None:
+def get_vnindex_cached() -> pd.DataFrame:
     """
-    Lấy dữ liệu VN-Index với nhiều phương án fallback.
-    Cache 1 giờ — dùng chung cho tất cả RS Rating calculations.
+    Lấy VN-Index — chỉ thử 3 cách nhanh nhất, timeout cứng.
+    Trả về DataFrame rỗng khi fail → cache lưu được → các lần sau instant.
     """
-    # Phương án 1: Vnstock market index
-    for sym in ['VNINDEX', 'VN-INDEX', 'VNI']:
-        try:
-            df = engine().stock.quote.history(symbol=sym, start='2023-01-01',
-                                               end=now_vn().strftime(DATE_FMT))
-            if valid(df) and len(df) >= 30:
-                df = normalize_cols(df)
-                print(f"[OK] VNINDEX via vnstock symbol={sym}")
-                return df
-        except Exception:
-            continue
+    EMPTY = pd.DataFrame()
 
-    # Phương án 2: yfinance ^VNINDEX
-    for yf_sym in ['^VNINDEX', 'VNINDEX', '^VNI']:
+    # Cách 1: yfinance ^VNINDEX
+    for sym in ['^VNINDEX', 'VNINDEX']:
         try:
-            df = yf.download(yf_sym, period='2y', progress=False).reset_index()
+            df = yf.download(sym, period='1y', timeout=5, progress=False).reset_index()
             if valid(df) and len(df) >= 30:
-                df = normalize_cols(df)
-                print(f"[OK] VNINDEX via yfinance symbol={yf_sym}")
-                return df
+                return normalize_cols(df)
         except Exception:
-            continue
+            pass
 
-    print("[WARN] Không lấy được VN-Index từ bất kỳ nguồn nào.")
-    return None
+    # Cách 2: VCI source với symbol VN30 / E1VFVN30
+    for sym in ['VN30', 'E1VFVN30', 'VNINDEX']:
+        try:
+            stk = Vnstock().stock(symbol=sym, source='VCI')
+            df  = stk.quote.history(
+                start=(now_vn() - timedelta(days=400)).strftime(DATE_FMT),
+                end=now_vn().strftime(DATE_FMT)
+            )
+            if valid(df) and len(df) >= 30:
+                return normalize_cols(df)
+        except Exception:
+            pass
+
+    # Cách 3: Dùng FPT làm proxy (cùng tầm vóc thị trường)
+    # Không dùng — trả về rỗng để cache
+    print("[WARN] get_vnindex_cached: tất cả cách đều fail")
+    return EMPTY
 
 def _normalize_flow_df(df: pd.DataFrame) -> pd.DataFrame | None:
     """
@@ -1102,33 +1105,27 @@ def get_ticker_sector(ticker: str) -> str | None:
 # ==============================================================================
 # [V23 #17] RS RATING — Xếp hạng sức mạnh so với VN-Index
 # ==============================================================================
-def calc_rs_rating(df: pd.DataFrame, df_vnindex: pd.DataFrame | None) -> float:
+def calc_rs_rating(df: pd.DataFrame, df_vnindex: pd.DataFrame) -> float:
     """
     [V23 #17] RS Rating 0-100 so với VN-Index.
-    - Dùng tail(RS_LOOKBACK) thay vì iloc[-RS_LOOKBACK] để tránh crash khi df ngắn
-    - Nếu không có VN-Index, tính RS dựa trên hiệu suất tuyệt đối (không so sánh)
-    - Chuẩn hóa về 0-100: excess +20% → 100, excess -20% → 0
+    Nếu df_vnindex rỗng → dùng benchmark cố định 8%/63 phiên.
     """
     try:
-        # Lấy close trong RS_LOOKBACK phiên gần nhất
         stock_window = df['close'].dropna().tail(RS_LOOKBACK)
-        if len(stock_window) < 20:      # cần ít nhất 20 phiên
+        if len(stock_window) < 20:
             return 50.0
         stock_ret = (stock_window.iloc[-1] - stock_window.iloc[0]) / (stock_window.iloc[0] + 1e-9)
 
-        if valid(df_vnindex) and len(df_vnindex) >= 20:
+        # Dùng VNI thực nếu có, không thì dùng benchmark 8%
+        if isinstance(df_vnindex, pd.DataFrame) and len(df_vnindex) >= 20 and 'close' in df_vnindex.columns:
             mkt_window = df_vnindex['close'].dropna().tail(RS_LOOKBACK)
             mkt_ret    = (mkt_window.iloc[-1] - mkt_window.iloc[0]) / (mkt_window.iloc[0] + 1e-9)
         else:
-            # Fallback: không có VN-Index → chuẩn hóa hiệu suất tuyệt đối
-            # Giả định thị trường tăng trung bình 8%/63 phiên (~15%/năm)
-            mkt_ret = 0.08
+            mkt_ret = 0.08   # benchmark cố định ~15%/năm
 
         excess = stock_ret - mkt_ret
-        # Map excess [-20%, +20%] → [0, 100]
         score  = (excess + 0.20) / 0.40 * 100
         return round(max(0.0, min(100.0, score)), 1)
-
     except Exception as e:
         print(f"[WARN] calc_rs_rating: {e}")
         return 50.0
@@ -1809,8 +1806,8 @@ with tab1:
             df_for        = get_foreign(ticker, FOREIGN_DAYS)
             foreign_trend = analyze_foreign_trend(df_for)
 
-            # [V23] New indicators
-            df_vnindex    = get_vnindex_cached()
+            # [V23] New indicators — không gọi VNI trong Tab 1 để tránh chậm
+            df_vnindex    = pd.DataFrame()   # dùng benchmark cố định
             rs_rating     = calc_rs_rating(df, df_vnindex)
             divergence    = detect_divergence(df)
             info_52w      = calc_52w_info(df)
