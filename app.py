@@ -82,7 +82,7 @@ BT_DAYS_FWD       = 10
 AI_MIN_ROWS       = 200
 AI_PROFIT_T3      = 1.02
 AI_GOOD           = 55.0
-AI_OK             = 48.0
+AI_OK             = 52.0   # buffer rộng hơn để tránh dao động giữa các lần quét
 
 # Scoring 0-100
 SCORE_AI_MAX      = 25
@@ -3260,7 +3260,8 @@ with tab4:
                 if not valid(df_s):
                     continue
                 df_s     = calc_indicators(df_s)
-                ai_s     = predict_ai_t3(df_s)
+                # Dùng cache 30 phút — cùng phiên luôn ra cùng kết quả
+                ai_s     = predict_ai_cached(t, float(df_s['close'].iloc[-1]))
                 weekly_s = get_weekly_trend(df_s)
                 label    = classify_stock(t, df_s, ai_s, weekly_s, smart_flow=False)
                 if label is None:
