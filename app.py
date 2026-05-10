@@ -90,7 +90,6 @@ SCORE_TECH_MAX    = 20
 SCORE_FLOW_MAX    = 20
 SCORE_FINANCE_MAX = 15
 SCORE_SECTOR_MAX  = 10
-SCORE_SENT_MAX    = 10
 SCORE_BUY_MIN     = 58   # ngưỡng mua (tương đương 65/100 cũ, nay tổng max = 90)
 
 # Advisor
@@ -149,14 +148,6 @@ FALLBACK_TICKERS = [
 ]
 
 # VN30 — 30 mã vốn hóa lớn nhất HOSE (dùng làm VNI proxy khi API fail)
-VN30_BASKET = [
-    "VCB", "BID", "CTG", "MBB", "TCB", "VPB", "HDB", "STB", "ACB", "TPB",
-    "VIC", "VHM", "VRE", "NVL",
-    "VNM", "SAB", "MSN", "MCH",
-    "FPT", "MWG",
-    "HPG", "GAS", "PLX", "POW", "GVR",
-    "SSI", "VJC", "BVH", "KDH", "PDR",
-]
 SECTOR_MAP = {
     "Ngân Hàng":       ["VCB","TCB","MBB","BID","CTG","ACB","HDB","LPB","TPB","STB","SSB","MSB","SHB","EIB"],
     "Bất Động Sản":    ["VHM","VIC","NVL","PDR","DXG","KDH","NLG","DIG","BCG","HDG","DXS","CEO","SCR"],
@@ -294,147 +285,18 @@ def get_vnindex_cached() -> pd.DataFrame:
         'volume': df_basket.sum(axis=1).values,
     }).reset_index(drop=True)
 
-def _normalize_flow_df(df: pd.DataFrame) -> pd.DataFrame | None:
-    """
-    Chuẩn hóa DataFrame dòng tiền về cột chuẩn: date, buyval, sellval, netval.
-    Xử lý tất cả tên cột có thể từ các source khác nhau của Vnstock.
-    """
-    if not valid(df):
-        return None
-    df = df.copy()
-    # Chuẩn hóa tên cột về lowercase không dấu
-    df.columns = [str(c).lower().strip() for c in df.columns]
-
-    # Map date
-    for c in ['date', 'tradingdate', 'trading_date', 'time', 'ngay']:
-        if c in df.columns:
-            df['date'] = pd.to_datetime(df[c]).dt.strftime('%Y-%m-%d')
-            break
-    else:
-        df['date'] = pd.to_datetime(df.index).strftime('%Y-%m-%d')
-
-    # Map buyval
-    for c in ['buyval', 'buy_val', 'buyvalue', 'buy_value', 'gtmua',
-              'totalbuyvol', 'buyvol', 'foreignbuyvalue', 'propbuyvol']:
-        if c in df.columns:
-            df['buyval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-            break
-    else:
-        df['buyval'] = 0.0
-
-    # Map sellval
-    for c in ['sellval', 'sell_val', 'sellvalue', 'sell_value', 'gtban',
-              'totalsellvol', 'sellvol', 'foreignsellvalue', 'propsellvol']:
-        if c in df.columns:
-            df['sellval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-            break
-    else:
-        df['sellval'] = 0.0
-
-    # Map netval
-    for c in ['netval', 'net_val', 'netvalue', 'net_value', 'gtrong',
-              'netvol', 'foreignnetvalue', 'propnetvol']:
-        if c in df.columns:
-            df['netval'] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-            break
-    else:
-        df['netval'] = df['buyval'] - df['sellval']
-
-    result = df[['date', 'buyval', 'sellval', 'netval']].dropna(subset=['date'])
-    return result if len(result) > 0 else None
-
+def _normalize_flow_df(df): return None   # stub — API không khả dụng
 
 def fetch_all_flows(ticker: str, days: int = FOREIGN_DAYS) -> dict:
-    """
-    Thử TẤT CẢ endpoints có thể cho Foreign + Proprietary trong 1 lần gọi.
-    Trả về {'foreign': df | None, 'proprietary': df | None, 'source': str}
-    """
-    start, end = date_range(days)
-    SOURCES    = ['VCI', 'TCBS', 'SSI', 'FPTS']
+    """API dòng tiền không khả dụng với Vnstock hiện tại."""
+    return {'foreign': None, 'proprietary': None, 'source': 'none'}
 
-    # ── Tất cả cách lấy Foreign ──
-    foreign_attempts = [
-        lambda: engine().stock.trade.foreign_trade(symbol=ticker, start=start, end=end),
-        lambda: engine().stock.trading.foreign(symbol=ticker, start=start, end=end),
-        lambda: engine().stock.trade.foreign(symbol=ticker, start=start, end=end),
-    ]
-    for src in SOURCES:
-        for method_name in ['trade.foreign_trade', 'trading.foreign_trade',
-                            'trading.foreign', 'trade.foreign']:
-            def _make_attempt(s=src, m=method_name):
-                def attempt():
-                    stk = Vnstock().stock(symbol=ticker, source=s)
-                    parts = m.split('.')
-                    obj = stk
-                    for p in parts[:-1]:
-                        obj = getattr(obj, p)
-                    return getattr(obj, parts[-1])(start=start, end=end)
-                return attempt
-            foreign_attempts.append(_make_attempt())
-
-    # ── Tất cả cách lấy Proprietary ──
-    prop_attempts = [
-        lambda: engine().stock.trade.proprietary_trade(symbol=ticker, start=start, end=end),
-        lambda: engine().stock.trading.proprietary(symbol=ticker, start=start, end=end),
-        lambda: engine().stock.trade.proprietary(symbol=ticker, start=start, end=end),
-    ]
-    for src in SOURCES:
-        for method_name in ['trade.proprietary_trade', 'trading.proprietary_trade',
-                            'trading.proprietary', 'trade.proprietary']:
-            def _make_prop(s=src, m=method_name):
-                def attempt():
-                    stk = Vnstock().stock(symbol=ticker, source=s)
-                    parts = m.split('.')
-                    obj = stk
-                    for p in parts[:-1]:
-                        obj = getattr(obj, p)
-                    return getattr(obj, parts[-1])(start=start, end=end)
-                return attempt
-            prop_attempts.append(_make_prop())
-
-    # ── Thử Foreign ──
-    df_foreign = None
-    foreign_src = 'none'
-    for i, attempt in enumerate(foreign_attempts):
-        try:
-            raw = attempt()
-            df_foreign = _normalize_flow_df(raw)
-            if df_foreign is not None and len(df_foreign) > 0:
-                foreign_src = f'attempt_{i}'
-                print(f"[OK] Foreign {ticker} via attempt_{i}")
-                break
-        except Exception as e:
-            print(f"[WARN] Foreign attempt_{i} {ticker}: {e}")
-            continue
-
-    # ── Thử Proprietary ──
-    df_prop = None
-    prop_src = 'none'
-    for i, attempt in enumerate(prop_attempts):
-        try:
-            raw = attempt()
-            df_prop = _normalize_flow_df(raw)
-            if df_prop is not None and len(df_prop) > 0:
-                prop_src = f'attempt_{i}'
-                print(f"[OK] Proprietary {ticker} via attempt_{i}")
-                break
-        except Exception as e:
-            print(f"[WARN] Prop attempt_{i} {ticker}: {e}")
-            continue
-
-    return {
-        'foreign':     df_foreign,
-        'proprietary': df_prop,
-        'source':      f'F:{foreign_src} P:{prop_src}',
-    }
-
-
-# Giữ lại get_foreign/get_proprietary để tương thích với code cũ
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    return fetch_all_flows(ticker, days)['foreign']
+    return None
 
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    return fetch_all_flows(ticker, days)['proprietary']
+    return None
+
 
 # ==============================================================================
 # 3. CHỈ BÁO KỸ THUẬT (có thêm ATR, ADX, OBV — NÂNG CẤP #10 #11)
@@ -1060,30 +922,6 @@ def calc_net_flow(df: pd.DataFrame, days: int = 3) -> float:
         total_sell += float(row.get('sellval', 0) or 0)
     return total_buy - total_sell
 
-def classify_flow_group(vol: float, ret: float, net_flow: float) -> dict:
-    if vol >= VOL_SHARK:
-        group, pct, desc = "🦈 Cá Mập", 0.65, "Tay to / Quỹ ngoại đang hoạt động mạnh"
-    elif vol >= VOL_INST_HIGH:
-        group, pct, desc = "🏦 Tổ Chức Nội", 0.45, "Tổ chức nội địa / Tự doanh tích cực"
-    else:
-        group, pct, desc = "🐜 Nhỏ Lẻ", 0.15, "Cá nhân nhỏ lẻ chiếm chủ đạo"
-    retail_pct = 1 - pct
-    is_accumulate = ret > 0 and vol >= VOL_PV_SIGNAL and net_flow >= 0
-    is_distribute = ret < 0 and vol >= VOL_PV_SIGNAL and net_flow < 0
-    if is_accumulate:
-        action, action_color = "🟢 GOM HÀNG", "normal"
-        action_note = "Giá tăng + Vol nổ + Dòng tiền ròng dương → Xác nhận tích lũy thực sự"
-    elif is_distribute:
-        action, action_color = "🔴 XẢ HÀNG", "inverse"
-        action_note = "Giá giảm + Vol nổ + Dòng tiền ròng âm → Xác nhận phân phối thực sự"
-    else:
-        action, action_color = "🟡 TRUNG LẬP", "off"
-        action_note = "Chưa đủ 3 điều kiện Gom/Xả đồng thời"
-    return {
-        'group': group, 'inst_pct': pct, 'retail_pct': retail_pct,
-        'description': desc, 'action': action,
-        'action_color': action_color, 'action_note': action_note,
-    }
 
 # ==============================================================================
 # 15. SECTOR ROTATION
@@ -2036,31 +1874,6 @@ with tab1:
                             st.caption(f"{pts}/{mx}")
 
             st.divider()
-
-            # --- Bảng điểm ---
-            st.write("### 🎯 Bảng Điểm Chi Tiết 0-90")
-            d1, d2, d3, d4, d5 = st.columns(5)
-            d1.metric("🤖 AI XGBoost",  f"{scoring['ai_pts']}/{SCORE_AI_MAX}")
-            d2.metric("📈 Kỹ Thuật",    f"{scoring['tech_pts']}/{SCORE_TECH_MAX}")
-            d3.metric("🌊 Khối Ngoại",  f"{scoring['flow_pts']}/{SCORE_FLOW_MAX}")
-            d4.metric("🏢 Tài Chính",   f"{scoring['fin_pts']}/{SCORE_FINANCE_MAX}")
-            d5.metric("🏭 Ngành",       f"{scoring['sector_pts']}/{SCORE_SECTOR_MAX}")
-
-            # Thanh điểm trực quan
-            st.caption("Thanh điểm trực quan:")
-            cols_bar = st.columns(3)
-            items = [
-                ("🤖 AI",        scoring['ai_pts'],     SCORE_AI_MAX),
-                ("📈 Kỹ thuật",  scoring['tech_pts'],   SCORE_TECH_MAX),
-                ("🌊 Ngoại",     scoring['flow_pts'],   SCORE_FLOW_MAX),
-                ("🏢 Tài chính", scoring['fin_pts'],    SCORE_FINANCE_MAX),
-                ("🏭 Ngành",     scoring['sector_pts'], SCORE_SECTOR_MAX),
-            ]
-            for i, (label, pts, max_pts) in enumerate(items):
-                with cols_bar[i % 3]:
-                    st.markdown(f"**{label}**")
-                    st.progress(pts / max_pts)
-                    st.caption(f"{pts}/{max_pts} điểm")
 
             st.divider()
 
