@@ -2434,6 +2434,7 @@ with tab1:
                     wfo = walk_forward_optimize(df)
                 st.session_state['wfo_result'] = wfo
                 st.session_state['wfo_ticker'] = ticker
+                st.rerun()
 
             if st.session_state.get('wfo_ticker') == ticker and 'wfo_result' in st.session_state:
                 wfo = st.session_state['wfo_result']
@@ -2465,6 +2466,7 @@ with tab1:
                 with st.spinner(f"Đang phân tích {len(tickers_cmp)} mã..."):
                     cmp_results = compare_stocks(tickers_cmp)
                 st.session_state['cmp_results'] = cmp_results
+                st.rerun()
 
             if st.session_state.get('cmp_results'):
                 cmp_results = st.session_state['cmp_results']
@@ -2514,6 +2516,7 @@ with tab1:
                 with st.spinner("Đang tính ma trận tương quan..."):
                     corr_matrix = calc_correlation_matrix(tickers_corr)
                 st.session_state['corr_matrix'] = corr_matrix
+                st.rerun()
 
             if st.session_state.get('corr_matrix') is not None:
                 corr_matrix = st.session_state['corr_matrix']
