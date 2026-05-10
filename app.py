@@ -1320,6 +1320,226 @@ def calc_wave_bottom_score(
 
 # ==============================================================================
 # ==============================================================================
+# [C] QUICK SCAN — Lọc nhanh không dùng AI
+# ==============================================================================
+def classify_stock_fast(df: pd.DataFrame) -> str | None:
+    """
+    Phân loại nhanh chỉ dùng RSI + Vol + MA20 (không AI, không API).
+    Dùng cho scan nhanh hàng ngày ~2-3 phút cho 400 mã.
+    """
+    if len(df) < 30:
+        return None
+    last  = df.iloc[-1]
+    vol   = last['vol_strength']
+    rsi   = last['rsi']
+    price = last['close']
+    ma20  = last['ma20']
+    ret   = last.get('return_1d', 0)
+
+    # Bùng nổ
+    if vol > VOL_BREAKOUT:
+        return "🚀 Bùng Nổ Mua" if ret >= 0 else "🔴 Bán Tháo"
+
+    # Chân sóng nhanh (3 tiêu chí đơn giản)
+    if WAVE_RSI_MIN <= rsi <= WAVE_RSI_MAX and price >= ma20 * 0.90 and vol >= 0.7:
+        return "🌊 Tiềm Năng"
+
+    # Đang tăng mạnh
+    if 65 <= rsi <= 80 and price >= ma20:
+        return "🔥 Tăng Mạnh"
+
+    return None
+
+
+# ==============================================================================
+# [A] BACKTEST NÂNG CAO — Dùng bộ tín hiệu thực tế của hệ thống
+# ==============================================================================
+def run_backtest_v2(df: pd.DataFrame) -> dict:
+    """
+    Backtest dùng đúng tín hiệu thực tế:
+    RSI < 52 + MA20 uptrend + Vol tích lũy (0.8-1.4x) + MACD cross
+    Phản ánh chính xác cách hệ thống phân loại Tầng 2/3.
+    """
+    wins = 0
+    profits = []
+    signals_data = []
+    n = len(df)
+    for i in range(100, n - BT_DAYS_FWD):
+        last_i  = df.iloc[i]
+        rsi_ok  = WAVE_RSI_MIN <= last_i['rsi'] <= WAVE_RSI_MAX
+        ma_ok   = last_i['close'] >= last_i['ma20'] * 0.95
+        vol_ok  = VOL_ACC_MIN <= last_i['vol_strength'] <= 1.5
+        macd_ok = (last_i['macd'] > last_i['signal'] and
+                   df['macd'].iloc[i-1] <= df['signal'].iloc[i-1])
+        adx_ok  = last_i.get('adx', 0) < 35   # không vào khi đang bùng nổ mạnh
+        if not (rsi_ok and ma_ok and vol_ok and macd_ok and adx_ok):
+            continue
+        buy_price = last_i['close'] * (1 + SLIPPAGE)
+        target    = buy_price * (1 + BT_PROFIT)
+        sl_price  = buy_price * (1 - SL_PCT)
+        future    = df['close'].iloc[i+1 : i+1+BT_DAYS_FWD]
+        hit_tp    = any(future >= target)
+        hit_sl    = any(future <= sl_price)
+        date_i    = df['date'].iloc[i] if 'date' in df.columns else i
+        if hit_tp:
+            p = BT_PROFIT - ROUND_TRIP_COST
+            profits.append(p); wins += 1
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'WIN',  'pnl': p})
+        elif hit_sl:
+            p = -SL_PCT - ROUND_TRIP_COST
+            profits.append(p)
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'LOSS', 'pnl': p})
+        else:
+            exit_price = future.iloc[-1] if len(future) > 0 else buy_price
+            p = (exit_price - buy_price) / buy_price - ROUND_TRIP_COST
+            profits.append(p)
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'HOLD', 'pnl': p})
+
+    if not profits:
+        return {'winrate':0.0,'avg_profit':0.0,'avg_loss':0.0,'expectancy':0.0,
+                'signals':0,'sharpe':0.0,'max_drawdown':0.0,'profits':[],'signals_data':[]}
+    winrate    = round(wins / len(profits) * 100, 1)
+    avg_profit = round(np.mean([p for p in profits if p > 0]) * 100, 2) if any(p>0 for p in profits) else 0.0
+    avg_loss   = round(np.mean([p for p in profits if p < 0]) * 100, 2) if any(p<0 for p in profits) else 0.0
+    expectancy = round(np.mean(profits) * 100, 2)
+    excess     = np.array(profits) - 0.045/252
+    sharpe     = round((excess.mean()/(excess.std()+1e-9))*np.sqrt(252/BT_DAYS_FWD), 2)
+    equity     = np.cumprod([1+p for p in profits])
+    max_dd     = round(((equity - np.maximum.accumulate(equity))/np.maximum.accumulate(equity)).min()*100, 2)
+    return {'winrate':winrate,'avg_profit':avg_profit,'avg_loss':avg_loss,
+            'expectancy':expectancy,'signals':len(profits),'sharpe':sharpe,
+            'max_drawdown':max_dd,'profits':profits,'signals_data':signals_data}
+
+
+# ==============================================================================
+# [B] WALK-FORWARD OPTIMIZATION — Tìm tham số tối ưu theo từng mã
+# ==============================================================================
+def walk_forward_optimize(df: pd.DataFrame) -> dict:
+    """
+    Grid search tìm combo (rsi_buy, profit_target, sl_pct) tốt nhất
+    trên 70% dữ liệu đầu, validate trên 30% còn lại.
+    """
+    best = {'expectancy': -999, 'rsi_buy': BT_RSI_BUY,
+            'profit': BT_PROFIT, 'sl': SL_PCT}
+    n = len(df)
+    if n < 200:
+        return best
+
+    train_end = int(n * 0.7)
+    df_train  = df.iloc[:train_end]
+    df_val    = df.iloc[train_end:]
+
+    for rsi_buy in [38, 42, 45, 48, 52]:
+        for profit in [0.04, 0.05, 0.07, 0.10]:
+            for sl in [0.04, 0.06, 0.08]:
+                # Tính nhanh trên train set
+                wins = total = 0
+                profits_tmp = []
+                for i in range(50, len(df_train) - BT_DAYS_FWD):
+                    rsi_ok  = df_train['rsi'].iloc[i] < rsi_buy
+                    macd_ok = (df_train['macd'].iloc[i] > df_train['signal'].iloc[i] and
+                               df_train['macd'].iloc[i-1] <= df_train['signal'].iloc[i-1])
+                    if not (rsi_ok and macd_ok):
+                        continue
+                    total += 1
+                    buy_p  = df_train['close'].iloc[i]
+                    future = df_train['close'].iloc[i+1:i+1+BT_DAYS_FWD]
+                    if any(future >= buy_p*(1+profit)):
+                        profits_tmp.append(profit - ROUND_TRIP_COST); wins += 1
+                    elif any(future <= buy_p*(1-sl)):
+                        profits_tmp.append(-sl - ROUND_TRIP_COST)
+                    else:
+                        profits_tmp.append((future.iloc[-1]-buy_p)/buy_p - ROUND_TRIP_COST)
+                if len(profits_tmp) < 5:
+                    continue
+                exp = np.mean(profits_tmp) * 100
+                if exp > best['expectancy']:
+                    best = {'expectancy': round(exp,2), 'rsi_buy': rsi_buy,
+                            'profit': profit, 'sl': sl,
+                            'signals_train': total, 'winrate_train': round(wins/total*100,1)}
+    return best
+
+
+# ==============================================================================
+# [D] SO SÁNH NHIỀU MÃ CÙNG LÚC
+# ==============================================================================
+def compare_stocks(tickers_list: list, days: int = 200) -> list[dict]:
+    """Tính điểm tổng hợp nhanh cho danh sách mã để so sánh song song."""
+    results = []
+    for t in tickers_list:
+        try:
+            df = get_price(t, days=days)
+            if not valid(df) or len(df) < 50:
+                continue
+            df   = calc_indicators(df)
+            last = df.iloc[-1]
+            ai_s = predict_ai_t3(df)
+            bt_s = run_backtest_v2(df)
+            rs_s = calc_rs_rating(df, pd.DataFrame())
+            w52  = calc_52w_info(df)
+            div  = detect_divergence(df)
+            wave = calc_wave_bottom_score(df, last,
+                       near_52w_high=w52['near_high'],
+                       div_bullish=(div['signal']=='BULLISH'))
+            weekly = get_weekly_trend(df)
+            # Điểm kỹ thuật
+            tech = 0
+            if last['close'] > last['ma20']:          tech += 3
+            if last['rsi'] < 60:                      tech += 2
+            if last['macd'] > last['signal']:         tech += 2
+            if weekly == 'UP':                        tech += 3
+            results.append({
+                'ticker':      t,
+                'price':       f"{last['close']:,.0f}",
+                'ai':          float(ai_s) if _is_valid_score(ai_s) else 0.0,
+                'rsi':         round(float(last['rsi']), 1),
+                'rs':          rs_s,
+                'tech':        tech,
+                'winrate':     bt_s['winrate'],
+                'expectancy':  bt_s['expectancy'],
+                'sharpe':      bt_s['sharpe'],
+                'max_dd':      bt_s['max_drawdown'],
+                'weekly':      weekly,
+                'wave_score':  wave['score'],
+                'near_52w':    w52['near_high'],
+                'div_bull':    div['signal'] == 'BULLISH',
+                'composite':   round(float(ai_s if _is_valid_score(ai_s) else 0)*0.35
+                                     + rs_s*0.25 + tech*3 + bt_s['winrate']*0.15, 1),
+            })
+        except Exception as e:
+            print(f"[WARN] compare {t}: {e}")
+    results.sort(key=lambda x: x['composite'], reverse=True)
+    return results
+
+
+# ==============================================================================
+# [F] CORRELATION MATRIX — Tương quan chéo giữa các mã
+# ==============================================================================
+def calc_correlation_matrix(tickers_list: list, days: int = 63) -> pd.DataFrame | None:
+    """
+    Tính ma trận tương quan lợi nhuận ngày giữa các mã.
+    63 phiên = ~3 tháng giao dịch.
+    """
+    returns_dict = {}
+    for t in tickers_list:
+        try:
+            df = get_price(t, days=days+10)
+            if not valid(df) or len(df) < 20:
+                continue
+            df = normalize_cols(df)
+            df['ret'] = pd.to_numeric(df['close'], errors='coerce').pct_change()
+            returns_dict[t] = df['ret'].dropna().tail(days).values
+        except Exception:
+            continue
+    if len(returns_dict) < 2:
+        return None
+    # Align lengths
+    min_len = min(len(v) for v in returns_dict.values())
+    df_ret  = pd.DataFrame({k: v[-min_len:] for k, v in returns_dict.items()})
+    return df_ret.corr().round(2)
+
+
+# ==============================================================================
 # CALIBRATION — Hiệu Chỉnh Ngưỡng Vol Theo Thống Kê Thực Tế
 # ==============================================================================
 def calibrate_vol_thresholds(sample_tickers: list, days: int = 252) -> dict:
@@ -2186,6 +2406,154 @@ with tab1:
             st.session_state['tab1_done']   = True
             st.session_state['tab1_ticker'] = ticker
 
+            st.divider()
+
+            # ── [A] BACKTEST V2 — Tín hiệu thực tế hơn ──
+            st.write("### 🔬 Backtest V2 — Tín Hiệu Thực Tế (RSI+MA20+Vol+MACD+ADX)")
+            with st.spinner("Đang chạy Backtest V2..."):
+                bt2 = run_backtest_v2(df)
+            if bt2['signals'] > 0:
+                bv1, bv2, bv3, bv4, bv5 = st.columns(5)
+                bv1.metric("Winrate V2",       f"{bt2['winrate']}%",
+                           delta=f"V1: {bt['winrate']}%", delta_color="normal" if bt2['winrate'] > bt['winrate'] else "inverse")
+                bv2.metric("Kỳ vọng V2",       f"{bt2['expectancy']:+.2f}%",
+                           delta=f"V1: {bt['expectancy']:+.2f}%", delta_color="normal" if bt2['expectancy'] > bt['expectancy'] else "inverse")
+                bv3.metric("Sharpe V2",        f"{bt2['sharpe']:.2f}")
+                bv4.metric("Max DD V2",        f"{bt2['max_drawdown']:.2f}%")
+                bv5.metric("Số lệnh V2",       f"{bt2['signals']}")
+                st.caption("V2 dùng tín hiệu: RSI 28-52 + Giá ≥ 95% MA20 + Vol 0.8-1.5x + MACD cross + ADX < 35 — phản ánh đúng cách hệ thống phân loại Tầng 2/3.")
+            else:
+                st.info("Chưa đủ tín hiệu V2 trong lịch sử dữ liệu.")
+
+            st.divider()
+
+            # ── [B] WALK-FORWARD OPTIMIZATION ──
+            st.write("### ⚙️ Walk-Forward Optimization — Tham Số Tối Ưu Cho Mã Này")
+            if st.button(f"🔍 Tìm Tham Số Tối Ưu cho {ticker}", key="wfo_btn"):
+                with st.spinner("Đang grid search tham số... (~30 giây)"):
+                    wfo = walk_forward_optimize(df)
+                st.session_state['wfo_result'] = wfo
+                st.session_state['wfo_ticker'] = ticker
+
+            if st.session_state.get('wfo_ticker') == ticker and 'wfo_result' in st.session_state:
+                wfo = st.session_state['wfo_result']
+                w1, w2, w3, w4 = st.columns(4)
+                w1.metric("RSI Mua Tối Ưu",       f"< {wfo['rsi_buy']}", delta=f"Default: {BT_RSI_BUY}")
+                w2.metric("Target Profit Tối Ưu", f"{wfo['profit']*100:.0f}%", delta=f"Default: {BT_PROFIT*100:.0f}%")
+                w3.metric("Stop Loss Tối Ưu",     f"{wfo['sl']*100:.0f}%", delta=f"Default: {SL_PCT*100:.0f}%")
+                w4.metric("Kỳ Vọng/Lệnh",         f"{wfo['expectancy']:+.2f}%")
+                st.caption(f"Winrate train: {wfo.get('winrate_train',0):.1f}% | Số lệnh train: {wfo.get('signals_train',0)}")
+                if wfo['expectancy'] > 0:
+                    st.success(f"✅ Với tham số tối ưu, hệ thống kỳ vọng **+{wfo['expectancy']:.2f}%/lệnh** trên mã {ticker}.")
+                else:
+                    st.warning("⚠️ Không tìm được tham số có kỳ vọng dương — mã này khó giao dịch theo hệ thống hiện tại.")
+
+            st.divider()
+
+            # ── [D] SO SÁNH NHIỀU MÃ ──
+            st.write("### 📊 So Sánh Nhiều Mã Cùng Lúc")
+            compare_input = st.text_input(
+                "Nhập các mã cần so sánh (cách nhau bởi dấu phẩy):",
+                placeholder="VD: FPT, ACB, HPG, MWG, SSI",
+                key="compare_input"
+            )
+            if st.button("⚡ So Sánh Ngay", key="compare_btn") and compare_input:
+                tickers_cmp = [t.strip().upper() for t in compare_input.split(',') if t.strip()]
+                if ticker not in tickers_cmp:
+                    tickers_cmp.insert(0, ticker)   # Luôn thêm mã hiện tại vào đầu
+                tickers_cmp = tickers_cmp[:6]        # Tối đa 6 mã
+                with st.spinner(f"Đang phân tích {len(tickers_cmp)} mã..."):
+                    cmp_results = compare_stocks(tickers_cmp)
+                st.session_state['cmp_results'] = cmp_results
+
+            if st.session_state.get('cmp_results'):
+                cmp_results = st.session_state['cmp_results']
+                df_cmp = pd.DataFrame([{
+                    'Mã':          r['ticker'],
+                    'Thị Giá':     r['price'],
+                    'AI T+3 (%)':  r['ai'],
+                    'RS Rating':   r['rs'],
+                    'RSI':         r['rsi'],
+                    'Kỹ Thuật':    f"{r['tech']}/10",
+                    'Winrate':     f"{r['winrate']}%",
+                    'Kỳ Vọng':     f"{r['expectancy']:+.2f}%",
+                    'Sharpe':      r['sharpe'],
+                    'Max DD':      f"{r['max_dd']:.1f}%",
+                    'Weekly':      _weekly_badge(r['weekly']),
+                    'Chân Sóng':   f"✅ {r['wave_score']}/11" if r['wave_score'] >= 4 else f"{r['wave_score']}/11",
+                    'Điểm TH':     r['composite'],
+                } for r in cmp_results])
+                st.dataframe(
+                    df_cmp,
+                    use_container_width=True,
+                    column_config={
+                        "AI T+3 (%)": st.column_config.ProgressColumn("AI T+3", min_value=0, max_value=100, format="%.1f%%"),
+                        "RS Rating":  st.column_config.ProgressColumn("RS Rating", min_value=0, max_value=100, format="%.0f"),
+                        "Điểm TH":    st.column_config.ProgressColumn("Điểm TH", min_value=0, max_value=100, format="%.0f"),
+                    },
+                    hide_index=True,
+                )
+                # Highlight mã tốt nhất
+                best_m = cmp_results[0]
+                st.success(f"🏆 **Mã tốt nhất:** {best_m['ticker']} — Điểm tổng hợp {best_m['composite']:.0f} | AI {best_m['ai']:.1f}% | Winrate {best_m['winrate']}%")
+
+            st.divider()
+
+            # ── [F] CORRELATION MATRIX ──
+            st.write("### 🔗 Ma Trận Tương Quan Chéo")
+            corr_input = st.text_input(
+                "Nhập các mã để tính tương quan (cách nhau bởi dấu phẩy):",
+                placeholder="VD: FPT, ACB, HPG, VNM, SSI",
+                key="corr_input"
+            )
+            if st.button("📐 Tính Tương Quan", key="corr_btn") and corr_input:
+                tickers_corr = [t.strip().upper() for t in corr_input.split(',') if t.strip()]
+                if ticker not in tickers_corr:
+                    tickers_corr.insert(0, ticker)
+                tickers_corr = tickers_corr[:8]   # max 8 mã
+                with st.spinner("Đang tính ma trận tương quan..."):
+                    corr_matrix = calc_correlation_matrix(tickers_corr)
+                st.session_state['corr_matrix'] = corr_matrix
+
+            if st.session_state.get('corr_matrix') is not None:
+                corr_matrix = st.session_state['corr_matrix']
+                # Heatmap
+                import plotly.figure_factory as ff
+                fig_corr_heat = go.Figure(go.Heatmap(
+                    z=corr_matrix.values,
+                    x=corr_matrix.columns.tolist(),
+                    y=corr_matrix.index.tolist(),
+                    colorscale='RdYlGn',
+                    zmid=0, zmin=-1, zmax=1,
+                    text=corr_matrix.values.round(2),
+                    texttemplate="%{text}",
+                    showscale=True,
+                ))
+                fig_corr_heat.update_layout(
+                    height=400, template='plotly_white',
+                    title="Ma Trận Tương Quan (63 phiên) — Xanh = đồng chiều | Đỏ = ngược chiều",
+                    margin=dict(l=20, r=20, t=50, b=20),
+                )
+                st.plotly_chart(fig_corr_heat, use_container_width=True)
+
+                # Đọc vị
+                st.write("#### 📝 Phân Tích Rủi Ro Tập Trung")
+                high_corr_pairs = []
+                cols_c = corr_matrix.columns.tolist()
+                for i in range(len(cols_c)):
+                    for j in range(i+1, len(cols_c)):
+                        c = corr_matrix.iloc[i,j]
+                        if abs(c) >= 0.7:
+                            high_corr_pairs.append((cols_c[i], cols_c[j], c))
+                if high_corr_pairs:
+                    for a, b, c in high_corr_pairs:
+                        if c >= 0.7:
+                            st.warning(f"⚠️ **{a} & {b}** tương quan cao ({c:.2f}) — nắm cả 2 không giúp đa dạng hóa rủi ro.")
+                        else:
+                            st.info(f"🔄 **{a} & {b}** tương quan âm ({c:.2f}) — 2 mã này có thể dùng để hedge nhau.")
+                else:
+                    st.success("✅ Không có cặp nào tương quan quá cao — danh mục đang được đa dạng hóa tốt.")
+
 # ==============================================================================
 # TAB 2: TÀI CHÍNH & CANSLIM
 # ==============================================================================
@@ -2804,9 +3172,52 @@ with tab4:
                 )
 
     st.divider()
-    col_quick, col_full = st.columns(2)
+    col_quick, col_full, col_fast = st.columns(3)
     run_quick = col_quick.button("⚡ Quét Nhanh (150 mã HOSE)")
     run_full  = col_full.button("🔭 Quét Toàn HOSE (~400 mã) — mất ~15 phút")
+    run_fast  = col_fast.button("🏃 Điểm Danh Siêu Nhanh (không AI) — ~3 phút")
+
+    if run_fast:
+        scan_list = list(dict.fromkeys(tickers))[:RADAR_MAX_FULL]
+        st.caption(f"🏃 Điểm danh nhanh {len(scan_list)} mã (RSI + Vol + MA20, không AI)...")
+        progress_f = st.progress(0)
+        fast_tiem  = []
+        fast_tang  = []
+        fast_co_hoi= []
+        for i, t in enumerate(scan_list):
+            try:
+                df_f = get_price(t, days=60)
+                if not valid(df_f): continue
+                df_f  = calc_indicators(df_f)
+                label = classify_stock_fast(df_f)
+                if not label: continue
+                last_f = df_f.iloc[-1]
+                row_f = {
+                    'Ticker':  t,
+                    'Thị Giá': f"{last_f['close']:,.0f}",
+                    'RSI':     round(float(last_f['rsi']), 1),
+                    'Vol':     f"{last_f['vol_strength']:.2f}x",
+                    'MA20':    "Trên ✓" if last_f['close'] > last_f['ma20'] else "Dưới ⚠️",
+                    'ADX':     round(float(last_f.get('adx',0)), 1),
+                }
+                if "Bùng Nổ"  in label: fast_tiem.append(row_f)
+                elif "Tiềm Năng" in label: fast_co_hoi.append(row_f)
+                elif "Tăng Mạnh" in label: fast_tang.append(row_f)
+            except Exception: pass
+            progress_f.progress((i+1)/len(scan_list))
+
+        st.success(f"✅ Xong! 🚀 {len(fast_tiem)} bùng nổ | 🌊 {len(fast_co_hoi)} tiềm năng | 🔥 {len(fast_tang)} tăng mạnh")
+        for title, lst, cap in [
+            ("🚀 Bùng Nổ", fast_tiem, "Vol nổ mạnh"),
+            ("🌊 Tiềm Năng (Chân Sóng sơ bộ)", fast_co_hoi, "RSI + MA20 + Vol hợp lệ — chạy Quét Đầy Đủ để xác nhận AI"),
+            ("🔥 Đang Tăng Mạnh", fast_tang, "RSI 65-80"),
+        ]:
+            if lst:
+                st.write(f"#### {title}")
+                st.caption(cap)
+                st.dataframe(pd.DataFrame(lst), use_container_width=True, hide_index=True)
+        st.info("💡 Đây là kết quả sơ bộ **không có AI**. Dùng **Quét Nhanh** để phân tích đầy đủ các mã tiềm năng.")
+        st.stop()
 
     if run_quick or run_full:
         max_scan = RADAR_MAX_FULL if run_full else RADAR_MAX
