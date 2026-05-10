@@ -1,5 +1,5 @@
 # ==============================================================================
-# QUANT SYSTEM V23.0 - THE PREDATOR LEVIATHAN SUPREME
+# QUANT SYSTEM V30.0 - THE PREDATOR LEVIATHAN SUPREME
 # Tác giả: Minh
 # V22: ATR Stop | ADX+OBV | Kelly | Cache AI | Sharpe+MaxDD | Radar Display
 # V23: RS Rating | RSI/MACD Divergence | Market Breadth | VWAP | 52W High
