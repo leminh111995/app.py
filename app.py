@@ -1,5 +1,5 @@
 # ==============================================================================
-# QUANT SYSTEM V30.0 - THE PREDATOR LEVIATHAN SUPREME
+# QUANT SYSTEM V23.0 - THE PREDATOR LEVIATHAN SUPREME
 # Tác giả: Minh
 # V22: ATR Stop | ADX+OBV | Kelly | Cache AI | Sharpe+MaxDD | Radar Display
 # V23: RS Rating | RSI/MACD Divergence | Market Breadth | VWAP | 52W High
@@ -728,13 +728,10 @@ def _run_xgb(df: pd.DataFrame) -> float | str:
 # 6. BACKTEST — Có Sharpe + Max Drawdown [NÂNG CẤP #14]
 # ==============================================================================
 def run_backtest(df: pd.DataFrame) -> dict:
-    """
-    [NÂNG CẤP #3]  Backtest có phí + slippage.
-    [NÂNG CẤP #14] Thêm Sharpe Ratio và Max Drawdown.
-    """
-    signals = wins = 0
+    wins = 0
     profits = []
-    n       = len(df)
+    signals_data = []   # chi tiết từng lệnh cho equity curve + chart markers
+    n = len(df)
     for i in range(100, n - BT_DAYS_FWD):
         rsi_ok     = df['rsi'].iloc[i] < BT_RSI_BUY
         macd_cross = (
@@ -743,54 +740,47 @@ def run_backtest(df: pd.DataFrame) -> dict:
         )
         if not (rsi_ok and macd_cross):
             continue
-        signals += 1
         buy_price = df['close'].iloc[i] * (1 + SLIPPAGE)
         target    = buy_price * (1 + BT_PROFIT)
         sl_price  = buy_price * (1 - SL_PCT)
         future    = df['close'].iloc[i+1 : i+1+BT_DAYS_FWD]
-        hit_tp = any(future >= target)
-        hit_sl = any(future <= sl_price)
+        hit_tp    = any(future >= target)
+        hit_sl    = any(future <= sl_price)
+        date_i    = df['date'].iloc[i] if 'date' in df.columns else i
         if hit_tp:
-            profits.append(BT_PROFIT - ROUND_TRIP_COST)
-            wins += 1
+            p = BT_PROFIT - ROUND_TRIP_COST
+            profits.append(p); wins += 1
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'WIN',  'pnl': p})
         elif hit_sl:
-            profits.append(-SL_PCT - ROUND_TRIP_COST)
+            p = -SL_PCT - ROUND_TRIP_COST
+            profits.append(p)
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'LOSS', 'pnl': p})
         else:
             exit_price = future.iloc[-1] if len(future) > 0 else buy_price
-            gross      = (exit_price - buy_price) / buy_price
-            profits.append(gross - ROUND_TRIP_COST)
+            p = (exit_price - buy_price) / buy_price - ROUND_TRIP_COST
+            profits.append(p)
+            signals_data.append({'date': date_i, 'price': buy_price, 'result': 'HOLD', 'pnl': p})
 
     if not profits:
-        return {
-            'winrate': 0.0, 'avg_profit': 0.0, 'avg_loss': 0.0,
-            'expectancy': 0.0, 'signals': 0,
-            'sharpe': 0.0, 'max_drawdown': 0.0,     # [NÂNG CẤP #14]
-        }
+        return {'winrate':0.0,'avg_profit':0.0,'avg_loss':0.0,'expectancy':0.0,
+                'signals':0,'sharpe':0.0,'max_drawdown':0.0,'profits':[],'signals_data':[]}
 
-    winrate    = round((wins / signals) * 100, 1) if signals else 0.0
+    winrate    = round((wins / len(profits)) * 100, 1)
     avg_profit = round(np.mean([p for p in profits if p > 0]) * 100, 2) if any(p > 0 for p in profits) else 0.0
     avg_loss   = round(np.mean([p for p in profits if p < 0]) * 100, 2) if any(p < 0 for p in profits) else 0.0
     expectancy = round(np.mean(profits) * 100, 2)
-
-    # [NÂNG CẤP #14] Sharpe Ratio
-    rf_daily = 0.045 / 252          # lãi suất phi rủi ro VN ~4.5%/năm
-    excess   = np.array(profits) - rf_daily
-    sharpe   = round((excess.mean() / (excess.std() + 1e-9)) * np.sqrt(252 / BT_DAYS_FWD), 2)
-
-    # [NÂNG CẤP #14] Max Drawdown
-    equity      = np.cumprod([1 + p for p in profits])
-    rolling_max = np.maximum.accumulate(equity)
-    drawdowns   = (equity - rolling_max) / rolling_max
-    max_dd      = round(drawdowns.min() * 100, 2)
+    rf_daily   = 0.045 / 252
+    excess     = np.array(profits) - rf_daily
+    sharpe     = round((excess.mean() / (excess.std() + 1e-9)) * np.sqrt(252 / BT_DAYS_FWD), 2)
+    equity     = np.cumprod([1 + p for p in profits])
+    rolling_max= np.maximum.accumulate(equity)
+    max_dd     = round(((equity - rolling_max) / rolling_max).min() * 100, 2)
 
     return {
-        'winrate':      winrate,
-        'avg_profit':   avg_profit,
-        'avg_loss':     avg_loss,
-        'expectancy':   expectancy,
-        'signals':      signals,
-        'sharpe':       sharpe,          # [NÂNG CẤP #14]
-        'max_drawdown': max_dd,          # [NÂNG CẤP #14]
+        'winrate': winrate, 'avg_profit': avg_profit, 'avg_loss': avg_loss,
+        'expectancy': expectancy, 'signals': len(profits),
+        'sharpe': sharpe, 'max_drawdown': max_dd,
+        'profits': profits, 'signals_data': signals_data,
     }
 
 # ==============================================================================
@@ -1887,7 +1877,20 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: ROBOT ADVISOR
 # ==============================================================================
 with tab1:
-    if st.button(f"⚡ TIẾN HÀNH PHÂN TÍCH ĐỊNH LƯỢNG TOÀN DIỆN MÃ {ticker}"):
+    # [#7] Hiển thị kết quả cũ nếu đã phân tích (giữ khi switch tab)
+    if st.session_state.get('tab1_ticker') == ticker and st.session_state.get('tab1_done'):
+        st.info(f"💾 Đang hiển thị kết quả phân tích đã lưu cho **{ticker}**. Bấm nút bên dưới để phân tích lại.")
+
+    col_btn, col_clear = st.columns([3, 1])
+    with col_btn:
+        run_analysis = st.button(f"⚡ TIẾN HÀNH PHÂN TÍCH ĐỊNH LƯỢNG TOÀN DIỆN MÃ {ticker}")
+    with col_clear:
+        if st.button("🗑️ Xóa kết quả cũ"):
+            st.session_state.pop('tab1_done', None)
+            st.session_state.pop('tab1_ticker', None)
+            st.rerun()
+
+    if run_analysis:
         with st.spinner(f"Đang đồng bộ dữ liệu đa tầng cho {ticker}..."):
             df_raw = get_price(ticker)
             if not valid(df_raw):
@@ -2113,7 +2116,6 @@ with tab1:
                       delta="Dương ✓" if bt['expectancy'] > 0 else "Âm ⚠️",
                       delta_color="normal" if bt['expectancy'] > 0 else "inverse")
 
-            # [NÂNG CẤP #14] Hàng 2 — Sharpe + MaxDD
             b5, b6, b7, b8 = st.columns(4)
             b5.metric("📈 Sharpe Ratio", f"{bt['sharpe']:.2f}",
                       delta="Tốt (>1)" if bt['sharpe'] > 1 else ("OK (>0)" if bt['sharpe'] > 0 else "Âm ⚠️"),
@@ -2125,10 +2127,76 @@ with tab1:
             b8.metric("💰 Kelly Size",    f"{kelly_pct}% vốn",
                       delta="Half-Kelly", delta_color="off")
 
-            st.caption(
-                f"📊 {bt['signals']} tín hiệu | Phí: {ROUND_TRIP_COST*100:.2f}%/lệnh | "
-                f"ATR SL động | Sharpe tính trên lãi suất phi rủi ro VN ~4.5%/năm"
-            )
+            # ── #1 EQUITY CURVE + #5 SIGNAL MARKERS ──
+            profits_list  = bt.get('profits', [])
+            signals_data  = bt.get('signals_data', [])
+            if profits_list:
+                equity_curve = np.cumprod([1 + p for p in profits_list]) * 100
+
+                fig_bt = make_subplots(rows=2, cols=1, shared_xaxes=False,
+                                       vertical_spacing=0.1, row_heights=[0.6, 0.4],
+                                       subplot_titles=["📈 Equity Curve (vốn tích lũy)",
+                                                        "🎯 Tín Hiệu Mua trên Biểu Đồ Giá"])
+
+                # Equity Curve
+                x_eq = list(range(1, len(equity_curve)+1))
+                fig_bt.add_trace(go.Scatter(
+                    x=x_eq, y=equity_curve,
+                    fill='tozeroy',
+                    fillcolor='rgba(0,200,100,0.15)',
+                    line=dict(color='green' if equity_curve[-1] >= 100 else 'red', width=2),
+                    name='Vốn tích lũy',
+                ), row=1, col=1)
+                fig_bt.add_hline(y=100, line_dash='dot', line_color='gray',
+                                  annotation_text="Vốn ban đầu", row=1, col=1)
+                # Đánh dấu lỗ
+                loss_x = [i+1 for i,p in enumerate(profits_list) if p < 0]
+                loss_y = [equity_curve[i] for i in loss_x if i < len(equity_curve)]
+                if loss_x:
+                    fig_bt.add_trace(go.Scatter(
+                        x=[i+1 for i,p in enumerate(profits_list) if p < 0],
+                        y=[equity_curve[i] for i,p in enumerate(profits_list) if p < 0],
+                        mode='markers', marker=dict(color='red', size=6, symbol='x'),
+                        name='Lệnh lỗ',
+                    ), row=1, col=1)
+
+                # Signal markers trên biểu đồ giá
+                chart_bt = df.tail(CHART_DAYS)
+                fig_bt.add_trace(go.Scatter(
+                    x=chart_bt['date'], y=chart_bt['close'],
+                    line=dict(color='gray', width=1.5), name='Giá đóng cửa',
+                ), row=2, col=1)
+                if signals_data:
+                    # Chỉ lấy signals trong CHART_DAYS gần nhất
+                    chart_dates = set(chart_bt['date'].astype(str).str[:10].tolist())
+                    for sig in signals_data:
+                        d = str(sig['date'])[:10]
+                        if d not in chart_dates:
+                            continue
+                        color_m = 'green' if sig['result']=='WIN' else ('red' if sig['result']=='LOSS' else 'orange')
+                        symbol_m= 'triangle-up' if sig['result']=='WIN' else 'triangle-down'
+                        fig_bt.add_trace(go.Scatter(
+                            x=[d], y=[sig['price']],
+                            mode='markers',
+                            marker=dict(color=color_m, size=12, symbol=symbol_m),
+                            name=f"{sig['result']} {sig['pnl']*100:+.1f}%",
+                            showlegend=False,
+                        ), row=2, col=1)
+
+                fig_bt.update_layout(
+                    height=600, template='plotly_white',
+                    margin=dict(l=20, r=20, t=50, b=20),
+                    showlegend=True,
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                )
+                fig_bt.update_yaxes(title_text="% Vốn", row=1, col=1)
+                fig_bt.update_yaxes(title_text="Giá",   row=2, col=1)
+                st.plotly_chart(fig_bt, use_container_width=True)
+                st.caption(
+                    f"🟢 Tam giác xanh = lệnh thắng | 🔴 Tam giác đỏ = lệnh thua | 🟠 = hết kỳ hạn | "
+                    f"Phí: {ROUND_TRIP_COST*100:.2f}%/lệnh"
+                )
+
             st.divider()
 
             # --- Chỉ số kỹ thuật ---
@@ -2301,6 +2369,10 @@ with tab1:
             fig.update_yaxes(title_text="ADX", row=3, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
+            # [#7] Lưu flag để giữ kết quả khi switch tab
+            st.session_state['tab1_done']   = True
+            st.session_state['tab1_ticker'] = ticker
+
 # ==============================================================================
 # TAB 2: TÀI CHÍNH & CANSLIM
 # ==============================================================================
@@ -2336,6 +2408,141 @@ with tab2:
             else:                    roe_label, roe_color = "🚨 Dưới Chuẩn (< 15%)", "inverse"
             c2.metric("ROE (Sinh Lời Trên Vốn)", f"{roe:.1%}", delta=roe_label, delta_color=roe_color)
         st.write("> **ROE:** Phải ≥ 15% mới đáng xem xét đầu tư dài hạn.")
+
+        st.divider()
+
+        # ── [#6] Biểu đồ PE/ROE xu hướng + Trading Stats ──
+        st.write("### 📊 Dữ Liệu Thị Trường Chi Tiết")
+        try:
+            stk_fin = Vnstock().stock(symbol=ticker, source='VCI')
+            df_ts   = stk_fin.company.trading_stats()
+            if valid(df_ts):
+                row_ts = df_ts.iloc[0]
+                f1, f2, f3, f4 = st.columns(4)
+                hi52 = float(row_ts.get('highest_price1_year', 0) or 0)
+                lo52 = float(row_ts.get('lowest_price1_year',  0) or 0)
+                ff   = float(row_ts.get('free_float_percentage', 0) or 0) * 100
+                fr   = float(row_ts.get('foreigner_percentage',  0) or 0) * 100
+                fr_max = float(row_ts.get('maximum_foreign_percentage', 0) or 0) * 100
+                avg_val = float(row_ts.get('average_match_value1_month', 0) or 0)
+                f1.metric("Đỉnh 52 Tuần",   f"{hi52:,.0f}")
+                f2.metric("Đáy 52 Tuần",    f"{lo52:,.0f}")
+                f3.metric("Free Float",     f"{ff:.1f}%",
+                          delta="Thanh khoản tốt ✓" if ff > 30 else "Cổ phiếu khó mua",
+                          delta_color="normal" if ff > 30 else "off")
+                f4.metric("Room Ngoại còn", f"{max(0, fr_max-fr):.1f}%",
+                          delta=f"Đang sở hữu {fr:.1f}%", delta_color="off")
+                st.metric("Giá trị khớp TB 1 tháng", f"{to_billion(avg_val):.1f} Tỷ/phiên")
+        except Exception:
+            pass
+
+        st.divider()
+
+        # ── [#8] WYCKOFF MARKET REGIME ──
+        st.write("### 🔄 Phân Tích Wyckoff — Giai Đoạn Thị Trường")
+        df_wy = get_price(ticker, days=200)
+        if valid(df_wy):
+            df_wy   = calc_indicators(df_wy)
+            last_wy = df_wy.iloc[-1]
+            price_wy= last_wy['close']
+            ma20_wy = last_wy['ma20']
+            ma50_wy = last_wy['ma50']
+            vol_wy  = last_wy['vol_strength']
+            rsi_wy  = last_wy['rsi']
+            obv_z_wy= last_wy.get('obv_zscore', 0)
+            adx_wy  = last_wy.get('adx', 0)
+
+            # Tính slope MA50 (xu hướng 50 phiên)
+            ma50_slope = (df_wy['ma50'].iloc[-1] - df_wy['ma50'].iloc[-20]) / (df_wy['ma50'].iloc[-20] + 1e-9) * 100
+
+            # Xác định giai đoạn Wyckoff
+            if price_wy > ma50_wy and ma50_slope > 1 and adx_wy > 20 and rsi_wy > 50:
+                phase = "📈 MARKUP — Giai Đoạn Tăng Chính"
+                phase_color = "success"
+                phase_desc = (
+                    "Giá đang trong xu hướng tăng mạnh có xác nhận. "
+                    "MA50 dốc lên, ADX > 20, RSI > 50. "
+                    "**Chiến lược: Mua trên nền + giữ, cắt lỗ theo ATR.**"
+                )
+            elif price_wy > ma20_wy and ma50_slope > 0 and rsi_wy < 65 and vol_wy < VOL_BREAKOUT:
+                phase = "🏗️ ACCUMULATION — Giai Đoạn Tích Lũy"
+                phase_color = "info"
+                phase_desc = (
+                    "Giá đang tích lũy nền sau đà giảm hoặc sideway. "
+                    "Vol thấp, giá ổn định trên MA20. "
+                    "**Chiến lược: Mua từng phần, chờ Vol nổ xác nhận breakout.**"
+                )
+            elif price_wy < ma50_wy and ma50_slope < -1 and rsi_wy < 45:
+                phase = "📉 MARKDOWN — Giai Đoạn Giảm Chính"
+                phase_color = "error"
+                phase_desc = (
+                    "Giá đang trong xu hướng giảm có xác nhận. "
+                    "MA50 dốc xuống, RSI < 45. "
+                    "**Chiến lược: Đứng ngoài hoặc short. Không bắt đáy sớm.**"
+                )
+            else:
+                phase = "🔄 DISTRIBUTION — Giai Đoạn Phân Phối / Chuyển Tiếp"
+                phase_color = "warning"
+                phase_desc = (
+                    "Giá đang ở vùng chuyển tiếp — chưa rõ xu hướng tiếp theo. "
+                    "Có thể đỉnh phân phối hoặc tích lũy đáy. "
+                    "**Chiến lược: Quan sát Vol và OBV để xác nhận hướng.**"
+                )
+
+            wy1, wy2, wy3 = st.columns(3)
+            wy1.metric("Slope MA50 (20 phiên)", f"{ma50_slope:+.2f}%",
+                       delta="Dốc lên ✓" if ma50_slope > 0 else "Dốc xuống ⚠️",
+                       delta_color="normal" if ma50_slope > 0 else "inverse")
+            wy2.metric("OBV Z-Score", f"{obv_z_wy:.2f}",
+                       delta="Tích lũy ✓" if obv_z_wy > 0.5 else ("Phân phối ⚠️" if obv_z_wy < -0.5 else "Trung lập"),
+                       delta_color="normal" if obv_z_wy > 0.5 else ("inverse" if obv_z_wy < -0.5 else "off"))
+            wy3.metric("ADX (Sức mạnh)", f"{adx_wy:.1f}",
+                       delta="Xu hướng rõ ✓" if adx_wy > 25 else "Sideways",
+                       delta_color="normal" if adx_wy > 25 else "off")
+
+            st.markdown(f"### {phase}")
+            if phase_color == "success":   st.success(phase_desc)
+            elif phase_color == "info":    st.info(phase_desc)
+            elif phase_color == "error":   st.error(phase_desc)
+            else:                          st.warning(phase_desc)
+
+            # Mini chart Volume profile (bar ngang)
+            st.write("#### 📊 Volume Profile — Vùng Giá Giao Dịch Nhiều Nhất")
+            df_vp = df_wy.tail(60).copy()
+            price_min = df_vp['low'].min()
+            price_max = df_vp['high'].max()
+            bins = np.linspace(price_min, price_max, 20)
+            vol_at_price = np.zeros(len(bins)-1)
+            for _, row_vp in df_vp.iterrows():
+                for b in range(len(bins)-1):
+                    if bins[b] <= row_vp['close'] < bins[b+1]:
+                        vol_at_price[b] += row_vp['volume']
+                        break
+            price_labels = [f"{(bins[i]+bins[i+1])/2:,.0f}" for i in range(len(bins)-1)]
+            poc_idx = int(np.argmax(vol_at_price))   # Point of Control
+            colors_vp = ['rgba(255,80,80,0.7)' if i == poc_idx else 'rgba(100,149,237,0.5)'
+                         for i in range(len(vol_at_price))]
+            fig_vp = go.Figure(go.Bar(
+                x=vol_at_price, y=price_labels, orientation='h',
+                marker_color=colors_vp, name='Volume tại giá',
+            ))
+            fig_vp.add_annotation(
+                x=vol_at_price[poc_idx], y=price_labels[poc_idx],
+                text=f"POC: {price_labels[poc_idx]} (giao dịch nhiều nhất)",
+                showarrow=True, arrowhead=2, font=dict(color='red', size=11),
+            )
+            fig_vp.update_layout(
+                height=350, template='plotly_white',
+                title="Volume Profile 60 phiên — Đỏ = Point of Control (hỗ trợ/kháng cự mạnh nhất)",
+                xaxis_title="Khối lượng", yaxis_title="Vùng giá",
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(fig_vp, use_container_width=True)
+            st.caption(
+                f"💡 **POC (Point of Control):** {price_labels[poc_idx]} — "
+                "vùng giá được giao dịch nhiều nhất trong 60 phiên. "
+                "Thường là vùng hỗ trợ/kháng cự mạnh nhất."
+            )
 
 # ==============================================================================
 # TAB 3: DÒNG TIỀN THÔNG MINH
@@ -2622,6 +2829,81 @@ with tab3:
 
     st.divider()
 
+    # ── [#2] OBV & VOLUME PATTERN NÂNG CAO ──
+    st.write("### 📊 OBV & Volume Pattern — Dòng Tiền Thực Từ Price Data")
+    st.caption("Phân tích dựa trên dữ liệu giá/khối lượng thực — không phụ thuộc API dòng tiền.")
+    df_obv2 = get_price(ticker, days=60)
+    if valid(df_obv2):
+        df_obv2 = calc_indicators(df_obv2)
+        last_o  = df_obv2.iloc[-1]
+
+        o1, o2, o3, o4 = st.columns(4)
+        obv_z = last_o.get('obv_zscore', 0)
+        vol_s = last_o['vol_strength']
+        pv    = last_o.get('pv_trend', 0)
+        adx_o = last_o.get('adx', 0)
+
+        o1.metric("OBV Z-Score", f"{obv_z:.2f}",
+                  delta="Dòng tiền vào ✓" if obv_z > 0.5 else ("Dòng tiền ra ⚠️" if obv_z < -0.5 else "Trung lập"),
+                  delta_color="normal" if obv_z > 0.5 else ("inverse" if obv_z < -0.5 else "off"))
+        o2.metric("Vol Strength", f"{vol_s:.2f}x",
+                  delta="Bùng nổ ✓" if vol_s > 1.3 else "Bình thường",
+                  delta_color="normal" if vol_s > 1.3 else "off")
+        o3.metric("Price-Volume Trend", "📈 Thuận" if pv > 0 else ("📉 Nghịch" if pv < 0 else "Trung lập"),
+                  delta_color="off")
+        o4.metric("ADX", f"{adx_o:.1f}",
+                  delta="Xu hướng mạnh ✓" if adx_o > 25 else "Sideways",
+                  delta_color="normal" if adx_o > 25 else "off")
+
+        # OBV chart vs Price
+        fig_obv = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                vertical_spacing=0.05, row_heights=[0.5, 0.5])
+        x_obv = df_obv2['date']
+        fig_obv.add_trace(go.Scatter(
+            x=x_obv, y=df_obv2['close'],
+            line=dict(color='royalblue', width=2), name='Giá'
+        ), row=1, col=1)
+        fig_obv.add_trace(go.Scatter(
+            x=x_obv, y=df_obv2['obv'],
+            line=dict(color='green', width=1.5), name='OBV',
+            fill='tozeroy', fillcolor='rgba(0,200,0,0.1)',
+        ), row=2, col=1)
+        # OBV trend line (rolling mean)
+        obv_trend = df_obv2['obv'].rolling(10).mean()
+        fig_obv.add_trace(go.Scatter(
+            x=x_obv, y=obv_trend,
+            line=dict(color='red', width=1.5, dash='dot'), name='OBV MA10'
+        ), row=2, col=1)
+        fig_obv.update_layout(
+            height=400, template='plotly_white',
+            margin=dict(l=20, r=20, t=40, b=20),
+            title="OBV vs Giá — Giá tăng + OBV tăng = tích lũy thật. Giá tăng + OBV giảm = phân phối.",
+        )
+        st.plotly_chart(fig_obv, use_container_width=True)
+
+        # Volume pattern phân tích
+        df_obv2['vol_category'] = pd.cut(
+            df_obv2['vol_strength'],
+            bins=[0, 0.8, 1.3, 2.0, 99],
+            labels=['Thấp', 'Bình thường', 'Cao', 'Rất cao']
+        )
+        recent = df_obv2.tail(20)
+        high_vol_green = ((recent['vol_strength'] > 1.3) & (recent['return_1d'] > 0)).sum()
+        high_vol_red   = ((recent['vol_strength'] > 1.3) & (recent['return_1d'] < 0)).sum()
+        vp1, vp2 = st.columns(2)
+        vp1.metric("Vol cao + Nến xanh (20 phiên)", f"{high_vol_green} phiên",
+                   delta="Tích lũy mạnh ✓" if high_vol_green > high_vol_red else "Không chiếm ưu thế",
+                   delta_color="normal" if high_vol_green > high_vol_red else "off")
+        vp2.metric("Vol cao + Nến đỏ (20 phiên)", f"{high_vol_red} phiên",
+                   delta="Phân phối ⚠️" if high_vol_red > high_vol_green else "Ít",
+                   delta_color="inverse" if high_vol_red > high_vol_green else "off")
+        if high_vol_green > high_vol_red * 1.5:
+            st.success("✅ **Tín hiệu tích lũy rõ:** Vol lớn chủ yếu đi kèm nến xanh → smart money đang gom.")
+        elif high_vol_red > high_vol_green * 1.5:
+            st.error("🔴 **Tín hiệu phân phối:** Vol lớn chủ yếu đi kèm nến đỏ → smart money đang xả.")
+        else:
+            st.info("🟡 Chưa có tín hiệu rõ ràng từ Volume Pattern.")
+
 
 # ==============================================================================
 # TAB 4: RADAR TRUY QUÉT
@@ -2806,6 +3088,20 @@ with tab4:
         st.divider()
         render_radar_summary_banner(breakouts, sell_dumps, watchlist, wave_bottom, watch_zone, running_strong)
         st.divider()
+
+        # [#3] Sắp xếp theo điểm tổng hợp (AI + RS + đảo ngược RSI)
+        def _sort_score(row: dict) -> float:
+            ai  = float(row['AI T+3 Raw']) if _is_valid_score(row['AI T+3 Raw']) else 0
+            rs  = row.get('RS Raw', 50)
+            rsi = row.get('RSI Raw', 50)
+            vol = row.get('Vol Raw', 1)
+            adx = row.get('ADX Raw', 0)
+            # RSI lý tưởng là 35-52 → điểm cao nhất ở giữa khoảng đó
+            rsi_score = max(0, 100 - abs(rsi - 44) * 3)
+            return ai * 0.4 + rs * 0.2 + rsi_score * 0.2 + min(vol, 2) * 10 + adx * 0.2
+
+        for lst in [breakouts, sell_dumps, watchlist, wave_bottom, watch_zone, running_strong]:
+            lst.sort(key=_sort_score, reverse=True)
 
         use_cards = "Card" in view_mode
 
