@@ -2402,162 +2402,144 @@ with tab1:
             fig.update_yaxes(title_text="ADX", row=3, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
-            # [#7] Lưu flag để giữ kết quả khi switch tab
+            # [#7] Lưu flag + dữ liệu để render phần phụ độc lập
             st.session_state['tab1_done']   = True
             st.session_state['tab1_ticker'] = ticker
+            st.session_state['tab1_df']     = df
+            st.session_state['tab1_bt2']    = run_backtest_v2(df)
 
-            st.divider()
+    # ── PHẦN PHỤ: Render ĐỘC LẬP — không cần bấm lại nút phân tích ──
+    if st.session_state.get('tab1_done') and st.session_state.get('tab1_ticker') == ticker:
+        df_cached = st.session_state.get('tab1_df')
+        bt2       = st.session_state.get('tab1_bt2', {})
 
-            # ── [A] BACKTEST V2 — Tín hiệu thực tế hơn ──
-            st.write("### 🔬 Backtest V2 — Tín Hiệu Thực Tế (RSI+MA20+Vol+MACD+ADX)")
-            with st.spinner("Đang chạy Backtest V2..."):
-                bt2 = run_backtest_v2(df)
-            if bt2['signals'] > 0:
-                bv1, bv2, bv3, bv4, bv5 = st.columns(5)
-                bv1.metric("Winrate V2",       f"{bt2['winrate']}%",
-                           delta=f"V1: {bt['winrate']}%", delta_color="normal" if bt2['winrate'] > bt['winrate'] else "inverse")
-                bv2.metric("Kỳ vọng V2",       f"{bt2['expectancy']:+.2f}%",
-                           delta=f"V1: {bt['expectancy']:+.2f}%", delta_color="normal" if bt2['expectancy'] > bt['expectancy'] else "inverse")
-                bv3.metric("Sharpe V2",        f"{bt2['sharpe']:.2f}")
-                bv4.metric("Max DD V2",        f"{bt2['max_drawdown']:.2f}%")
-                bv5.metric("Số lệnh V2",       f"{bt2['signals']}")
-                st.caption("V2 dùng tín hiệu: RSI 28-52 + Giá ≥ 95% MA20 + Vol 0.8-1.5x + MACD cross + ADX < 35 — phản ánh đúng cách hệ thống phân loại Tầng 2/3.")
-            else:
-                st.info("Chưa đủ tín hiệu V2 trong lịch sử dữ liệu.")
+        st.divider()
 
-            st.divider()
+        # ── [A] BACKTEST V2 ──
+        st.write("### 🔬 Backtest V2 — Tín Hiệu Thực Tế (RSI+MA20+Vol+MACD+ADX)")
+        if bt2 and bt2.get('signals', 0) > 0:
+            bv1, bv2, bv3, bv4, bv5 = st.columns(5)
+            bv1.metric("Winrate V2",  f"{bt2['winrate']}%")
+            bv2.metric("Kỳ vọng V2", f"{bt2['expectancy']:+.2f}%")
+            bv3.metric("Sharpe V2",  f"{bt2['sharpe']:.2f}")
+            bv4.metric("Max DD V2",  f"{bt2['max_drawdown']:.2f}%")
+            bv5.metric("Số lệnh V2", f"{bt2['signals']}")
+            st.caption("V2: RSI 28-52 + Giá ≥ 95% MA20 + Vol 0.8-1.5x + MACD cross + ADX < 35")
+        else:
+            st.info("Chưa đủ tín hiệu V2 trong lịch sử dữ liệu.")
 
-            # ── [B] WALK-FORWARD OPTIMIZATION ──
-            st.write("### ⚙️ Walk-Forward Optimization — Tham Số Tối Ưu Cho Mã Này")
-            if st.button(f"🔍 Tìm Tham Số Tối Ưu cho {ticker}", key="wfo_btn"):
-                with st.spinner("Đang grid search tham số... (~30 giây)"):
-                    wfo = walk_forward_optimize(df)
+        st.divider()
+
+        # ── [B] WALK-FORWARD OPTIMIZATION ──
+        st.write("### ⚙️ Walk-Forward Optimization — Tham Số Tối Ưu")
+        if st.button(f"🔍 Tìm Tham Số Tối Ưu cho {ticker}", key="wfo_btn"):
+            if df_cached is not None:
+                with st.spinner("Đang grid search... (~30 giây)"):
+                    wfo = walk_forward_optimize(df_cached)
                 st.session_state['wfo_result'] = wfo
                 st.session_state['wfo_ticker'] = ticker
-                st.rerun()
 
-            if st.session_state.get('wfo_ticker') == ticker and 'wfo_result' in st.session_state:
-                wfo = st.session_state['wfo_result']
-                w1, w2, w3, w4 = st.columns(4)
-                w1.metric("RSI Mua Tối Ưu",       f"< {wfo['rsi_buy']}", delta=f"Default: {BT_RSI_BUY}")
-                w2.metric("Target Profit Tối Ưu", f"{wfo['profit']*100:.0f}%", delta=f"Default: {BT_PROFIT*100:.0f}%")
-                w3.metric("Stop Loss Tối Ưu",     f"{wfo['sl']*100:.0f}%", delta=f"Default: {SL_PCT*100:.0f}%")
-                w4.metric("Kỳ Vọng/Lệnh",         f"{wfo['expectancy']:+.2f}%")
-                st.caption(f"Winrate train: {wfo.get('winrate_train',0):.1f}% | Số lệnh train: {wfo.get('signals_train',0)}")
-                if wfo['expectancy'] > 0:
-                    st.success(f"✅ Với tham số tối ưu, hệ thống kỳ vọng **+{wfo['expectancy']:.2f}%/lệnh** trên mã {ticker}.")
-                else:
-                    st.warning("⚠️ Không tìm được tham số có kỳ vọng dương — mã này khó giao dịch theo hệ thống hiện tại.")
+        if st.session_state.get('wfo_ticker') == ticker and 'wfo_result' in st.session_state:
+            wfo = st.session_state['wfo_result']
+            w1, w2, w3, w4 = st.columns(4)
+            w1.metric("RSI Mua Tối Ưu",       f"< {wfo['rsi_buy']}", delta=f"Default: {BT_RSI_BUY}")
+            w2.metric("Target Profit Tối Ưu", f"{wfo['profit']*100:.0f}%", delta=f"Default: {BT_PROFIT*100:.0f}%")
+            w3.metric("Stop Loss Tối Ưu",     f"{wfo['sl']*100:.0f}%",    delta=f"Default: {SL_PCT*100:.0f}%")
+            w4.metric("Kỳ Vọng/Lệnh",         f"{wfo['expectancy']:+.2f}%")
+            st.caption(f"Winrate train: {wfo.get('winrate_train',0):.1f}% | Số lệnh: {wfo.get('signals_train',0)}")
+            if wfo['expectancy'] > 0:
+                st.success(f"✅ Tham số tối ưu kỳ vọng **+{wfo['expectancy']:.2f}%/lệnh** cho {ticker}.")
+            else:
+                st.warning("⚠️ Không tìm được tham số có kỳ vọng dương.")
 
-            st.divider()
+        st.divider()
 
-            # ── [D] SO SÁNH NHIỀU MÃ ──
-            st.write("### 📊 So Sánh Nhiều Mã Cùng Lúc")
-            compare_input = st.text_input(
-                "Nhập các mã cần so sánh (cách nhau bởi dấu phẩy):",
-                placeholder="VD: FPT, ACB, HPG, MWG, SSI",
-                key="compare_input"
-            )
-            if st.button("⚡ So Sánh Ngay", key="compare_btn") and compare_input:
-                tickers_cmp = [t.strip().upper() for t in compare_input.split(',') if t.strip()]
-                if ticker not in tickers_cmp:
-                    tickers_cmp.insert(0, ticker)   # Luôn thêm mã hiện tại vào đầu
-                tickers_cmp = tickers_cmp[:6]        # Tối đa 6 mã
-                with st.spinner(f"Đang phân tích {len(tickers_cmp)} mã..."):
-                    cmp_results = compare_stocks(tickers_cmp)
-                st.session_state['cmp_results'] = cmp_results
-                st.rerun()
+        # ── [D] SO SÁNH NHIỀU MÃ ──
+        st.write("### 📊 So Sánh Nhiều Mã Cùng Lúc")
+        compare_input = st.text_input(
+            "Nhập các mã cần so sánh (cách nhau bởi dấu phẩy):",
+            placeholder="VD: FPT, ACB, HPG, MWG, SSI",
+            key="compare_input"
+        )
+        if st.button("⚡ So Sánh Ngay", key="compare_btn") and compare_input:
+            tickers_cmp = [t.strip().upper() for t in compare_input.split(',') if t.strip()]
+            if ticker not in tickers_cmp:
+                tickers_cmp.insert(0, ticker)
+            tickers_cmp = tickers_cmp[:6]
+            with st.spinner(f"Đang phân tích {len(tickers_cmp)} mã..."):
+                st.session_state['cmp_results'] = compare_stocks(tickers_cmp)
 
-            if st.session_state.get('cmp_results'):
-                cmp_results = st.session_state['cmp_results']
-                df_cmp = pd.DataFrame([{
-                    'Mã':          r['ticker'],
-                    'Thị Giá':     r['price'],
-                    'AI T+3 (%)':  r['ai'],
-                    'RS Rating':   r['rs'],
-                    'RSI':         r['rsi'],
-                    'Kỹ Thuật':    f"{r['tech']}/10",
-                    'Winrate':     f"{r['winrate']}%",
-                    'Kỳ Vọng':     f"{r['expectancy']:+.2f}%",
-                    'Sharpe':      r['sharpe'],
-                    'Max DD':      f"{r['max_dd']:.1f}%",
-                    'Weekly':      _weekly_badge(r['weekly']),
-                    'Chân Sóng':   f"✅ {r['wave_score']}/11" if r['wave_score'] >= 4 else f"{r['wave_score']}/11",
-                    'Điểm TH':     r['composite'],
-                } for r in cmp_results])
-                st.dataframe(
-                    df_cmp,
-                    use_container_width=True,
-                    column_config={
-                        "AI T+3 (%)": st.column_config.ProgressColumn("AI T+3", min_value=0, max_value=100, format="%.1f%%"),
-                        "RS Rating":  st.column_config.ProgressColumn("RS Rating", min_value=0, max_value=100, format="%.0f"),
-                        "Điểm TH":    st.column_config.ProgressColumn("Điểm TH", min_value=0, max_value=100, format="%.0f"),
-                    },
-                    hide_index=True,
-                )
-                # Highlight mã tốt nhất
-                best_m = cmp_results[0]
-                st.success(f"🏆 **Mã tốt nhất:** {best_m['ticker']} — Điểm tổng hợp {best_m['composite']:.0f} | AI {best_m['ai']:.1f}% | Winrate {best_m['winrate']}%")
+        if st.session_state.get('cmp_results'):
+            cmp_results = st.session_state['cmp_results']
+            df_cmp = pd.DataFrame([{
+                'Mã':         r['ticker'],
+                'Thị Giá':    r['price'],
+                'AI T+3 (%)': r['ai'],
+                'RS Rating':  r['rs'],
+                'RSI':        r['rsi'],
+                'Kỹ Thuật':   f"{r['tech']}/10",
+                'Winrate':    f"{r['winrate']}%",
+                'Kỳ Vọng':    f"{r['expectancy']:+.2f}%",
+                'Sharpe':     r['sharpe'],
+                'Max DD':     f"{r['max_dd']:.1f}%",
+                'Weekly':     _weekly_badge(r['weekly']),
+                'Chân Sóng':  f"✅{r['wave_score']}/11" if r['wave_score']>=4 else f"{r['wave_score']}/11",
+                'Điểm TH':    r['composite'],
+            } for r in cmp_results])
+            st.dataframe(df_cmp, use_container_width=True,
+                column_config={
+                    "AI T+3 (%)": st.column_config.ProgressColumn("AI T+3", min_value=0, max_value=100, format="%.1f%%"),
+                    "RS Rating":  st.column_config.ProgressColumn("RS", min_value=0, max_value=100, format="%.0f"),
+                    "Điểm TH":    st.column_config.ProgressColumn("Điểm TH", min_value=0, max_value=100, format="%.0f"),
+                }, hide_index=True)
+            best_m = cmp_results[0]
+            st.success(f"🏆 **Mã tốt nhất:** {best_m['ticker']} — Điểm {best_m['composite']:.0f} | AI {best_m['ai']:.1f}% | Winrate {best_m['winrate']}%")
 
-            st.divider()
+        st.divider()
 
-            # ── [F] CORRELATION MATRIX ──
-            st.write("### 🔗 Ma Trận Tương Quan Chéo")
-            corr_input = st.text_input(
-                "Nhập các mã để tính tương quan (cách nhau bởi dấu phẩy):",
-                placeholder="VD: FPT, ACB, HPG, VNM, SSI",
-                key="corr_input"
-            )
-            if st.button("📐 Tính Tương Quan", key="corr_btn") and corr_input:
-                tickers_corr = [t.strip().upper() for t in corr_input.split(',') if t.strip()]
-                if ticker not in tickers_corr:
-                    tickers_corr.insert(0, ticker)
-                tickers_corr = tickers_corr[:8]   # max 8 mã
-                with st.spinner("Đang tính ma trận tương quan..."):
-                    corr_matrix = calc_correlation_matrix(tickers_corr)
-                st.session_state['corr_matrix'] = corr_matrix
-                st.rerun()
+        # ── [F] CORRELATION MATRIX ──
+        st.write("### 🔗 Ma Trận Tương Quan Chéo")
+        corr_input = st.text_input(
+            "Nhập các mã để tính tương quan (cách nhau bởi dấu phẩy):",
+            placeholder="VD: FPT, ACB, HPG, VNM, SSI",
+            key="corr_input"
+        )
+        if st.button("📐 Tính Tương Quan", key="corr_btn") and corr_input:
+            tickers_corr = [t.strip().upper() for t in corr_input.split(',') if t.strip()]
+            if ticker not in tickers_corr:
+                tickers_corr.insert(0, ticker)
+            tickers_corr = tickers_corr[:8]
+            with st.spinner("Đang tính..."):
+                st.session_state['corr_matrix'] = calc_correlation_matrix(tickers_corr)
 
-            if st.session_state.get('corr_matrix') is not None:
-                corr_matrix = st.session_state['corr_matrix']
-                # Heatmap
-                import plotly.figure_factory as ff
-                fig_corr_heat = go.Figure(go.Heatmap(
-                    z=corr_matrix.values,
-                    x=corr_matrix.columns.tolist(),
-                    y=corr_matrix.index.tolist(),
-                    colorscale='RdYlGn',
-                    zmid=0, zmin=-1, zmax=1,
-                    text=corr_matrix.values.round(2),
-                    texttemplate="%{text}",
-                    showscale=True,
-                ))
-                fig_corr_heat.update_layout(
-                    height=400, template='plotly_white',
-                    title="Ma Trận Tương Quan (63 phiên) — Xanh = đồng chiều | Đỏ = ngược chiều",
-                    margin=dict(l=20, r=20, t=50, b=20),
-                )
-                st.plotly_chart(fig_corr_heat, use_container_width=True)
+        if st.session_state.get('corr_matrix') is not None:
+            corr_matrix = st.session_state['corr_matrix']
+            fig_ch = go.Figure(go.Heatmap(
+                z=corr_matrix.values,
+                x=corr_matrix.columns.tolist(),
+                y=corr_matrix.index.tolist(),
+                colorscale='RdYlGn', zmid=0, zmin=-1, zmax=1,
+                text=corr_matrix.values.round(2),
+                texttemplate="%{text}", showscale=True,
+            ))
+            fig_ch.update_layout(height=400, template='plotly_white',
+                title="Ma Trận Tương Quan (63 phiên) — Xanh=đồng chiều | Đỏ=ngược chiều",
+                margin=dict(l=20, r=20, t=50, b=20))
+            st.plotly_chart(fig_ch, use_container_width=True)
+            cols_c = corr_matrix.columns.tolist()
+            high_pairs = [(cols_c[i], cols_c[j], corr_matrix.iloc[i,j])
+                          for i in range(len(cols_c))
+                          for j in range(i+1, len(cols_c))
+                          if abs(corr_matrix.iloc[i,j]) >= 0.7]
+            if high_pairs:
+                for a, b, c in high_pairs:
+                    if c >= 0.7:
+                        st.warning(f"⚠️ **{a} & {b}** tương quan cao ({c:.2f}) — nắm cả 2 không đa dạng hóa rủi ro.")
+                    else:
+                        st.info(f"🔄 **{a} & {b}** tương quan âm ({c:.2f}) — có thể hedge nhau.")
+            else:
+                st.success("✅ Không có cặp nào tương quan quá cao — danh mục đa dạng tốt.")
 
-                # Đọc vị
-                st.write("#### 📝 Phân Tích Rủi Ro Tập Trung")
-                high_corr_pairs = []
-                cols_c = corr_matrix.columns.tolist()
-                for i in range(len(cols_c)):
-                    for j in range(i+1, len(cols_c)):
-                        c = corr_matrix.iloc[i,j]
-                        if abs(c) >= 0.7:
-                            high_corr_pairs.append((cols_c[i], cols_c[j], c))
-                if high_corr_pairs:
-                    for a, b, c in high_corr_pairs:
-                        if c >= 0.7:
-                            st.warning(f"⚠️ **{a} & {b}** tương quan cao ({c:.2f}) — nắm cả 2 không giúp đa dạng hóa rủi ro.")
-                        else:
-                            st.info(f"🔄 **{a} & {b}** tương quan âm ({c:.2f}) — 2 mã này có thể dùng để hedge nhau.")
-                else:
-                    st.success("✅ Không có cặp nào tương quan quá cao — danh mục đang được đa dạng hóa tốt.")
-
-# ==============================================================================
 # TAB 2: TÀI CHÍNH & CANSLIM
 # ==============================================================================
 with tab2:
