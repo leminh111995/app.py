@@ -1540,6 +1540,328 @@ def calc_correlation_matrix(tickers_list: list, days: int = 63) -> pd.DataFrame 
 
 
 # ==============================================================================
+# [#5] RISK/REWARD CALCULATOR
+# ==============================================================================
+def calc_rr(entry: float, sl: float, rr_ratio: float = 2.0) -> dict:
+    risk   = entry - sl
+    tp2    = entry + risk * 2
+    tp3    = entry + risk * 3
+    tp_rr  = entry + risk * rr_ratio
+    sl_pct = (sl - entry) / entry * 100
+    return {
+        'risk_per_share': round(risk, 0),
+        'sl_pct':         round(sl_pct, 2),
+        'tp_rr2':         round(tp2, 0),
+        'tp_rr3':         round(tp3, 0),
+        'tp_custom':      round(tp_rr, 0),
+        'tp_pct_rr2':     round(risk * 2 / entry * 100, 2),
+        'tp_pct_rr3':     round(risk * 3 / entry * 100, 2),
+    }
+
+def calc_position_size(capital: float, risk_pct: float, entry: float, sl: float) -> dict:
+    risk_amount  = capital * risk_pct / 100
+    risk_per_share = abs(entry - sl)
+    if risk_per_share == 0:
+        return {'shares': 0, 'total_value': 0, 'capital_pct': 0}
+    shares       = int(risk_amount / risk_per_share / 100) * 100   # làm tròn 100 cp
+    total_value  = shares * entry
+    capital_pct  = total_value / capital * 100
+    return {
+        'shares':      shares,
+        'total_value': round(total_value, 0),
+        'capital_pct': round(capital_pct, 1),
+        'risk_amount': round(risk_amount, 0),
+    }
+
+
+# ==============================================================================
+# [#3] ĐA KHUNG THỜI GIAN (MTF) — Daily + Weekly + Monthly
+# ==============================================================================
+def analyze_mtf(df_daily: pd.DataFrame) -> dict:
+    """
+    Phân tích 3 khung: Monthly / Weekly / Daily.
+    Trả về dict tín hiệu + đồng thuận.
+    """
+    result = {'monthly': {}, 'weekly': {}, 'daily': {}, 'consensus': 'NEUTRAL'}
+    try:
+        df = df_daily.copy()
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+
+        # Monthly
+        df_m = df['close'].resample('ME').last().to_frame('close')
+        df_m['ma6']    = df_m['close'].rolling(6).mean()
+        df_m['ret']    = df_m['close'].pct_change()
+        df_m['trend']  = 'UP' if (len(df_m)>=2 and df_m['close'].iloc[-1] > df_m['ma6'].iloc[-1]) else 'DOWN'
+        df_m['ret3m']  = (df_m['close'].iloc[-1] / df_m['close'].iloc[-4] - 1) * 100 if len(df_m) >= 4 else 0
+
+        # Weekly
+        df_w = df['close'].resample('W').last().to_frame('close')
+        df_w['ma10']   = df_w['close'].rolling(10).mean()
+        df_w['slope']  = (df_w['ma10'].iloc[-1] - df_w['ma10'].iloc[-4]) / (df_w['ma10'].iloc[-4]+1e-9) * 100 if len(df_w)>=4 else 0
+        w_trend = 'UP' if (df_w['close'].iloc[-1] > df_w['ma10'].iloc[-1] and df_w['slope'] > 0) else \
+                  ('DOWN' if df_w['close'].iloc[-1] < df_w['ma10'].iloc[-1] else 'NEUTRAL')
+
+        # Daily (từ df đã calc_indicators)
+        d_last   = df_daily.iloc[-1]
+        d_trend  = 'UP' if d_last['close'] > d_last['ma20'] else 'DOWN'
+        d_rsi    = d_last['rsi']
+        d_macd   = 'BULL' if d_last['macd'] > d_last['signal'] else 'BEAR'
+
+        result['monthly'] = {
+            'trend': df_m['trend'].iloc[-1],
+            'ret3m': round(float(df_m['ret3m'].iloc[-1]), 2),
+            'close': round(float(df_m['close'].iloc[-1]), 0),
+        }
+        result['weekly'] = {
+            'trend': w_trend,
+            'slope': round(float(df_w['slope']), 2),
+        }
+        result['daily'] = {
+            'trend': d_trend,
+            'rsi':   round(float(d_rsi), 1),
+            'macd':  d_macd,
+        }
+
+        # Đồng thuận
+        signals = [result['monthly']['trend'], w_trend, d_trend]
+        up_count = signals.count('UP')
+        dn_count = signals.count('DOWN')
+        if up_count == 3:   result['consensus'] = 'STRONG_BULL'
+        elif up_count == 2: result['consensus'] = 'BULL'
+        elif dn_count == 3: result['consensus'] = 'STRONG_BEAR'
+        elif dn_count == 2: result['consensus'] = 'BEAR'
+        else:               result['consensus'] = 'MIXED'
+    except Exception as e:
+        print(f"[WARN] MTF: {e}")
+    return result
+
+
+# ==============================================================================
+# [#4] OPTIMAL ENTRY — Vùng vào lệnh tối ưu (ATR + Fibonacci)
+# ==============================================================================
+def calc_optimal_entry(df: pd.DataFrame, last: pd.Series) -> dict:
+    """
+    Tính vùng vào lệnh tối ưu dựa trên:
+    - ATR: buffer vào lệnh an toàn
+    - Fibonacci retracement từ swing high/low gần nhất
+    - MA20 + Lower BB làm vùng hỗ trợ
+    """
+    price   = last['close']
+    atr     = last.get('atr', price * 0.02)
+    ma20    = last['ma20']
+    bb_low  = last['lower_band']
+
+    # Swing high/low 20 phiên
+    swing_high = df['high'].tail(20).max()
+    swing_low  = df['low'].tail(20).min()
+    fib_range  = swing_high - swing_low
+
+    # Fibonacci levels (từ đáy lên)
+    fib_382 = swing_low + fib_range * 0.382
+    fib_500 = swing_low + fib_range * 0.500
+    fib_618 = swing_low + fib_range * 0.618
+
+    # Vùng vào tốt = gần MA20 hoặc Fib 38.2-50% hoặc Lower BB
+    entry_zone_low  = max(bb_low, fib_382) * 0.99
+    entry_zone_high = min(ma20,   fib_500) * 1.01
+
+    # Giá vào lý tưởng
+    ideal_entry = (entry_zone_low + entry_zone_high) / 2
+
+    # Đánh giá vị trí hiện tại
+    if price <= entry_zone_high:
+        entry_status = "✅ Giá đang trong vùng vào lệnh tốt"
+        entry_color  = "success"
+    elif price <= entry_zone_high * 1.03:
+        entry_status = "🟡 Giá hơi cao hơn vùng lý tưởng — có thể vào nhỏ 50%"
+        entry_color  = "warning"
+    else:
+        diff = (price - entry_zone_high) / entry_zone_high * 100
+        entry_status = f"⚠️ Giá cao hơn vùng lý tưởng {diff:.1f}% — chờ pullback"
+        entry_color  = "error"
+
+    return {
+        'ideal_entry':     round(ideal_entry, 0),
+        'zone_low':        round(entry_zone_low, 0),
+        'zone_high':       round(entry_zone_high, 0),
+        'fib_382':         round(fib_382, 0),
+        'fib_500':         round(fib_500, 0),
+        'fib_618':         round(fib_618, 0),
+        'swing_high':      round(swing_high, 0),
+        'swing_low':       round(swing_low, 0),
+        'atr':             round(atr, 0),
+        'entry_status':    entry_status,
+        'entry_color':     entry_color,
+    }
+
+
+# ==============================================================================
+# [#1] TÍN HIỆU VÀO LỆNH TỰ ĐỘNG (Entry Signal)
+# ==============================================================================
+def generate_entry_signal(
+    last: pd.Series, scoring: dict, bt: dict, ai_score,
+    weekly_trend: str, foreign_trend: dict,
+    mtf: dict, entry_info: dict, divergence: dict,
+) -> dict:
+    """
+    Tổng hợp tất cả tín hiệu → quyết định vào lệnh cụ thể.
+    """
+    price   = last['close']
+    rsi     = last['rsi']
+    atr     = last.get('atr', price * 0.02)
+    adx     = last.get('adx', 0)
+    score   = scoring['total']
+    ai_ok   = _is_valid_score(ai_score) and float(ai_score) >= 55
+    cons    = mtf.get('consensus', 'MIXED')
+
+    # Đếm tín hiệu xanh
+    green = 0
+    conditions = []
+
+    if score >= SCORE_BUY_MIN:
+        green += 2; conditions.append(f"✅ Điểm tổng hợp {score}/90 đủ ngưỡng")
+    if ai_ok:
+        green += 2; conditions.append(f"✅ AI T+3: {float(ai_score):.1f}% (≥55%)")
+    if weekly_trend == 'UP':
+        green += 1; conditions.append("✅ Weekly đang tăng")
+    if cons in ('STRONG_BULL', 'BULL'):
+        green += 2; conditions.append(f"✅ MTF đồng thuận: {cons}")
+    if rsi < 55 and rsi > 30:
+        green += 1; conditions.append(f"✅ RSI {rsi:.1f} vùng lý tưởng")
+    if adx > 20:
+        green += 1; conditions.append(f"✅ ADX {adx:.1f} xu hướng đủ mạnh")
+    if foreign_trend.get('trend') in ('BUY', 'STRONG_BUY'):
+        green += 1; conditions.append("✅ Khối ngoại đang mua ròng")
+    if divergence.get('signal') == 'BULLISH':
+        green += 1; conditions.append("✅ Phân kỳ dương xác nhận")
+    if bt.get('expectancy', 0) > 0:
+        green += 1; conditions.append(f"✅ Kỳ vọng backtest {bt['expectancy']:+.2f}%")
+    if entry_info['entry_color'] == 'success':
+        green += 1; conditions.append("✅ Giá trong vùng vào lệnh tối ưu")
+
+    # Tín hiệu đỏ
+    red = 0
+    warnings = []
+    if rsi > 70:
+        red += 3; warnings.append(f"🔴 RSI {rsi:.1f} quá mua")
+    if weekly_trend == 'DOWN':
+        red += 2; warnings.append("🔴 Weekly đang giảm")
+    if cons in ('STRONG_BEAR', 'BEAR'):
+        red += 2; warnings.append(f"🔴 MTF đồng thuận giảm: {cons}")
+    if foreign_trend.get('trend') in ('SELL', 'STRONG_SELL'):
+        red += 1; warnings.append("🔴 Khối ngoại đang bán ròng")
+
+    # Quyết định
+    net = green - red
+    if net >= 8 and red == 0:
+        action   = "🚀 VÀO LỆNH NGAY — Tín hiệu rất mạnh"
+        size_pct = 50   # % vốn
+        color    = "success"
+    elif net >= 5:
+        action   = "✅ VÀO LỆNH — Tín hiệu tốt"
+        size_pct = 30
+        color    = "success"
+    elif net >= 3:
+        action   = "⚖️ VÀO NHỎ 20% — Chờ xác nhận thêm"
+        size_pct = 20
+        color    = "warning"
+    elif net >= 1:
+        action   = "👁️ THEO DÕI — Chưa đủ tín hiệu"
+        size_pct = 0
+        color    = "warning"
+    else:
+        action   = "🚫 ĐỨNG NGOÀI — Tín hiệu tiêu cực"
+        size_pct = 0
+        color    = "error"
+
+    # Giá vào, SL, TP cụ thể
+    sl_price  = price - ATR_MULTIPLIER * atr
+    tp2_price = price + 2 * ATR_MULTIPLIER * atr
+    tp3_price = price + 3 * ATR_MULTIPLIER * atr
+
+    return {
+        'action':    action,
+        'color':     color,
+        'size_pct':  size_pct,
+        'green':     green,
+        'red':       red,
+        'net':       net,
+        'conditions':conditions,
+        'warnings':  warnings,
+        'entry':     round(price, 0),
+        'sl':        round(sl_price, 0),
+        'tp2':       round(tp2_price, 0),
+        'tp3':       round(tp3_price, 0),
+        'sl_pct':    round((sl_price - price)/price*100, 2),
+        'tp2_pct':   round((tp2_price - price)/price*100, 2),
+        'tp3_pct':   round((tp3_price - price)/price*100, 2),
+    }
+
+
+# ==============================================================================
+# [#2] TRADE JOURNAL — Theo dõi lệnh đang mở
+# ==============================================================================
+def calc_open_trade(entry_price: float, shares: int,
+                    sl_price: float, tp_price: float,
+                    current_price: float) -> dict:
+    pnl_per_share  = current_price - entry_price
+    pnl_total      = pnl_per_share * shares
+    pnl_pct        = pnl_per_share / entry_price * 100
+    dist_to_sl     = (current_price - sl_price) / entry_price * 100
+    dist_to_tp     = (tp_price - current_price) / entry_price * 100
+    rr_current     = abs(pnl_pct / ((entry_price - sl_price)/entry_price*100 + 1e-9))
+    if current_price <= sl_price * 1.01:
+        status = "🚨 GẦN SL — Cân nhắc cắt lỗ ngay!"
+        status_color = "error"
+    elif current_price >= tp_price * 0.99:
+        status = "🎯 GẦN TP — Cân nhắc chốt lời!"
+        status_color = "success"
+    elif pnl_pct > 0:
+        status = "✅ Đang lời — Giữ theo kế hoạch"
+        status_color = "success"
+    else:
+        status = "⚠️ Đang lỗ — Theo dõi SL"
+        status_color = "warning"
+    return {
+        'pnl_per_share': round(pnl_per_share, 0),
+        'pnl_total':     round(pnl_total, 0),
+        'pnl_pct':       round(pnl_pct, 2),
+        'dist_to_sl':    round(dist_to_sl, 2),
+        'dist_to_tp':    round(dist_to_tp, 2),
+        'rr_current':    round(rr_current, 2),
+        'status':        status,
+        'status_color':  status_color,
+    }
+
+
+# ==============================================================================
+# [#6] SEASONALITY — Phân tích mùa vụ theo tháng
+# ==============================================================================
+def calc_seasonality(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tính lợi nhuận trung bình theo từng tháng dựa trên lịch sử 3-5 năm.
+    """
+    df2 = df.copy()
+    if 'date' in df2.columns:
+        df2['date'] = pd.to_datetime(df2['date'])
+        df2 = df2.set_index('date')
+    df2['ret_month'] = df2['close'].resample('ME').last().pct_change() * 100
+    df2 = df2.dropna(subset=['ret_month'])
+    df2['month'] = df2.index.month
+    monthly = df2.groupby('month')['ret_month'].agg(['mean', 'count', 'std']).reset_index()
+    monthly.columns = ['month', 'avg_ret', 'years', 'std']
+    monthly['month_name'] = monthly['month'].map({
+        1:'T1',2:'T2',3:'T3',4:'T4',5:'T5',6:'T6',
+        7:'T7',8:'T8',9:'T9',10:'T10',11:'T11',12:'T12'
+    })
+    monthly['avg_ret'] = monthly['avg_ret'].round(2)
+    monthly['std']     = monthly['std'].round(2)
+    return monthly
+
+
+# ==============================================================================
 # CALIBRATION — Hiệu Chỉnh Ngưỡng Vol Theo Thống Kê Thực Tế
 # ==============================================================================
 def calibrate_vol_thresholds(sample_tickers: list, days: int = 252) -> dict:
@@ -2403,15 +2725,227 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
 
             # [#7] Lưu flag + dữ liệu để render phần phụ độc lập
-            st.session_state['tab1_done']   = True
-            st.session_state['tab1_ticker'] = ticker
-            st.session_state['tab1_df']     = df
-            st.session_state['tab1_bt2']    = run_backtest_v2(df)
+            st.session_state['tab1_done']    = True
+            st.session_state['tab1_ticker']  = ticker
+            st.session_state['tab1_df']      = df
+            st.session_state['tab1_bt2']     = run_backtest_v2(df)
+            st.session_state['tab1_mtf']     = analyze_mtf(df)
+            st.session_state['tab1_entry']   = calc_optimal_entry(df, last)
+            st.session_state['tab1_div']     = divergence
+            st.session_state['tab1_foreign'] = foreign_trend
+            st.session_state['tab1_signal']  = generate_entry_signal(
+                last, scoring, bt, ai_score, weekly_trend,
+                foreign_trend, st.session_state['tab1_mtf'],
+                st.session_state['tab1_entry'], divergence,
+            )
+            st.session_state['tab1_season']  = calc_seasonality(df)
+            st.session_state['tab1_last']    = last
+            st.session_state['tab1_scoring'] = scoring
 
     # ── PHẦN PHỤ: Render ĐỘC LẬP — không cần bấm lại nút phân tích ──
     if st.session_state.get('tab1_done') and st.session_state.get('tab1_ticker') == ticker:
         df_cached = st.session_state.get('tab1_df')
         bt2       = st.session_state.get('tab1_bt2', {})
+        mtf       = st.session_state.get('tab1_mtf', {})
+        entry_info= st.session_state.get('tab1_entry', {})
+        signal    = st.session_state.get('tab1_signal', {})
+        season_df = st.session_state.get('tab1_season')
+        last_s    = st.session_state.get('tab1_last')
+
+        # ── [#1] TÍN HIỆU VÀO LỆNH TỰ ĐỘNG ──
+        st.divider()
+        st.write("### 🎯 Tín Hiệu Vào Lệnh Tự Động")
+        if signal:
+            # Quyết định lớn
+            sig_fn = {'success': st.success, 'warning': st.warning, 'error': st.error}
+            sig_fn.get(signal['color'], st.info)(
+                f"**{signal['action']}** | Tín hiệu: {signal['green']}✅ {signal['red']}🔴 | "
+                f"Khuyến nghị: **{signal['size_pct']}% vốn**"
+            )
+            # Giá vào/SL/TP
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("📍 Giá Vào",  f"{signal['entry']:,.0f}")
+            e2.metric("🛡️ Stop Loss", f"{signal['sl']:,.0f}",
+                      delta=f"{signal['sl_pct']:+.1f}%", delta_color="inverse")
+            e3.metric("🎯 TP (R:R=2)", f"{signal['tp2']:,.0f}",
+                      delta=f"{signal['tp2_pct']:+.1f}%", delta_color="normal")
+            e4.metric("🎯 TP (R:R=3)", f"{signal['tp3']:,.0f}",
+                      delta=f"{signal['tp3_pct']:+.1f}%", delta_color="normal")
+
+            # Điều kiện chi tiết
+            with st.expander("📋 Xem chi tiết điều kiện"):
+                if signal['conditions']:
+                    st.write("**Tín hiệu tích cực:**")
+                    for c in signal['conditions']: st.markdown(f"- {c}")
+                if signal['warnings']:
+                    st.write("**Cảnh báo:**")
+                    for w in signal['warnings']: st.markdown(f"- {w}")
+
+        st.divider()
+
+        # ── [#3] ĐA KHUNG THỜI GIAN (MTF) ──
+        st.write("### 🗓️ Phân Tích Đa Khung Thời Gian (Monthly / Weekly / Daily)")
+        if mtf:
+            m1, m2, m3, m4 = st.columns(4)
+            mt = mtf.get('monthly', {})
+            wt = mtf.get('weekly',  {})
+            dt = mtf.get('daily',   {})
+            cons = mtf.get('consensus', 'MIXED')
+
+            m1.metric("📅 Monthly",
+                      "📈 TĂNG" if mt.get('trend')=='UP' else "📉 GIẢM",
+                      delta=f"3 tháng: {mt.get('ret3m',0):+.1f}%",
+                      delta_color="normal" if mt.get('ret3m',0)>0 else "inverse")
+            m2.metric("🗓️ Weekly",
+                      "📈 TĂNG" if wt.get('trend')=='UP' else ("📉 GIẢM" if wt.get('trend')=='DOWN' else "➡️ NGANG"),
+                      delta=f"Slope MA10: {wt.get('slope',0):+.2f}%",
+                      delta_color="normal" if wt.get('slope',0)>0 else "inverse")
+            m3.metric("📊 Daily",
+                      "📈 TĂNG" if dt.get('trend')=='UP' else "📉 GIẢM",
+                      delta=f"RSI: {dt.get('rsi',0):.1f} | MACD: {dt.get('macd','')}",
+                      delta_color="off")
+            cons_labels = {
+                'STRONG_BULL': "🚀 Cả 3 khung TĂNG",
+                'BULL':        "✅ 2/3 khung TĂNG",
+                'MIXED':       "⚖️ Phân kỳ khung",
+                'BEAR':        "⚠️ 2/3 khung GIẢM",
+                'STRONG_BEAR': "🚨 Cả 3 khung GIẢM",
+            }
+            m4.metric("🎯 Đồng Thuận MTF", cons_labels.get(cons, cons), delta_color="off")
+
+            if cons == 'STRONG_BULL':
+                st.success("🚀 **Tất cả 3 khung đều tăng** — Tín hiệu mạnh nhất, an toàn nhất để vào lệnh.")
+            elif cons == 'BULL':
+                st.info("✅ 2/3 khung tăng — Tín hiệu tốt, vào lệnh bình thường.")
+            elif cons == 'STRONG_BEAR':
+                st.error("🚨 Tất cả 3 khung đều giảm — Tuyệt đối đứng ngoài.")
+            else:
+                st.warning("⚖️ Các khung chưa đồng thuận — Vào lệnh nhỏ hoặc chờ thêm.")
+
+        st.divider()
+
+        # ── [#4] VÙNG VÀO LỆNH TỐI ƯU ──
+        st.write("### 📍 Vùng Vào Lệnh Tối Ưu (ATR + Fibonacci)")
+        if entry_info:
+            en1, en2, en3 = st.columns(3)
+            en1.metric("🎯 Giá Vào Lý Tưởng", f"{entry_info['ideal_entry']:,.0f}")
+            en2.metric("📊 Vùng Vào Thấp",    f"{entry_info['zone_low']:,.0f}")
+            en3.metric("📊 Vùng Vào Cao",     f"{entry_info['zone_high']:,.0f}")
+
+            fn1, fn2, fn3, fn4 = st.columns(4)
+            fn1.metric("Fib 38.2%", f"{entry_info['fib_382']:,.0f}")
+            fn2.metric("Fib 50.0%", f"{entry_info['fib_500']:,.0f}")
+            fn3.metric("Fib 61.8%", f"{entry_info['fib_618']:,.0f}")
+            fn4.metric("ATR",       f"{entry_info['atr']:,.0f}")
+
+            ef = {'success': st.success, 'warning': st.warning, 'error': st.error}
+            ef.get(entry_info['entry_color'], st.info)(entry_info['entry_status'])
+
+        st.divider()
+
+        # ── [#5] RISK/REWARD CALCULATOR ──
+        st.write("### 💰 Risk/Reward Calculator")
+        rr_c1, rr_c2, rr_c3 = st.columns(3)
+        current_price_val = float(last_s['close']) if last_s is not None else 0.0
+        capital_input = rr_c1.number_input("Vốn (VNĐ):", min_value=0, value=100_000_000,
+                                            step=10_000_000, format="%d")
+        entry_input   = rr_c2.number_input("Giá vào:", min_value=0.0,
+                                            value=float(current_price_val), step=100.0)
+        sl_input      = rr_c3.number_input("Giá SL:", min_value=0.0,
+                                            value=float(entry_info.get('sl', current_price_val*0.93)) if entry_info else current_price_val*0.93,
+                                            step=100.0)
+
+        rr_c4, rr_c5 = st.columns(2)
+        rr_ratio   = rr_c4.slider("R:R mục tiêu:", 1.0, 5.0, 2.0, 0.5)
+        risk_pct   = rr_c5.slider("% Vốn chấp nhận mất:", 0.5, 5.0, 2.0, 0.5)
+
+        if entry_input > 0 and sl_input > 0 and sl_input < entry_input:
+            rr   = calc_rr(entry_input, sl_input, rr_ratio)
+            pos  = calc_position_size(capital_input, risk_pct, entry_input, sl_input)
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("📦 Số CP",         f"{pos['shares']:,}")
+            r2.metric("💵 Giá trị lệnh",  f"{pos['total_value']/1e6:.1f}M",
+                      delta=f"{pos['capital_pct']:.1f}% vốn", delta_color="off")
+            r3.metric("🛡️ Rủi ro tối đa", f"{pos['risk_amount']/1e6:.1f}M",
+                      delta=f"-{risk_pct}% vốn", delta_color="inverse")
+            r4.metric(f"🎯 TP (R:R={rr_ratio})", f"{rr['tp_custom']:,.0f}",
+                      delta=f"+{rr['tp_pct_rr2']:.1f}% (R:R=2)", delta_color="normal")
+            r5.metric("🎯 TP (R:R=3)",    f"{rr['tp3']:,.0f}",
+                      delta=f"+{rr['tp_pct_rr3']:.1f}%", delta_color="normal")
+        else:
+            st.caption("Nhập giá vào và giá SL hợp lệ (SL < giá vào) để tính.")
+
+        st.divider()
+
+        # ── [#2] TRADE JOURNAL ──
+        st.write("### 📒 Theo Dõi Lệnh Đang Mở")
+        tj1, tj2, tj3, tj4 = st.columns(4)
+        tj_entry  = tj1.number_input("Giá đã mua:", min_value=0.0, value=0.0, step=100.0, key="tj_entry")
+        tj_shares = tj2.number_input("Số CP:", min_value=0, value=0, step=100, key="tj_shares")
+        tj_sl     = tj3.number_input("SL đặt:", min_value=0.0, value=0.0, step=100.0, key="tj_sl")
+        tj_tp     = tj4.number_input("TP đặt:", min_value=0.0, value=0.0, step=100.0, key="tj_tp")
+
+        if tj_entry > 0 and tj_shares > 0 and tj_sl > 0 and tj_tp > 0:
+            cur_p = float(last_s['close']) if last_s is not None else tj_entry
+            tj    = calc_open_trade(tj_entry, tj_shares, tj_sl, tj_tp, cur_p)
+            jc1, jc2, jc3, jc4, jc5 = st.columns(5)
+            jc1.metric("Giá hiện tại",   f"{cur_p:,.0f}")
+            jc2.metric("P&L (VNĐ)",      f"{tj['pnl_total']:,.0f}",
+                       delta=f"{tj['pnl_pct']:+.2f}%",
+                       delta_color="normal" if tj['pnl_pct']>0 else "inverse")
+            jc3.metric("Cách SL",        f"{tj['dist_to_sl']:+.2f}%",
+                       delta_color="inverse" if tj['dist_to_sl'] < 1 else "off")
+            jc4.metric("Cách TP",        f"{tj['dist_to_tp']:+.2f}%",
+                       delta_color="normal" if tj['dist_to_tp'] > 0 else "off")
+            jc5.metric("R:R hiện tại",   f"{tj['rr_current']:.2f}x", delta_color="off")
+
+            jfn = {'success': st.success, 'warning': st.warning, 'error': st.error}
+            jfn.get(tj['status_color'], st.info)(tj['status'])
+        else:
+            st.caption("Nhập thông tin lệnh để theo dõi P&L real-time.")
+
+        st.divider()
+
+        # ── [#6] SEASONALITY ──
+        st.write("### 📅 Phân Tích Mùa Vụ — Mã Này Thường Tăng/Giảm Tháng Nào?")
+        if season_df is not None and len(season_df) > 0:
+            cur_month = now_vn().month
+            colors_s  = ['rgba(220,50,50,0.7)' if v < 0 else 'rgba(50,180,50,0.7)'
+                         for v in season_df['avg_ret']]
+            # Đánh dấu tháng hiện tại
+            colors_s[cur_month-1] = 'rgba(255,165,0,0.9)'
+            fig_s = go.Figure(go.Bar(
+                x=season_df['month_name'],
+                y=season_df['avg_ret'],
+                marker_color=colors_s,
+                text=[f"{v:+.1f}%" for v in season_df['avg_ret']],
+                textposition='outside',
+                error_y=dict(type='data', array=season_df['std'].tolist(), visible=True),
+            ))
+            fig_s.add_hline(y=0, line_color='black', line_width=1)
+            fig_s.update_layout(
+                height=350, template='plotly_white',
+                title=f"Lợi Nhuận Trung Bình Theo Tháng — {ticker} (thanh cam = tháng hiện tại)",
+                yaxis_title="% lợi nhuận TB",
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(fig_s, use_container_width=True)
+
+            # Tháng tốt/xấu nhất
+            best_month  = season_df.loc[season_df['avg_ret'].idxmax()]
+            worst_month = season_df.loc[season_df['avg_ret'].idxmin()]
+            cur_data    = season_df[season_df['month'] == cur_month]
+
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("🏆 Tháng tốt nhất",  best_month['month_name'],
+                       delta=f"{best_month['avg_ret']:+.1f}%", delta_color="normal")
+            sc2.metric("📉 Tháng xấu nhất",  worst_month['month_name'],
+                       delta=f"{worst_month['avg_ret']:+.1f}%", delta_color="inverse")
+            if len(cur_data) > 0:
+                sc3.metric(f"📍 Tháng {cur_month} hiện tại",
+                           f"TB {cur_data.iloc[0]['avg_ret']:+.1f}%",
+                           delta="Thường tốt ✓" if cur_data.iloc[0]['avg_ret'] > 0 else "Thường xấu ⚠️",
+                           delta_color="normal" if cur_data.iloc[0]['avg_ret'] > 0 else "inverse")
 
         st.divider()
 
