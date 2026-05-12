@@ -2870,7 +2870,7 @@ with tab1:
                       delta=f"-{risk_pct}% vốn", delta_color="inverse")
             r4.metric(f"🎯 TP (R:R={rr_ratio})", f"{rr['tp_custom']:,.0f}",
                       delta=f"+{rr['tp_pct_rr2']:.1f}% (R:R=2)", delta_color="normal")
-            r5.metric("🎯 TP (R:R=3)",    f"{rr['tp3']:,.0f}",
+            r5.metric("🎯 TP (R:R=3)",    f"{rr['tp_rr3']:,.0f}",
                       delta=f"+{rr['tp_pct_rr3']:.1f}%", delta_color="normal")
         else:
             st.caption("Nhập giá vào và giá SL hợp lệ (SL < giá vào) để tính.")
