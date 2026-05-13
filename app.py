@@ -1862,6 +1862,261 @@ def calc_seasonality(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
+# [#3] TRAILING STOP ĐỘNG THEO GIÁ HIỆN TẠI
+# ==============================================================================
+def calc_dynamic_trailing_stop(buy_price: float, current_price: float,
+                                atr: float, highest_since_buy: float) -> dict:
+    """
+    ATR Trailing Stop cập nhật theo giá cao nhất đạt được kể từ khi mua.
+    SL = highest_since_buy - 2×ATR (không bao giờ thấp hơn SL ban đầu).
+    """
+    initial_sl    = buy_price  - ATR_MULTIPLIER * atr
+    trailing_sl   = highest_since_buy - ATR_MULTIPLIER * atr
+    final_sl      = max(initial_sl, trailing_sl)
+    profit_locked = max(0, final_sl - buy_price)
+    sl_pct_from_current = (final_sl - current_price) / current_price * 100
+    sl_pct_from_buy     = (final_sl - buy_price)     / buy_price     * 100
+
+    if final_sl > buy_price:
+        status = f"✅ Đã lock được {profit_locked/buy_price*100:.1f}% lợi nhuận"
+        color  = "success"
+    elif final_sl > buy_price * 0.97:
+        status = "🟡 SL gần breakeven — rủi ro thấp"
+        color  = "warning"
+    else:
+        status = f"⚠️ SL còn {sl_pct_from_buy:.1f}% dưới giá mua"
+        color  = "warning"
+
+    return {
+        'initial_sl':    round(initial_sl, 0),
+        'trailing_sl':   round(trailing_sl, 0),
+        'final_sl':      round(final_sl, 0),
+        'profit_locked': round(profit_locked, 0),
+        'sl_pct_current':round(sl_pct_from_current, 2),
+        'sl_pct_buy':    round(sl_pct_from_buy, 2),
+        'status':        status,
+        'color':         color,
+    }
+
+
+# ==============================================================================
+# [#4] PRICE ACTION — Nhận diện cấu trúc giá
+# ==============================================================================
+def detect_price_action(df: pd.DataFrame) -> dict:
+    """
+    Nhận diện các mô hình Price Action phổ biến:
+    Higher High/Lower Low, Double Top/Bottom, Inside Bar, Breakout Bar.
+    """
+    result = {
+        'structure': 'NEUTRAL',
+        'patterns':  [],
+        'summary':   '',
+    }
+    if len(df) < 20:
+        return result
+
+    closes = df['close'].values
+    highs  = df['high'].values
+    lows   = df['low'].values
+
+    # Higher High / Lower Low (structure)
+    hh = highs[-1] > highs[-6:-1].max()
+    hl = lows[-1]  > lows[-6:-1].min()
+    lh = highs[-1] < highs[-6:-1].max()
+    ll = lows[-1]  < lows[-6:-1].min()
+
+    if hh and hl:
+        result['structure'] = 'UPTREND'
+        result['patterns'].append("📈 Higher High + Higher Low — Cấu trúc tăng nguyên vẹn")
+    elif lh and ll:
+        result['structure'] = 'DOWNTREND'
+        result['patterns'].append("📉 Lower High + Lower Low — Cấu trúc giảm nguyên vẹn")
+    else:
+        result['structure'] = 'RANGING'
+        result['patterns'].append("↔️ Cấu trúc giá đang sideway / chuyển tiếp")
+
+    # Double Top
+    recent_highs = [highs[i] for i in range(-20, -1) if highs[i] == max(highs[max(0,i-3):i+4])]
+    if len(recent_highs) >= 2:
+        if abs(recent_highs[-1] - recent_highs[-2]) / recent_highs[-1] < 0.02:
+            result['patterns'].append("🔴 Double Top — Đỉnh kép, cảnh báo đảo chiều giảm")
+
+    # Double Bottom
+    recent_lows = [lows[i] for i in range(-20, -1) if lows[i] == min(lows[max(0,i-3):i+4])]
+    if len(recent_lows) >= 2:
+        if abs(recent_lows[-1] - recent_lows[-2]) / recent_lows[-1] < 0.02:
+            result['patterns'].append("🟢 Double Bottom — Đáy kép, tín hiệu đảo chiều tăng")
+
+    # Inside Bar (nến nằm trong nến trước)
+    if highs[-1] < highs[-2] and lows[-1] > lows[-2]:
+        result['patterns'].append("🕯️ Inside Bar — Giằng co, chuẩn bị bứt phá")
+
+    # Breakout Bar (nến phá đỉnh 20 phiên)
+    if closes[-1] > highs[-21:-1].max():
+        result['patterns'].append("🚀 Breakout Bar — Phá đỉnh 20 phiên, momentum mạnh")
+    elif closes[-1] < lows[-21:-1].min():
+        result['patterns'].append("💥 Breakdown Bar — Phá đáy 20 phiên, cảnh báo mạnh")
+
+    # Pin Bar (bấc dài)
+    body   = abs(closes[-1] - df['open'].iloc[-1])
+    candle = highs[-1] - lows[-1]
+    upper_wick = highs[-1] - max(closes[-1], df['open'].iloc[-1])
+    lower_wick = min(closes[-1], df['open'].iloc[-1]) - lows[-1]
+    if candle > 0:
+        if lower_wick > body * 2 and lower_wick > upper_wick * 2:
+            result['patterns'].append("📌 Bullish Pin Bar — Bấc dưới dài, từ chối vùng thấp")
+        elif upper_wick > body * 2 and upper_wick > lower_wick * 2:
+            result['patterns'].append("📌 Bearish Pin Bar — Bấc trên dài, từ chối vùng cao")
+
+    if not result['patterns']:
+        result['patterns'].append("➡️ Chưa có mô hình đặc biệt trong phiên gần nhất")
+
+    result['summary'] = result['patterns'][0]
+    return result
+
+
+# ==============================================================================
+# [#2] PHÂN TÍCH ĐỐI THỦ CÙNG NGÀNH
+# ==============================================================================
+def analyze_sector_peers(ticker: str, n_peers: int = 4) -> list[dict]:
+    """
+    Tìm các mã cùng ngành, so sánh RS Rating + Momentum + RSI.
+    """
+    sector = None
+    for sec, members in SECTOR_MAP.items():
+        if ticker in members:
+            sector = sec
+            peers  = [m for m in members if m != ticker][:n_peers+2]
+            break
+    if not sector:
+        return []
+
+    results = []
+    for p in peers[:n_peers]:
+        try:
+            df_p = get_price(p, days=100)
+            if not valid(df_p) or len(df_p) < 30:
+                continue
+            df_p  = calc_indicators(df_p)
+            last_p= df_p.iloc[-1]
+            rs_p  = calc_rs_rating(df_p, pd.DataFrame())
+            ret5  = (last_p['close'] - df_p['close'].iloc[-5]) / df_p['close'].iloc[-5] * 100
+            results.append({
+                'ticker':  p,
+                'price':   f"{last_p['close']:,.0f}",
+                'rsi':     round(float(last_p['rsi']), 1),
+                'rs':      rs_p,
+                'ret5d':   round(ret5, 2),
+                'ma_ok':   last_p['close'] > last_p['ma20'],
+                'adx':     round(float(last_p.get('adx', 0)), 1),
+            })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x['rs'], reverse=True)
+    return results
+
+
+# ==============================================================================
+# [#6] GỢI Ý MÃ THAY THẾ TỐT HƠN
+# ==============================================================================
+def suggest_better_tickers(ticker: str, current_score: float,
+                            tickers_list: list) -> list[dict]:
+    """
+    Nếu mã hiện tại điểm thấp → gợi ý 3 mã cùng ngành/HOSE có RS Rating cao hơn.
+    """
+    # Tìm ngành của mã hiện tại
+    sector = get_ticker_sector(ticker)
+    candidates = []
+    if sector:
+        sector_members = [m for m in SECTOR_MAP[sector] if m != ticker]
+    else:
+        sector_members = []
+
+    # Ưu tiên cùng ngành, sau đó mở rộng ra HOSE
+    search_list = sector_members + [t for t in tickers_list if t not in sector_members and t != ticker]
+
+    for t in search_list[:30]:
+        try:
+            df_t = get_price(t, days=100)
+            if not valid(df_t) or len(df_t) < 30:
+                continue
+            df_t  = calc_indicators(df_t)
+            last_t= df_t.iloc[-1]
+            rs_t  = calc_rs_rating(df_t, pd.DataFrame())
+            rsi_t = float(last_t['rsi'])
+            # Chỉ gợi ý mã có RS > 60 + RSI hợp lý + giá trên MA20
+            if rs_t < 60 or rsi_t > 65 or last_t['close'] < last_t['ma20']:
+                continue
+            candidates.append({
+                'ticker': t,
+                'rs':     rs_t,
+                'rsi':    round(rsi_t, 1),
+                'price':  f"{last_t['close']:,.0f}",
+                'sector': get_ticker_sector(t) or 'Khác',
+                'ma_ok':  True,
+            })
+            if len(candidates) >= 5:
+                break
+        except Exception:
+            continue
+    candidates.sort(key=lambda x: x['rs'], reverse=True)
+    return candidates[:3]
+
+
+# ==============================================================================
+# [#1] WATCHLIST AUTO-SCAN
+# ==============================================================================
+def scan_watchlist(watchlist: list[str]) -> list[dict]:
+    """
+    Quét nhanh watchlist khi mở app — tìm mã có tín hiệu mới.
+    """
+    alerts = []
+    for t in watchlist:
+        try:
+            df_w = get_price(t, days=60)
+            if not valid(df_w) or len(df_w) < 30:
+                continue
+            df_w  = calc_indicators(df_w)
+            label = classify_stock_fast(df_w)
+            last_w= df_w.iloc[-1]
+            if label:
+                alerts.append({
+                    'ticker':  t,
+                    'label':   label,
+                    'price':   f"{last_w['close']:,.0f}",
+                    'rsi':     round(float(last_w['rsi']), 1),
+                    'vol':     round(float(last_w['vol_strength']), 2),
+                    'change':  round(float(last_w.get('return_1d', 0))*100, 2),
+                })
+        except Exception:
+            continue
+    return alerts
+
+
+# ==============================================================================
+# [#5] HEATMAP THỊ TRƯỜNG HOSE
+# ==============================================================================
+def build_market_heatmap(sample_tickers: list, days: int = 5) -> pd.DataFrame:
+    """
+    Tính % thay đổi theo ngành trong N ngày để vẽ heatmap.
+    """
+    rows = []
+    for t in sample_tickers:
+        try:
+            df_h = get_price(t, days=20)
+            if not valid(df_h) or len(df_h) < 6:
+                continue
+            df_h  = normalize_cols(df_h)
+            ret1d = (float(df_h['close'].iloc[-1]) - float(df_h['close'].iloc[-2])) / float(df_h['close'].iloc[-2]) * 100
+            ret5d = (float(df_h['close'].iloc[-1]) - float(df_h['close'].iloc[-6])) / float(df_h['close'].iloc[-6]) * 100
+            sector= get_ticker_sector(t) or 'Khác'
+            rows.append({'ticker': t, 'sector': sector, 'ret1d': round(ret1d,2), 'ret5d': round(ret5d,2)})
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+# ==============================================================================
 # CALIBRATION — Hiệu Chỉnh Ngưỡng Vol Theo Thống Kê Thực Tế
 # ==============================================================================
 def calibrate_vol_thresholds(sample_tickers: list, days: int = 252) -> dict:
@@ -2223,9 +2478,46 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("🛡️ Quant System V22.0: Supreme Predator Leviathan")
-st.caption("**V22.0:** ATR Trailing Stop | ADX+OBV AI Features | Kelly Sizing | Sharpe+MaxDD | Radar Display Nâng Cao")
+st.title("🛡️ Quant System V23.0: Supreme Predator Leviathan")
+st.caption("**V23.0:** ATR Stop | ADX+OBV | Kelly | Sharpe | Radar 6 Tầng | Ichimoku | Chân Sóng 11TC | VNI | MTF | Entry Signal | R:R | Seasonality")
 st.markdown("---")
+
+# ── [#1] WATCHLIST SIDEBAR + AUTO-SCAN BANNER ──
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### 📋 Watchlist Theo Dõi")
+wl_input = st.sidebar.text_input("Thêm mã (nhấn Enter):", placeholder="VD: FPT", key="wl_add")
+if 'watchlist' not in st.session_state:
+    st.session_state['watchlist'] = []
+if wl_input:
+    sym = wl_input.strip().upper()
+    if sym and sym not in st.session_state['watchlist']:
+        st.session_state['watchlist'].append(sym)
+
+wl = st.session_state['watchlist']
+if wl:
+    st.sidebar.caption(f"Đang theo dõi: {', '.join(wl)}")
+    if st.sidebar.button("❌ Xóa hết watchlist"):
+        st.session_state['watchlist'] = []
+        st.rerun()
+    if st.sidebar.button("🔔 Quét Watchlist Ngay"):
+        with st.spinner("Đang quét watchlist..."):
+            wl_alerts = scan_watchlist(wl)
+        st.session_state['wl_alerts'] = wl_alerts
+
+# Hiện banner cảnh báo watchlist đầu trang
+if st.session_state.get('wl_alerts'):
+    alerts = st.session_state['wl_alerts']
+    if alerts:
+        st.warning(f"🔔 **{len(alerts)} mã trong watchlist có tín hiệu mới:**")
+        for a in alerts:
+            col_a, col_b = st.columns([1, 4])
+            col_a.markdown(f"**`{a['ticker']}`**")
+            col_b.markdown(
+                f"{a['label']} | Giá: {a['price']} | "
+                f"RSI: {a['rsi']} | Vol: {a['vol']}x | "
+                f"1 ngày: {a['change']:+.1f}%"
+            )
+        st.markdown("---")
 
 # --- SIDEBAR ---
 tickers = load_hose_tickers()
@@ -2244,13 +2536,14 @@ st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
     "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU",
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
     "📊 VN-INDEX & TƯƠNG QUAN",
+    "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
 ])
 
 # ==============================================================================
@@ -2946,6 +3239,111 @@ with tab1:
                            f"TB {cur_data.iloc[0]['avg_ret']:+.1f}%",
                            delta="Thường tốt ✓" if cur_data.iloc[0]['avg_ret'] > 0 else "Thường xấu ⚠️",
                            delta_color="normal" if cur_data.iloc[0]['avg_ret'] > 0 else "inverse")
+
+        st.divider()
+
+        # ── [#3] TRAILING STOP ĐỘNG ──
+        st.write("### 🛡️ Trailing Stop Động — Cập Nhật Theo Đà Tăng")
+        ts1, ts2, ts3 = st.columns(3)
+        ts_buy     = ts1.number_input("Giá đã mua:", min_value=0.0, value=0.0, step=100.0, key="ts_buy")
+        ts_highest = ts2.number_input("Giá cao nhất đạt được:", min_value=0.0, value=0.0, step=100.0, key="ts_high")
+        if ts_buy > 0 and last_s is not None:
+            atr_now = float(last_s.get('atr', last_s['close']*0.02))
+            cur_now = float(last_s['close'])
+            hi_now  = ts_highest if ts_highest > 0 else cur_now
+            dts     = calc_dynamic_trailing_stop(ts_buy, cur_now, atr_now, hi_now)
+            dt1, dt2, dt3, dt4 = st.columns(4)
+            dt1.metric("SL Ban Đầu",     f"{dts['initial_sl']:,.0f}",
+                       delta=f"{(dts['initial_sl']-ts_buy)/ts_buy*100:+.1f}%", delta_color="inverse")
+            dt2.metric("🛡️ Trailing SL", f"{dts['final_sl']:,.0f}",
+                       delta=f"{dts['sl_pct_current']:+.1f}% từ hiện tại", delta_color="inverse")
+            dt3.metric("Lợi Nhuận Lock", f"{dts['profit_locked']:,.0f}",
+                       delta=f"{dts['profit_locked']/ts_buy*100:+.1f}%" if ts_buy>0 else "",
+                       delta_color="normal" if dts['profit_locked']>0 else "off")
+            dt4.metric("Giá Hiện Tại",   f"{cur_now:,.0f}")
+            fn = {'success':st.success,'warning':st.warning,'error':st.error}
+            fn.get(dts['color'], st.info)(dts['status'])
+        else:
+            st.caption("Nhập giá đã mua để tính Trailing Stop động theo đà tăng.")
+
+        st.divider()
+
+        # ── [#4] PRICE ACTION ──
+        st.write("### 🕯️ Phân Tích Price Action — Cấu Trúc Giá")
+        if df_cached is not None:
+            pa = detect_price_action(df_cached)
+            struct_color = {
+                'UPTREND':   'success',
+                'DOWNTREND': 'error',
+                'RANGING':   'warning',
+            }.get(pa['structure'], 'info')
+            fn = {'success':st.success,'warning':st.warning,'error':st.error,'info':st.info}
+            fn.get(struct_color, st.info)(f"**Cấu trúc:** {pa['structure']}")
+            for p in pa['patterns']:
+                st.markdown(f"- {p}")
+
+        st.divider()
+
+        # ── [#2] ĐỐI THỦ CÙNG NGÀNH ──
+        sector_name = get_ticker_sector(ticker)
+        st.write(f"### 🏭 So Sánh Đối Thủ Cùng Ngành ({sector_name or 'Chưa xác định'})")
+        if sector_name:
+            with st.spinner("Đang phân tích đối thủ..."):
+                if st.session_state.get('peers_ticker') != ticker:
+                    peers = analyze_sector_peers(ticker)
+                    st.session_state['peers_data']   = peers
+                    st.session_state['peers_ticker'] = ticker
+                else:
+                    peers = st.session_state.get('peers_data', [])
+            if peers:
+                df_peers = pd.DataFrame([{
+                    'Mã':       p['ticker'],
+                    'Giá':      p['price'],
+                    'RS Rating':p['rs'],
+                    'RSI':      p['rsi'],
+                    '5 ngày':   f"{p['ret5d']:+.1f}%",
+                    'ADX':      p['adx'],
+                    'Trên MA20':"✅" if p['ma_ok'] else "—",
+                } for p in peers])
+                st.dataframe(df_peers, use_container_width=True, hide_index=True,
+                    column_config={
+                        "RS Rating": st.column_config.ProgressColumn("RS Rating",
+                            min_value=0, max_value=100, format="%.0f"),
+                    })
+                # So sánh với mã hiện tại
+                my_rs = calc_rs_rating(df_cached, pd.DataFrame()) if df_cached is not None else 50
+                best_peer = peers[0]
+                if best_peer['rs'] > my_rs + 10:
+                    st.warning(f"⚠️ **{best_peer['ticker']}** (RS {best_peer['rs']:.0f}) đang mạnh hơn **{ticker}** (RS {my_rs:.0f}) trong ngành — xem xét ưu tiên mã mạnh hơn.")
+                else:
+                    st.success(f"✅ **{ticker}** đang cạnh tranh tốt trong ngành {sector_name}.")
+        else:
+            st.info(f"Mã {ticker} chưa được phân loại ngành trong hệ thống.")
+
+        st.divider()
+
+        # ── [#6] GỢI Ý MÃ THAY THẾ ──
+        st.write("### 💡 Gợi Ý Mã Thay Thế Tốt Hơn")
+        my_score = st.session_state.get('tab1_scoring', {}).get('total', 0)
+        if my_score < SCORE_BUY_MIN:
+            with st.spinner("Đang tìm mã thay thế..."):
+                if st.session_state.get('suggest_ticker') != ticker:
+                    suggestions = suggest_better_tickers(ticker, my_score, tickers)
+                    st.session_state['suggest_data']   = suggestions
+                    st.session_state['suggest_ticker'] = ticker
+                else:
+                    suggestions = st.session_state.get('suggest_data', [])
+            if suggestions:
+                st.info(f"Điểm {ticker} chỉ {my_score}/90 — dưới ngưỡng mua. Xem xét các mã sau:")
+                for s in suggestions:
+                    st.markdown(
+                        f"**`{s['ticker']}`** ({s['sector']}) — "
+                        f"Giá: {s['price']} | RS Rating: {s['rs']:.0f} | RSI: {s['rsi']}"
+                    )
+            else:
+                st.info("Không tìm được mã thay thế phù hợp hiện tại.")
+        else:
+            st.success(f"✅ {ticker} đã đủ điểm ({my_score}/90) — không cần tìm mã thay thế.")
 
         st.divider()
 
@@ -4372,3 +4770,147 @@ with tab6:
                                       xaxis_rangeslider_visible=False,
                                       margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig_vni, use_container_width=True)
+
+# ==============================================================================
+# TAB 7: HEATMAP & ĐỐI THỦ NGÀNH
+# ==============================================================================
+with tab7:
+    st.subheader("🌡️ Heatmap Thị Trường & Phân Tích Đối Thủ Ngành")
+
+    col_h1, col_h2 = st.columns(2)
+    run_heatmap = col_h1.button("🌡️ Vẽ Heatmap Thị Trường HOSE")
+    run_peers   = col_h2.button(f"🏭 Phân Tích Đối Thủ Cùng Ngành với {ticker}")
+
+    # ── HEATMAP ──
+    if run_heatmap:
+        with st.spinner("Đang quét dữ liệu heatmap (~2 phút)..."):
+            sample_hm = list(dict.fromkeys(tickers))[:100]
+            df_hm     = build_market_heatmap(sample_hm)
+            st.session_state['heatmap_df'] = df_hm
+
+    if st.session_state.get('heatmap_df') is not None:
+        df_hm = st.session_state['heatmap_df']
+        if not df_hm.empty:
+            st.write("#### 📊 Lợi Nhuận 1 Ngày Theo Ngành")
+            sector_avg = df_hm.groupby('sector')['ret1d'].mean().reset_index()
+            sector_avg = sector_avg.sort_values('ret1d', ascending=True)
+            colors_hm  = ['rgba(220,50,50,0.8)' if v < 0 else 'rgba(50,180,50,0.8)'
+                          for v in sector_avg['ret1d']]
+            fig_hm = go.Figure(go.Bar(
+                x=sector_avg['ret1d'], y=sector_avg['sector'],
+                orientation='h',
+                marker_color=colors_hm,
+                text=[f"{v:+.2f}%" for v in sector_avg['ret1d']],
+                textposition='outside',
+            ))
+            fig_hm.update_layout(
+                height=450, template='plotly_white',
+                title="Lợi Nhuận Trung Bình 1 Ngày Theo Ngành (%)",
+                xaxis_title="% Thay đổi",
+                margin=dict(l=150, r=60, t=50, b=20),
+            )
+            fig_hm.add_vline(x=0, line_color='black', line_width=1)
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+            # Heatmap từng mã theo ngành
+            st.write("#### 🗺️ Heatmap Từng Mã")
+            fig_tile = go.Figure()
+            for sec in df_hm['sector'].unique():
+                sec_df = df_hm[df_hm['sector'] == sec]
+                for _, row_t in sec_df.iterrows():
+                    fig_tile.add_trace(go.Scatter(
+                        x=[sec], y=[row_t['ticker']],
+                        mode='markers+text',
+                        marker=dict(
+                            size=40,
+                            color=row_t['ret1d'],
+                            colorscale='RdYlGn',
+                            cmin=-3, cmax=3,
+                            showscale=True,
+                            colorbar=dict(title="%"),
+                        ),
+                        text=f"{row_t['ticker']}<br>{row_t['ret1d']:+.1f}%",
+                        textposition='middle center',
+                        showlegend=False,
+                    ))
+            fig_tile.update_layout(
+                height=600, template='plotly_white',
+                title="Heatmap Mã Theo Ngành — Xanh=Tăng | Đỏ=Giảm",
+                margin=dict(l=80, r=20, t=50, b=20),
+            )
+            st.plotly_chart(fig_tile, use_container_width=True)
+
+            # Top tăng/giảm
+            top_up   = df_hm.nlargest(5, 'ret1d')[['ticker','sector','ret1d','ret5d']]
+            top_down = df_hm.nsmallest(5, 'ret1d')[['ticker','sector','ret1d','ret5d']]
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                st.write("#### 🚀 Top 5 Tăng Mạnh")
+                st.dataframe(top_up, use_container_width=True, hide_index=True)
+            with tc2:
+                st.write("#### 📉 Top 5 Giảm Mạnh")
+                st.dataframe(top_down, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── ĐỐI THỦ NGÀNH ──
+    if run_peers:
+        sector_name = get_ticker_sector(ticker)
+        if sector_name:
+            with st.spinner(f"Đang phân tích các mã cùng ngành {sector_name}..."):
+                peers_t7 = analyze_sector_peers(ticker, n_peers=8)
+                st.session_state['peers_t7']       = peers_t7
+                st.session_state['peers_t7_ticker'] = ticker
+        else:
+            st.warning(f"Mã {ticker} chưa được phân loại ngành.")
+
+    if st.session_state.get('peers_t7') and st.session_state.get('peers_t7_ticker') == ticker:
+        peers_t7    = st.session_state['peers_t7']
+        sector_name = get_ticker_sector(ticker)
+        st.write(f"#### 🏭 Đối Thủ Cùng Ngành {sector_name} — So Sánh RS Rating & Momentum")
+        df_pt7 = pd.DataFrame([{
+            'Mã':        p['ticker'],
+            'Giá':       p['price'],
+            'RS Rating': p['rs'],
+            'RSI':       p['rsi'],
+            '5 Ngày':    f"{p['ret5d']:+.1f}%",
+            'ADX':       p['adx'],
+            'Trên MA20': "✅" if p['ma_ok'] else "—",
+        } for p in peers_t7])
+        st.dataframe(df_pt7, use_container_width=True, hide_index=True,
+            column_config={
+                "RS Rating": st.column_config.ProgressColumn("RS Rating",
+                    min_value=0, max_value=100, format="%.0f"),
+            })
+
+        # Chart so sánh RS Rating
+        all_names = [ticker] + [p['ticker'] for p in peers_t7]
+        my_rs_t7  = calc_rs_rating(get_price(ticker, days=100) or pd.DataFrame(), pd.DataFrame())
+        all_rs    = [my_rs_t7] + [p['rs'] for p in peers_t7]
+        colors_rs = ['gold' if n==ticker else
+                     ('green' if r >= 65 else ('orange' if r >= 45 else 'red'))
+                     for n, r in zip(all_names, all_rs)]
+        fig_rs = go.Figure(go.Bar(
+            x=all_names, y=all_rs,
+            marker_color=colors_rs,
+            text=[f"{r:.0f}" for r in all_rs],
+            textposition='outside',
+        ))
+        fig_rs.add_hline(y=65, line_dash='dot', line_color='green',
+                         annotation_text="RS ≥ 65 (mạnh)")
+        fig_rs.update_layout(
+            height=350, template='plotly_white',
+            title=f"RS Rating — {ticker} vs Đối Thủ (vàng = mã đang xem)",
+            yaxis=dict(range=[0,105]),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        st.plotly_chart(fig_rs, use_container_width=True)
+
+        best_peer_t7 = peers_t7[0] if peers_t7 else None
+        if best_peer_t7 and best_peer_t7['rs'] > my_rs_t7 + 10:
+            st.warning(
+                f"⚠️ **{best_peer_t7['ticker']}** (RS {best_peer_t7['rs']:.0f}) "
+                f"mạnh hơn **{ticker}** (RS {my_rs_t7:.0f}) trong ngành {sector_name}."
+            )
+        else:
+            st.success(f"✅ **{ticker}** đang dẫn đầu hoặc cạnh tranh tốt trong ngành.")
