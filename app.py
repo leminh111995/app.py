@@ -320,15 +320,15 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def get_vnindex_cached() -> pd.DataFrame:
     """
-    [V24] VN-Index proxy WEIGHTED theo turnover 60 phiên (proxy float-cap).
-    Top 15 mã vốn hoá lớn nhất HOSE → bao phủ ~70% market cap.
-    Khắc phục bug V23: trung bình cộng 10 mã không weight → lệch khỏi VNI thật.
+    [V23 gốc — KHÔNG sửa] Lấy VN-Index proxy từ 10 mã thanh khoản cao nhất VN30.
+    Không dùng yfinance (bị block trên Streamlit Cloud).
+    Không dùng engine() (không hoạt động trong cache).
     """
     start = (datetime.now() - timedelta(days=400)).strftime(DATE_FMT)
     end   = datetime.now().strftime(DATE_FMT)
     vci   = Vnstock().stock(symbol='ACB', source='VCI')
 
-    # Tầng 1: thử symbol VNINDEX trực tiếp
+    # Tầng 1: Thử symbol VNINDEX/VN30 trực tiếp
     for sym in ['VNINDEX', 'VN30', 'E1VFVN30']:
         try:
             df = vci.quote.history(symbol=sym, start=start, end=end)
@@ -338,47 +338,33 @@ def get_vnindex_cached() -> pd.DataFrame:
         except Exception:
             pass
 
-    # Tầng 2: weighted basket
-    BASKET = [
-        "VCB", "VHM", "VIC", "HPG", "VNM", "GAS", "MSN", "SAB",
-        "FPT", "TCB", "MWG", "BID", "CTG", "ACB", "VPB",
-    ]
+    # Tầng 2: 10 mã thanh khoản cao nhất — nhanh (~10 giây)
+    TOP10 = ["VCB", "HPG", "FPT", "MBB", "TCB", "VPB", "ACB", "VNM", "GAS", "SSI"]
     price_data = {}
-    turnover   = {}
-
-    for sym in BASKET:
+    for sym in TOP10:
         try:
             df_s = vci.quote.history(symbol=sym, start=start, end=end)
-            if df_s is None or df_s.empty:
-                continue
-            df_s.columns = [str(c).lower() for c in df_s.columns]
-            if 'close' not in df_s.columns or 'date' not in df_s.columns:
-                continue
-            df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
-            price_data[sym] = df_s.set_index('date')['close']
-            recent60 = df_s.tail(60)
-            turnover[sym] = float((recent60['close'] * recent60['volume']).sum())
+            if df_s is not None and not df_s.empty:
+                df_s.columns = [str(c).lower() for c in df_s.columns]
+                if 'date' in df_s.columns and 'close' in df_s.columns:
+                    df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
+                    price_data[sym] = df_s.set_index('date')['close']
         except Exception:
             continue
 
-    if len(price_data) < 5:
+    if len(price_data) < 3:
         return pd.DataFrame()
 
-    df_basket = pd.DataFrame(price_data).dropna(how='all').ffill()
-    base = df_basket.iloc[0]
-    norm = df_basket.div(base) * 1000
-    weights = pd.Series(turnover).reindex(df_basket.columns).fillna(0)
-    if weights.sum() <= 0:
-        weights = pd.Series(1.0, index=df_basket.columns)
-    weights = weights / weights.sum()
-    weighted_index = (norm * weights).sum(axis=1)
+    df_basket = pd.DataFrame(price_data).dropna(how='all')
+    normalized = df_basket.div(df_basket.iloc[0]) * 1000
+    close_p    = normalized.mean(axis=1)
 
     return pd.DataFrame({
         'date':   df_basket.index.tolist(),
-        'open':   weighted_index.values,
-        'high':   norm.max(axis=1).values,
-        'low':    norm.min(axis=1).values,
-        'close':  weighted_index.values,
+        'open':   close_p.values,
+        'high':   normalized.max(axis=1).values,
+        'low':    normalized.min(axis=1).values,
+        'close':  close_p.values,
         'volume': df_basket.sum(axis=1).values,
     }).reset_index(drop=True)
 def _normalize_flow_df(df): return None   # stub — API không khả dụng
@@ -585,15 +571,14 @@ def analyze_foreign_trend(df_for: pd.DataFrame) -> dict:
 # 5. AI — XGBoost + Walk-Forward + ADX/OBV Features [NÂNG CẤP #11 #13]
 # ==============================================================================
 @st.cache_data(ttl=1800)
-def predict_ai_cached(ticker: str, date_key: str):
+def predict_ai_cached(ticker: str, cache_key=None):
     """
-    [V24] Cache AI theo (ticker, NGÀY) — không theo last_close như V23.
-    Trong cùng 1 ngày sẽ giữ kết quả, tránh tốn API/CPU mỗi lần refresh.
-    date_key dạng 'YYYY-MM-DD'.
-
-    Cách gọi:
-        date_key = datetime.now(TZ_VN).strftime('%Y-%m-%d')
-        ai = predict_ai_cached(t, date_key)
+    [V24 backward-compat] Cache AI prediction.
+    Chấp nhận cả 2 kiểu gọi:
+        predict_ai_cached(ticker)                  — auto cache theo NGÀY hiện tại
+        predict_ai_cached(ticker, last_close)      — kiểu V23 cũ (float)
+        predict_ai_cached(ticker, '2026-05-14')    — kiểu V24 (string date)
+    Cả 3 cách đều work.
     """
     df = get_price(ticker)
     if not valid(df):
@@ -3861,42 +3846,64 @@ st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 
 # ============================================================================
-# [V24] MARKET REGIME BANNER + RISK THERMOMETER (xuyên 7 tab)
+# [V24] MARKET REGIME BANNER + RISK THERMOMETER (xuyên 7 tab) — SAFE VERSION
 # ============================================================================
-try:
-    if 'df_vni' not in st.session_state or st.session_state.get('df_vni') is None:
-        st.session_state['df_vni'] = get_vnindex_cached()
-    df_vni_global = st.session_state.get('df_vni', pd.DataFrame())
+# Mặc định session_state market_regime để các tab có thể đọc an toàn
+st.session_state.setdefault('market_regime', {
+    'regime': 'UNKNOWN', 'buy_allowed': True,
+    'min_score_buy': SCORE_BUY_MIN + 5, 'size_mult': 0.3,
+    'label': '❓ UNKNOWN — Chưa tính được',
+    'above_50': False, 'above_200': False, 'pct_ma20': 0, 'adr': 0,
+})
 
-    # Breadth — quét nhanh sample 30 mã
-    breadth_sample = tuple(PILLARS + FALLBACK_TICKERS[:30])
-    breadth_global = calc_market_breadth(breadth_sample)
-    st.session_state['breadth'] = breadth_global
+# User có thể tắt banner V24 nếu nghi ngờ banner gây lỗi
+if 'show_v24_banner' not in st.session_state:
+    st.session_state['show_v24_banner'] = True
 
-    # Regime
-    regime_global = detect_market_regime(df_vni_global, breadth_global)
-    st.session_state['market_regime'] = regime_global
-
-    # Risk thermometer
-    risk_global = calc_risk_temperature(
-        regime_global, breadth_global,
-        portfolio_metrics=st.session_state.get('portfolio_metrics'),
+with st.sidebar:
+    st.markdown("---")
+    st.session_state['show_v24_banner'] = st.checkbox(
+        "📊 Hiện banner Market Regime (V24)",
+        value=st.session_state['show_v24_banner'],
+        help="Tắt nếu banner gây lỗi để xem các tab"
     )
-    st.session_state['risk_temperature'] = risk_global
 
-    # Banner
-    render_market_regime_banner(regime_global, breadth_global)
-    with st.expander("🌡️ Nhiệt kế rủi ro chi tiết", expanded=False):
-        render_risk_thermometer(risk_global)
-except Exception as e:
-    st.warning(f"⚠️ Không thể tính market regime: {e}")
-    st.session_state.setdefault('market_regime', {'regime': 'UNKNOWN',
-                                                    'buy_allowed': True,
-                                                    'min_score_buy': SCORE_BUY_MIN + 5,
-                                                    'size_mult': 0.3})
+if st.session_state['show_v24_banner']:
+    try:
+        with st.spinner("⏳ Đang tính market regime..."):
+            if 'df_vni' not in st.session_state or st.session_state.get('df_vni') is None:
+                st.session_state['df_vni'] = get_vnindex_cached()
+            df_vni_global = st.session_state.get('df_vni', pd.DataFrame())
+
+            breadth_sample = tuple(PILLARS + FALLBACK_TICKERS[:30])
+            breadth_global = calc_market_breadth(breadth_sample)
+            st.session_state['breadth'] = breadth_global
+
+            regime_global = detect_market_regime(df_vni_global, breadth_global)
+            st.session_state['market_regime'] = regime_global
+
+            risk_global = calc_risk_temperature(
+                regime_global, breadth_global,
+                portfolio_metrics=st.session_state.get('portfolio_metrics'),
+            )
+            st.session_state['risk_temperature'] = risk_global
+
+        # Render banner — nếu render lỗi cũng bắt riêng
+        try:
+            render_market_regime_banner(regime_global, breadth_global)
+            with st.expander("🌡️ Nhiệt kế rủi ro chi tiết", expanded=False):
+                render_risk_thermometer(risk_global)
+        except Exception as render_err:
+            st.warning(f"⚠️ Lỗi hiển thị banner (app vẫn chạy bình thường): {render_err}")
+    except Exception as e:
+        st.warning(f"⚠️ Không thể tính market regime (app vẫn chạy): {e}")
+        import traceback
+        with st.expander("Chi tiết lỗi (debug)"):
+            st.code(traceback.format_exc())
 
 
 # --- TABS ---
+st.markdown("---")  # [V24] separator visible — nếu thấy dòng kẻ này nghĩa là code chạy tới tabs
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
