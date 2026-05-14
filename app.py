@@ -1,52 +1,28 @@
 # ==============================================================================
 # QUANT SYSTEM V24.0 - THE PREDATOR LEVIATHAN APEX
-# Tác giả: Minh   |   V24 upgrades: integrated by Claude review
+# Tác giả: Minh   |   V24 add-ons by Claude
 # ──────────────────────────────────────────────────────────────────────────────
 # V22: ATR Stop | ADX+OBV | Kelly | Cache AI | Sharpe+MaxDD | Radar Display
 # V23: RS Rating | RSI/MACD Divergence | Market Breadth | VWAP | 52W High |
-#      Ichimoku Cloud | Chân Sóng Detection (11 tiêu chí)
+#      Ichimoku Cloud | Chân Sóng Detection
 # V24: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  Bug fixes (P0):
-#    • Walk-forward AI ĐÚNG cách (V23 cũ ghi đè model mỗi fold)
-#    • OBV vectorized (nhanh 50-100x)
-#    • Sharpe annualize đúng theo signals/year (V23 cũ inflate ~5x)
-#    • Divergence với scipy find_peaks (V23 dùng min/max thô)
-#    • VNINDEX proxy weighted theo turnover (V23 unweighted)
-#    • Cache AI theo NGÀY thay vì last_close
-#  New features:
-#    • Market Regime Filter (Strong Bull / Cautious / Mixed / Bear)
-#    • Exit Signal System độc lập với SL/TP
-#    • Smart Flow Proxy (lấp foreign API stub)
-#    • Vol-Parity Position Sizing + kết hợp Half-Kelly
-#    • Correlation Check trong Quick Pick (tránh "trứng cùng giỏ")
-#    • A/B Strategy Testing framework
-#    • SHAP AI Explainability
-#    • Probability Calibration (isotonic regression)
-#    • Watchlist Persistence (GitHub Gist + fallback file)
-#    • PDF Export báo cáo 1 mã
-#    • Risk Thermometer (0-100, 5 thành phần)
-#    • Parallel Scan (radar 400 mã ~30-60s thay vì 200s)
-#  Refinements:
-#    • Wave Bottom: 12 tiêu chí (thêm MA200 Stage 2 filter)
-#    • VWAP đưa vào scoring (2/20 điểm tech)
-#    • Bayesian winrate cho sample nhỏ
-#    • Stale data check, min signals threshold
-#    • Bỏ sentiment hardcode = 0
+#  THÊM (không thay V23 nào):
+#    • Market Regime Filter (4 trạng thái thị trường)
+#    • Exit Signal System
+#    • Smart Flow Proxy (thay foreign flow khi API thiếu)
+#    • Vol-Parity Position Sizing
+#    • Correlation Check (Quick Pick đa dạng hoá)
+#    • A/B Strategy Testing
+#    • Risk Thermometer 0-100
+#    • Bayesian winrate
+#    • Watchlist persistence (Gist + file)
+#    • PDF Export, SHAP explain, Parallel scan
+#    • Divergence v24 (scipy find_peaks, GIỮ V23 gốc song song)
+#  CÁCH DÙNG: V23 base CHẠY Y NGUYÊN. Các V24 function chỉ thêm vào, gọi khi cần.
 # ==============================================================================
 # --- IMPORTS ---
 import streamlit as st
 from vnstock import Vnstock
-# [V24 PATCH] Import Quote trực tiếp để bypass Company init (đang bị 403)
-try:
-    from vnstock.api.quote import Quote
-    HAS_QUOTE_DIRECT = True
-except ImportError:
-    try:
-        from vnstock.explorer.vci.quote import Quote
-        HAS_QUOTE_DIRECT = True
-    except ImportError:
-        Quote = None
-        HAS_QUOTE_DIRECT = False
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -65,14 +41,20 @@ try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
     nltk.download('vader_lexicon')
+
 # ──────────────────────────────────────────────────────────────────────────────
-# [V24] IMPORTS BỔ SUNG
+# [V24] IMPORTS BỔ SUNG — Optional dependencies với graceful degrade
 # ──────────────────────────────────────────────────────────────────────────────
 import os
 import json
 import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import requests
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 try:
     from scipy.signal import find_peaks
@@ -103,6 +85,7 @@ try:
     HAS_REPORTLAB = True
 except ImportError:
     HAS_REPORTLAB = False
+# [V24 END IMPORTS]
 
 # ==============================================================================
 # CONSTANTS
@@ -216,18 +199,16 @@ SECTOR_MAP = {
 }
 # ==============================================================================
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # [V24] HẰNG SỐ BỔ SUNG
 # ──────────────────────────────────────────────────────────────────────────────
-
-# Market Regime Filter
-REGIME_BREADTH_STRONG = 70   # % mã trên MA20 → STRONG_BULL
+REGIME_BREADTH_STRONG = 70
 REGIME_BREADTH_OK     = 50
 REGIME_BREADTH_WEAK   = 40
 REGIME_ADR_STRONG     = 60
 REGIME_ADR_OK         = 50
 
-# Exit Signal
 EXIT_RSI_DANGER       = 80
 EXIT_RSI_HIGH         = 75
 EXIT_VOL_DISTRIBUTION = 2.0
@@ -235,50 +216,27 @@ EXIT_SCORE_EXIT_ALL   = 7
 EXIT_SCORE_TRIM       = 4
 EXIT_SCORE_WATCH      = 2
 
-# Position Sizing (Vol Parity)
-RISK_PER_TRADE_DEFAULT = 0.01    # 1% vốn/lệnh dollar-risk
-MAX_POSITION_PCT       = 0.20    # cap 20% vốn/mã
+RISK_PER_TRADE_DEFAULT = 0.01
+MAX_POSITION_PCT       = 0.20
 
-# Correlation Check
 CORR_MAX_PAIR     = 0.7
 CORR_LOOKBACK     = 60
 CORR_FALLBACK_MAX = 0.85
 
-# Bayesian Winrate
 BAYES_PRIOR_WR = 0.5
 BAYES_PRIOR_N  = 10
 
-# Min thresholds
 MIN_SIGNALS_RELIABLE = 20
 MAX_DATA_DAYS_OLD    = 5
 
-# Stage 2 (Wave Bottom + MA200)
 WAVE_MA200_SLOPE_MIN   = 0.998
 WAVE_STAGE4_THRESHOLD  = 0.99
 
-# Smart Flow Proxy (thay foreign stub)
 SMART_FLOW_LOOKBACK  = 10
 SMART_FLOW_MAX_SCORE = 20
 
-# Watchlist persistence
 WATCHLIST_GIST_FILENAME = 'watchlist.txt'
-
-# [V24 PATCH] Helper an toàn cho listing.all_symbols() — thử nhiều source
-def _get_listing_safe() -> pd.DataFrame:
-    """Lấy danh sách mã, thử nhiều source. Trả về DataFrame rỗng nếu thất bại."""
-    for src in ['VCI', 'TCBS']:
-        try:
-            vs = Vnstock().stock(symbol='ACB', source=src)
-            df = vs.listing.all_symbols()
-            if df is not None and not df.empty:
-                return df
-        except Exception as e:
-            print(f"[INFO] listing {src} fail: {str(e)[:60]}")
-            continue
-    print("[WARN] Tất cả source listing đều fail — trả về empty")
-    return pd.DataFrame()
-
-
+# [V24 END CONSTANTS]
 
 
 # HELPER FUNCTIONS
@@ -348,70 +306,40 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def get_vnindex_cached() -> pd.DataFrame:
     """
-    [V24 PATCH] Lấy VN-Index proxy.
-    THỬ TUẦN TỰ:
-      1. Quote trực tiếp (API mới, không gọi Company → tránh 403)
-      2. Vnstock().stock(...) cũ
-      3. yfinance ^VNINDEX
+    Lấy VN-Index proxy từ 10 mã thanh khoản cao nhất VN30.
+    Không dùng yfinance (bị block trên Streamlit Cloud).
+    Không dùng engine() (không hoạt động trong cache).
     """
     start = (datetime.now() - timedelta(days=400)).strftime(DATE_FMT)
     end   = datetime.now().strftime(DATE_FMT)
-
-    def _try_quote_direct(sym):
-        """Thử dùng Quote API trực tiếp (không khởi tạo Company)."""
-        if not HAS_QUOTE_DIRECT:
-            return None
-        for src in ['VCI', 'TCBS']:
-            try:
-                q = Quote(symbol=sym, source=src)
-                df = q.history(start=start, end=end)
-                if df is not None and not df.empty and len(df) >= 30:
-                    df.columns = [str(c).lower() for c in df.columns]
-                    return df
-            except Exception as e:
-                print(f"[INFO] Quote direct {sym} {src}: {str(e)[:80]}")
-                continue
-        return None
-
-    def _try_vnstock_old(sym):
-        """Thử Vnstock().stock(...) cũ — có thể bị 403."""
-        for src in ['VCI', 'TCBS']:
-            try:
-                vs = Vnstock().stock(symbol='ACB', source=src)
-                df = vs.quote.history(symbol=sym, start=start, end=end)
-                if df is not None and not df.empty and len(df) >= 30:
-                    df.columns = [str(c).lower() for c in df.columns]
-                    return df
-            except Exception as e:
-                print(f"[INFO] Vnstock old {sym} {src}: {str(e)[:80]}")
-                continue
-        return None
-
-    # Tầng 1: VNINDEX trực tiếp
+    vci   = Vnstock().stock(symbol='ACB', source='VCI')
+    # Tầng 1: Thử symbol VNINDEX/VN30 trực tiếp
     for sym in ['VNINDEX', 'VN30', 'E1VFVN30']:
-        df = _try_quote_direct(sym) or _try_vnstock_old(sym)
-        if df is not None:
-            return df
-
-    # Tầng 2: Basket 10 mã VN30 — tính proxy index
+        try:
+            df = vci.quote.history(symbol=sym, start=start, end=end)
+            if df is not None and not df.empty and len(df) >= 30:
+                df.columns = [str(c).lower() for c in df.columns]
+                return df
+        except Exception:
+            pass
+    # Tầng 2: 10 mã thanh khoản cao nhất — nhanh (~10 giây)
     TOP10 = ["VCB", "HPG", "FPT", "MBB", "TCB", "VPB", "ACB", "VNM", "GAS", "SSI"]
     price_data = {}
     for sym in TOP10:
-        df_s = _try_quote_direct(sym) or _try_vnstock_old(sym)
-        if df_s is not None and 'date' in df_s.columns and 'close' in df_s.columns:
-            try:
-                df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
-                price_data[sym] = df_s.set_index('date')['close']
-            except Exception:
-                continue
-
+        try:
+            df_s = vci.quote.history(symbol=sym, start=start, end=end)
+            if df_s is not None and not df_s.empty:
+                df_s.columns = [str(c).lower() for c in df_s.columns]
+                if 'date' in df_s.columns and 'close' in df_s.columns:
+                    df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
+                    price_data[sym] = df_s.set_index('date')['close']
+        except Exception:
+            continue
     if len(price_data) < 3:
         return pd.DataFrame()
-
     df_basket = pd.DataFrame(price_data).dropna(how='all')
     normalized = df_basket.div(df_basket.iloc[0]) * 1000
     close_p    = normalized.mean(axis=1)
-
     return pd.DataFrame({
         'date':   df_basket.index.tolist(),
         'open':   close_p.values,
@@ -454,10 +382,18 @@ def calc_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)) * 100
     return dx.ewm(span=period, adjust=False).mean()
 def calc_obv(df: pd.DataFrame) -> pd.Series:
-    """[V24] On-Balance Volume — vectorized, nhanh hơn 50-100x so với loop Python.
-    OBV[t] = OBV[t-1] + sign(close.diff()) × volume."""
-    sign = np.sign(df['close'].diff()).fillna(0)
-    return (sign * df['volume']).cumsum()
+    """[NÂNG CẤP #11] On-Balance Volume — tích lũy dòng tiền thực."""
+    obv = [0]
+    closes = df['close'].values
+    volumes = df['volume'].values
+    for i in range(1, len(df)):
+        if closes[i] > closes[i - 1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+    return pd.Series(obv, index=df.index)
 def calc_indicators(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy()
     df = df.loc[:, ~df.columns.duplicated()]
@@ -506,8 +442,6 @@ def calc_indicators(df_raw: pd.DataFrame) -> pd.DataFrame:
     )
     # [NÂNG CẤP #10] ATR — cho Trailing Stop
     df['atr'] = calc_atr(df, ATR_PERIOD)
-    # [V24] VWAP20 cho scoring
-    df['vwap20'] = calc_vwap(df, days=20) if 'high' in df.columns else df['ma20']
     # [NÂNG CẤP #11] ADX + OBV
     df['adx'] = calc_adx(df)
     df['obv']  = calc_obv(df)
@@ -624,180 +558,80 @@ def analyze_foreign_trend(df_for: pd.DataFrame) -> dict:
 # 5. AI — XGBoost + Walk-Forward + ADX/OBV Features [NÂNG CẤP #11 #13]
 # ==============================================================================
 @st.cache_data(ttl=1800)
-def predict_ai_cached(ticker: str, cache_key=None):
+def predict_ai_cached(ticker: str, last_close: float) -> float | str:
     """
-    [V24 backward-compat] Cache AI prediction.
-    Chấp nhận cả 2 kiểu gọi:
-        predict_ai_cached(ticker)                  — auto cache theo NGÀY hiện tại
-        predict_ai_cached(ticker, last_close)      — kiểu V23 cũ (float)
-        predict_ai_cached(ticker, '2026-05-14')    — kiểu V24 (string date)
-    Cả 3 cách đều work.
+    [NÂNG CẤP #13] Cache AI prediction 30 phút.
+    last_close dùng làm cache key — tự invalidate khi giá thay đổi.
     """
     df = get_price(ticker)
     if not valid(df):
         return "N/A"
     df = calc_indicators(df)
     return _run_xgb(df)
-
-
-def predict_ai_cached_with_explain(ticker: str, date_key: str) -> dict:
-    """[V24] Phiên bản trả về SHAP top drivers — KHÔNG cache (SHAP nặng).
-    Dùng cho tab Robot Advisor (single stock), không cho radar scan."""
-    df = get_price(ticker)
-    if not valid(df):
-        return {'prob': "N/A", 'cv_auc': None, 'top_drivers': []}
-    df = calc_indicators(df)
-    return _run_xgb(df, return_explain=True)
 def predict_ai_t3(df: pd.DataFrame) -> float | str:
     """Wrapper — dùng trực tiếp khi đã có df (Radar scan)."""
     return _run_xgb(df)
-def _run_xgb(df: pd.DataFrame, return_explain: bool = False):
+def _run_xgb(df: pd.DataFrame) -> float | str:
     """
-    [V24] Walk-forward validation ĐÚNG cách + Probability Calibration.
-    - Mỗi fold tạo MỚI một model (không ghi đè như V23 cũ).
-    - Thu thập out-of-fold predictions để tính CV AUC.
-    - Dùng model fold cuối (lớn nhất) để dự đoán điểm hiện tại.
-    - Nếu HAS_CALIBRATION: bọc CalibratedClassifierCV để xác suất chuẩn.
-
-    Trả về:
-        float (% xác suất 0-100) — nếu return_explain=False
-        dict {'prob', 'cv_auc', 'top_drivers'} — nếu return_explain=True
+    [NÂNG CẤP #1]  XGBClassifier Walk-Forward Validation.
+    [NÂNG CẤP #11] Thêm adx, obv_zscore vào features.
     """
     if len(df) < AI_MIN_ROWS:
-        return ("N/A" if not return_explain
-                else {'prob': "N/A", 'cv_auc': None, 'top_drivers': []})
-
+        return "N/A"
     df2 = df.copy()
     df2['target'] = (df2['close'].shift(-3) > df2['close'] * AI_PROFIT_T3).astype(int)
     df2 = df2.dropna()
-
     features = [
         'rsi', 'macd', 'signal', 'return_1d', 'volatility',
-        'vol_strength', 'money_flow', 'pv_trend', 'adx', 'obv_zscore',
+        'vol_strength', 'money_flow', 'pv_trend',
+        'adx', 'obv_zscore',
     ]
     features = [f for f in features if f in df2.columns]
-    if len(features) < 5 or len(df2) < AI_MIN_ROWS:
-        return ("N/A" if not return_explain
-                else {'prob': "N/A", 'cv_auc': None, 'top_drivers': []})
-
     X = df2[features].values
     y = df2['target'].values
-
-    n_neg, n_pos = max(1, (y == 0).sum()), max(1, (y == 1).sum())
-    spw = round(n_neg / n_pos, 2)
-
-    def _make_base_model():
-        return XGBClassifier(
-            n_estimators=200, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8,
-            scale_pos_weight=spw, min_child_weight=5,
-            use_label_encoder=False, eval_metric='logloss',
-            random_state=42, verbosity=0,
-        )
-
-    tscv = TimeSeriesSplit(n_splits=5)
-    oof_true = []
-    oof_proba = []
-    last_model = None
-    last_train_idx = None
-
-    for train_idx, val_idx in tscv.split(X):
+    # Tính scale_pos_weight để xử lý class imbalance
+    n_neg = max(1, (y == 0).sum())
+    n_pos = max(1, (y == 1).sum())
+    spw   = round(n_neg / n_pos, 2)
+    tscv  = TimeSeriesSplit(n_splits=5)
+    model = XGBClassifier(
+        n_estimators      = 200,
+        max_depth         = 4,
+        learning_rate     = 0.05,
+        subsample         = 0.8,
+        colsample_bytree  = 0.8,
+        scale_pos_weight  = spw,      # xử lý mất cân bằng lớp
+        min_child_weight  = 5,        # tránh overfit trên tập nhỏ
+        use_label_encoder = False,
+        eval_metric       = 'logloss',
+        random_state      = 42,
+        verbosity         = 0,
+    )
+    for train_idx, _ in tscv.split(X):
         if len(train_idx) < 100:
             continue
-        m = _make_base_model()
-        try:
-            m.fit(X[train_idx], y[train_idx])
-            oof_proba.extend(m.predict_proba(X[val_idx])[:, 1].tolist())
-            oof_true.extend(y[val_idx].tolist())
-            last_model = m
-            last_train_idx = train_idx
-        except Exception as e:
-            print(f"[WARN] _run_xgb fold: {e}")
-            continue
-
-    if last_model is None:
-        return ("N/A" if not return_explain
-                else {'prob': "N/A", 'cv_auc': None, 'top_drivers': []})
-
-    # CV AUC trên OOF
-    cv_auc = None
-    if len(oof_proba) >= 30 and len(set(oof_true)) == 2:
-        try:
-            from sklearn.metrics import roc_auc_score
-            cv_auc = round(roc_auc_score(oof_true, oof_proba), 3)
-        except Exception:
-            cv_auc = None
-
-    # Calibration trên fold cuối
-    final_model = last_model
-    if HAS_CALIBRATION and last_train_idx is not None and len(last_train_idx) >= 150:
-        try:
-            calib = CalibratedClassifierCV(
-                estimator=_make_base_model(), method='isotonic', cv=3,
-            )
-            calib.fit(X[last_train_idx], y[last_train_idx])
-            final_model = calib
-        except Exception as e:
-            print(f"[WARN] calibration failed, fallback raw: {e}")
-
+        model.fit(X[train_idx], y[train_idx])
     try:
-        prob = float(final_model.predict_proba(X[[-1]])[0][1])
+        prob = model.predict_proba(X[[-1]])[0][1]
+        return round(prob * 100, 1)
     except Exception:
-        return ("N/A" if not return_explain
-                else {'prob': "N/A", 'cv_auc': cv_auc, 'top_drivers': []})
-
-    prob_pct = round(prob * 100, 1)
-
-    if not return_explain:
-        return prob_pct
-
-    # SHAP top drivers (chỉ khi return_explain=True)
-    top_drivers = []
-    if HAS_SHAP:
-        try:
-            tree_model = last_model
-            explainer = shap.TreeExplainer(tree_model)
-            shap_vals = explainer.shap_values(X[[-1]])[0]
-            paired = sorted(
-                zip(features, shap_vals),
-                key=lambda x: abs(x[1]), reverse=True,
-            )[:5]
-            top_drivers = [
-                {
-                    'feature': f,
-                    'shap': round(float(s), 3),
-                    'direction': '↑' if s > 0 else '↓',
-                    'value': round(float(X[-1, features.index(f)]), 3),
-                }
-                for f, s in paired
-            ]
-        except Exception as e:
-            print(f"[WARN] SHAP explain failed: {e}")
-
-    return {'prob': prob_pct, 'cv_auc': cv_auc, 'top_drivers': top_drivers}
+        return "N/A"
 # ==============================================================================
 # 6. BACKTEST — Có Sharpe + Max Drawdown [NÂNG CẤP #14]
 # ==============================================================================
 def run_backtest(df: pd.DataFrame) -> dict:
-    """
-    [V24] Backtest với:
-      • Sharpe annualize ĐÚNG: rf theo holding period, multiplier theo signals/year thực.
-      • Bayesian winrate: shrink về 50% khi sample nhỏ.
-    """
     wins = 0
     profits = []
-    signals_data = []
+    signals_data = []   # chi tiết từng lệnh cho equity curve + chart markers
     n = len(df)
-
     for i in range(100, n - BT_DAYS_FWD):
-        rsi_ok = df['rsi'].iloc[i] < BT_RSI_BUY
+        rsi_ok     = df['rsi'].iloc[i] < BT_RSI_BUY
         macd_cross = (
             df['macd'].iloc[i]   > df['signal'].iloc[i] and
             df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]
         )
         if not (rsi_ok and macd_cross):
             continue
-
         buy_price = df['close'].iloc[i] * (1 + SLIPPAGE)
         target    = buy_price * (1 + BT_PROFIT)
         sl_price  = buy_price * (1 - SL_PCT)
@@ -805,7 +639,6 @@ def run_backtest(df: pd.DataFrame) -> dict:
         hit_tp    = any(future >= target)
         hit_sl    = any(future <= sl_price)
         date_i    = df['date'].iloc[i] if 'date' in df.columns else i
-
         if hit_tp:
             p = BT_PROFIT - ROUND_TRIP_COST
             profits.append(p); wins += 1
@@ -819,53 +652,23 @@ def run_backtest(df: pd.DataFrame) -> dict:
             p = (exit_price - buy_price) / buy_price - ROUND_TRIP_COST
             profits.append(p)
             signals_data.append({'date': date_i, 'price': buy_price, 'result': 'HOLD', 'pnl': p})
-
     if not profits:
-        return {'winrate':0.0, 'winrate_bayes':0.0,
-                'avg_profit':0.0, 'avg_loss':0.0,
-                'expectancy':0.0, 'signals':0,
-                'sharpe':0.0, 'max_drawdown':0.0,
-                'signals_per_year':0,
-                'profits':[], 'signals_data':[]}
-
-    n_trades = len(profits)
-    winrate  = round((wins / n_trades) * 100, 1)
-    winrate_bayes = bayes_winrate(wins, n_trades)
-
-    avg_profit = (round(np.mean([p for p in profits if p > 0]) * 100, 2)
-                  if any(p > 0 for p in profits) else 0.0)
-    avg_loss   = (round(np.mean([p for p in profits if p < 0]) * 100, 2)
-                  if any(p < 0 for p in profits) else 0.0)
+        return {'winrate':0.0,'avg_profit':0.0,'avg_loss':0.0,'expectancy':0.0,
+                'signals':0,'sharpe':0.0,'max_drawdown':0.0,'profits':[],'signals_data':[]}
+    winrate    = round((wins / len(profits)) * 100, 1)
+    avg_profit = round(np.mean([p for p in profits if p > 0]) * 100, 2) if any(p > 0 for p in profits) else 0.0
+    avg_loss   = round(np.mean([p for p in profits if p < 0]) * 100, 2) if any(p < 0 for p in profits) else 0.0
     expectancy = round(np.mean(profits) * 100, 2)
-
-    # Sharpe đúng cách: rf theo holding period, annualize theo signals/year thực tế
-    arr = np.array(profits)
-    rf_per_trade = 0.045 * (BT_DAYS_FWD / 252)
-    excess = arr - rf_per_trade
-
-    signals_per_year = 12.0   # fallback bảo thủ
-    if signals_data and 'date' in df.columns:
-        try:
-            first_dt = pd.to_datetime(signals_data[0]['date'])
-            last_dt  = pd.to_datetime(signals_data[-1]['date'])
-            years = max(0.25, (last_dt - first_dt).days / 365.25)
-            signals_per_year = n_trades / years
-        except Exception:
-            pass
-
-    sharpe = (round((excess.mean() / excess.std()) * np.sqrt(signals_per_year), 2)
-              if excess.std() > 1e-9 else 0.0)
-
-    equity      = np.cumprod([1 + p for p in profits])
-    rolling_max = np.maximum.accumulate(equity)
-    max_dd      = round(((equity - rolling_max) / rolling_max).min() * 100, 2)
-
+    rf_daily   = 0.045 / 252
+    excess     = np.array(profits) - rf_daily
+    sharpe     = round((excess.mean() / (excess.std() + 1e-9)) * np.sqrt(252 / BT_DAYS_FWD), 2)
+    equity     = np.cumprod([1 + p for p in profits])
+    rolling_max= np.maximum.accumulate(equity)
+    max_dd     = round(((equity - rolling_max) / rolling_max).min() * 100, 2)
     return {
-        'winrate': winrate, 'winrate_bayes': winrate_bayes,
-        'avg_profit': avg_profit, 'avg_loss': avg_loss,
-        'expectancy': expectancy, 'signals': n_trades,
+        'winrate': winrate, 'avg_profit': avg_profit, 'avg_loss': avg_loss,
+        'expectancy': expectancy, 'signals': len(profits),
         'sharpe': sharpe, 'max_drawdown': max_dd,
-        'signals_per_year': round(signals_per_year, 1),
         'profits': profits, 'signals_data': signals_data,
     }
 # ==============================================================================
@@ -909,44 +712,28 @@ def calc_total_score(
     growth,
     pe,
     weekly_trend: str,
-    sentiment_score: int = 0,
-    sector_score: int = 0,
-    market_regime: dict = None,
+    sentiment_score: int,
+    sector_score: int,
 ) -> dict:
-    """
-    [V24] Scoring tổng hợp với 3 thay đổi:
-      • Thêm tiêu chí "giá trên VWAP" vào tech_pts (chiếm 2/20 điểm).
-      • Bỏ sent_pts (sentiment V23 hardcode = 0, là dead code).
-      • Nhận market_regime để áp ngưỡng động (BEAR → từ chối mua).
-    Tổng tối đa vẫn = 90.
-    """
-    price = float(last['close'])
-    ma20  = float(last['ma20'])
-    rsi   = float(last['rsi'])
-    vwap20 = float(last.get('vwap20', ma20))
-
-    # AI (0-25)
+    price, ma20, rsi = last['close'], last['ma20'], last['rsi']
+    # --- AI (0-25) ---
     if _is_valid_score(ai_score):
-        v = float(ai_score)
-        if   v >= 70: ai_pts = 25
-        elif v >= 60: ai_pts = 20
-        elif v >= 50: ai_pts = 13
-        elif v >= 40: ai_pts = 7
-        else:         ai_pts = 2
+        if   ai_score >= 70: ai_pts = 25
+        elif ai_score >= 60: ai_pts = 20
+        elif ai_score >= 50: ai_pts = 13
+        elif ai_score >= 40: ai_pts = 7
+        else:                ai_pts = 2
     else:
         ai_pts = 0
-
-    # Kỹ thuật (0-20) — thêm VWAP
+    # --- Kỹ thuật (0-20) ---
     tech_pts = 0
-    if price > ma20:                  tech_pts += 6
-    if price > vwap20:                tech_pts += 2   # [V24] VWAP support
-    if rsi < RSI_HOT:                 tech_pts += 4
-    if last['macd'] > last['signal']: tech_pts += 5
-    if weekly_trend == 'UP':          tech_pts += 3
-    tech_pts = min(20, tech_pts)
-
-    flow_pts   = int(foreign_trend.get('score', 0))
-
+    if price > ma20:                     tech_pts += 7
+    if rsi < RSI_HOT:                    tech_pts += 5
+    if last['macd'] > last['signal']:    tech_pts += 5
+    if weekly_trend == 'UP':             tech_pts += 3
+    # --- Dòng tiền (0-20) ---
+    flow_pts = foreign_trend.get('score', 0)
+    # --- Tài chính (0-15) ---
     fin_pts = 0
     if growth is not None:
         if   growth >= CANSLIM_GREAT: fin_pts += 8
@@ -954,36 +741,30 @@ def calc_total_score(
     if pe is not None:
         if   pe < PE_CHEAP: fin_pts += 7
         elif pe < PE_OK:    fin_pts += 4
-
-    sector_pts = min(10, int(sector_score))
+    # --- Ngành (0-10) ---
+    sector_pts = min(10, sector_score)
+    # --- Sentiment (0-10) ---
+    sent_pts   = 0   # Đã bỏ sentiment input
     total = min(90, ai_pts + tech_pts + flow_pts + fin_pts + sector_pts)
-
-    # [V24] Áp ngưỡng động từ market regime
-    if market_regime is not None:
-        if not market_regime.get('buy_allowed', True):
-            decision, decision_color = "🔴 BEAR MARKET — ĐỨNG NGOÀI", "red"
-        else:
-            min_buy = market_regime.get('min_score_buy', SCORE_BUY_MIN)
-            if total >= min_buy and rsi < RSI_HOT:
-                decision, decision_color = "🚀 MUA / NẮM GIỮ (STRONG BUY)", "green"
-            elif total >= 45:
-                decision, decision_color = "⚖️ THEO DÕI (WATCHLIST)", "orange"
-            else:
-                decision, decision_color = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)", "red"
+    if total >= SCORE_BUY_MIN and rsi < RSI_HOT:
+        decision       = "🚀 MUA / NẮM GIỮ (STRONG BUY)"
+        decision_color = "green"
+    elif total >= 45:
+        decision       = "⚖️ THEO DÕI (WATCHLIST)"
+        decision_color = "orange"
     else:
-        if total >= SCORE_BUY_MIN and rsi < RSI_HOT:
-            decision, decision_color = "🚀 MUA / NẮM GIỮ (STRONG BUY)", "green"
-        elif total >= 45:
-            decision, decision_color = "⚖️ THEO DÕI (WATCHLIST)", "orange"
-        else:
-            decision, decision_color = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)", "red"
-
+        decision       = "🚨 BÁN / ĐỨNG NGOÀI (BEARISH)"
+        decision_color = "red"
     return {
-        'total': total, 'ai_pts': ai_pts, 'tech_pts': tech_pts,
-        'flow_pts': flow_pts, 'fin_pts': fin_pts, 'sector_pts': sector_pts,
-        'sent_pts': 0,
-        'decision': decision, 'decision_color': decision_color,
-        'regime_applied': (market_regime['regime'] if market_regime else 'NONE'),
+        'total':          total,
+        'ai_pts':         ai_pts,
+        'tech_pts':       tech_pts,
+        'flow_pts':       flow_pts,
+        'fin_pts':        fin_pts,
+        'sector_pts':     sector_pts,
+        'sent_pts':       sent_pts,
+        'decision':       decision,
+        'decision_color': decision_color,
     }
 # ==============================================================================
 # 10. ATR TRAILING STOP [NÂNG CẤP #10]
@@ -1212,71 +993,61 @@ def _rs_badge(rs: float) -> str:
 # ==============================================================================
 def detect_divergence(df: pd.DataFrame, lookback: int = DIV_LOOKBACK) -> dict:
     """
-    [V24] Phân kỳ RSI/MACD với scipy.signal.find_peaks.
-    So sánh 2 swing points THỰC thay vì min/max thô như V23.
-    Giảm false positives đáng kể.
+    Bullish divergence:  Giá lower low  nhưng RSI higher low  → sắp đảo chiều tăng
+    Bearish divergence:  Giá higher high nhưng RSI lower high → sắp đảo chiều giảm
     """
-    result = {
-        'bullish_rsi': False, 'bearish_rsi': False,
-        'bullish_macd': False, 'bearish_macd': False,
-        'label': '➡️ Không có phân kỳ rõ ràng',
-        'signal': 'NONE',
-    }
-    if len(df) < lookback or not HAS_SCIPY:
-        if not HAS_SCIPY:
-            result['label'] = '⚠️ Thiếu scipy — divergence không khả dụng'
-        return result
+    result = {'bullish_rsi': False, 'bearish_rsi': False,
+              'bullish_macd': False, 'bearish_macd': False,
+              'label': '', 'signal': 'NONE'}
     try:
-        w = df.tail(lookback).reset_index(drop=True)
-        close = w['close'].values
-        rsi   = w['rsi'].values
-        macd  = w['macd'].values
-
-        dist   = max(3, lookback // 5)
-        prom_p = (close.max() - close.min()) * 0.02 if close.max() > close.min() else 1
-        prom_r = 3.0
-
-        price_lows,  _ = find_peaks(-close, distance=dist, prominence=prom_p)
-        rsi_lows,    _ = find_peaks(-rsi,   distance=dist, prominence=prom_r)
-        price_highs, _ = find_peaks(close,  distance=dist, prominence=prom_p)
-        rsi_highs,   _ = find_peaks(rsi,    distance=dist, prominence=prom_r)
-        macd_lows,   _ = find_peaks(-macd,  distance=dist)
-        macd_highs,  _ = find_peaks(macd,   distance=dist)
-
-        if len(price_lows) >= 2 and len(rsi_lows) >= 2:
-            p1, p2 = price_lows[-2], price_lows[-1]
-            r1, r2 = rsi_lows[-2],   rsi_lows[-1]
-            if close[p2] < close[p1] * 0.99 and rsi[r2] > rsi[r1] + 2:
-                result['bullish_rsi'] = True
-
-        if len(price_highs) >= 2 and len(rsi_highs) >= 2:
-            p1, p2 = price_highs[-2], price_highs[-1]
-            r1, r2 = rsi_highs[-2],   rsi_highs[-1]
-            if close[p2] > close[p1] * 1.01 and rsi[r2] < rsi[r1] - 2:
-                result['bearish_rsi'] = True
-
-        if len(price_lows) >= 2 and len(macd_lows) >= 2:
-            p1, p2 = price_lows[-2], price_lows[-1]
-            m1, m2 = macd_lows[-2],  macd_lows[-1]
-            if close[p2] < close[p1] * 0.99 and macd[m2] > macd[m1]:
-                result['bullish_macd'] = True
-
-        if len(price_highs) >= 2 and len(macd_highs) >= 2:
-            p1, p2 = price_highs[-2], price_highs[-1]
-            m1, m2 = macd_highs[-2],  macd_highs[-1]
-            if close[p2] > close[p1] * 1.01 and macd[m2] < macd[m1]:
-                result['bearish_macd'] = True
-
+        window = df.tail(lookback)
+        if len(window) < lookback:
+            return result
+        close = window['close'].values
+        rsi   = window['rsi'].values
+        macd  = window['macd'].values
+        # Tìm đáy giá và đáy RSI trong nửa đầu vs nửa sau
+        mid = lookback // 2
+        price_prev_low = close[:mid].min()
+        price_last_low = close[mid:].min()
+        rsi_prev_low   = rsi[:mid].min()
+        rsi_last_low   = rsi[mid:].min()
+        price_prev_high = close[:mid].max()
+        price_last_high = close[mid:].max()
+        rsi_prev_high   = rsi[:mid].max()
+        rsi_last_high   = rsi[mid:].max()
+        macd_prev_high  = macd[:mid].max()
+        macd_last_high  = macd[mid:].max()
+        # Bullish RSI divergence
+        if price_last_low < price_prev_low * 0.99 and rsi_last_low > rsi_prev_low + 3:
+            result['bullish_rsi'] = True
+        # Bearish RSI divergence
+        if price_last_high > price_prev_high * 1.01 and rsi_last_high < rsi_prev_high - 3:
+            result['bearish_rsi'] = True
+        # Bullish MACD divergence
+        macd_prev_low = macd[:mid].min()
+        macd_last_low = macd[mid:].min()
+        if price_last_low < price_prev_low * 0.99 and macd_last_low > macd_prev_low + 0.01:
+            result['bullish_macd'] = True
+        # Bearish MACD divergence
+        if price_last_high > price_prev_high * 1.01 and macd_last_high < macd_prev_high - 0.01:
+            result['bearish_macd'] = True
         if result['bullish_rsi'] or result['bullish_macd']:
-            names = [n for n, k in [('RSI', 'bullish_rsi'), ('MACD', 'bullish_macd')] if result[k]]
+            indicators = []
+            if result['bullish_rsi']:  indicators.append("RSI")
+            if result['bullish_macd']: indicators.append("MACD")
             result['signal'] = 'BULLISH'
-            result['label']  = f"📈 Phân Kỳ Dương ({'+'.join(names)}) — Động lượng phục hồi"
+            result['label']  = f"📈 Phân Kỳ Dương ({'+'.join(indicators)}) — Giá giảm nhưng động lượng đang phục hồi"
         elif result['bearish_rsi'] or result['bearish_macd']:
-            names = [n for n, k in [('RSI', 'bearish_rsi'), ('MACD', 'bearish_macd')] if result[k]]
+            indicators = []
+            if result['bearish_rsi']:  indicators.append("RSI")
+            if result['bearish_macd']: indicators.append("MACD")
             result['signal'] = 'BEARISH'
-            result['label']  = f"📉 Phân Kỳ Âm ({'+'.join(names)}) — Động lượng suy yếu"
+            result['label']  = f"📉 Phân Kỳ Âm ({'+'.join(indicators)}) — Giá tăng nhưng động lượng suy yếu"
+        else:
+            result['label'] = "➡️ Không có phân kỳ rõ ràng"
     except Exception as e:
-        print(f"[WARN] detect_divergence: {e}")
+        print(f"[WARN] divergence: {e}")
     return result
 # ==============================================================================
 # [V23 #20] VWAP — Volume Weighted Average Price
@@ -1419,92 +1190,102 @@ def calc_market_breadth(sample_tickers: tuple) -> dict:
 def calc_wave_bottom_score(
     df: pd.DataFrame,
     last: pd.Series,
-    smart_flow: bool = False,
-    near_52w_high: bool = False,
-    div_bullish: bool = False,
+    smart_flow: bool = False,      # Tổ Chức gom (ngoại/tự doanh mua ròng)
+    near_52w_high: bool = False,   # Gần đỉnh 52 tuần
+    div_bullish: bool = False,     # Phân kỳ dương RSI/MACD
 ) -> dict:
     """
-    [V24] Hệ thống 12 tiêu chí chân sóng (V23 = 11).
-    THÊM: Stage 2 filter qua MA200 (theo Stan Weinstein).
-        - Hard disqualifier nếu MA200 dốc xuống = Stage 4 downtrend.
-        - +1 điểm nếu giá > MA200 và MA200 phẳng/dốc lên = Stage 2.
+    [V23] Hệ thống 11 tiêu chí chân sóng.
+    8 tiêu chí kỹ thuật + 3 tiêu chí bổ sung (Tổ Chức, 52W, Div).
+    Cần ≥ WAVE_SCORE_MIN điểm = chân sóng hợp lệ.
     """
     score  = 0
     flags  = []
-    price  = float(last['close'])
-    ma20   = float(last['ma20'])
-    ma50   = float(last.get('ma50', ma20))
-    ma200  = float(last.get('ma200', np.nan))
-    rsi    = float(last['rsi'])
-    bb_low = float(last['lower_band'])
-    bb_wid = float(last['bb_width'])
-    adx    = float(last.get('adx', 0))
-    obv_z  = float(last.get('obv_zscore', 0))
-
-    # ── HARD DISQUALIFIERS ──
+    price  = last['close']
+    ma20   = last['ma20']
+    ma50   = last.get('ma50', ma20)
+    rsi    = last['rsi']
+    bb_low = last['lower_band']
+    bb_wid = last['bb_width']
+    adx    = last.get('adx', 0)
+    obv_z  = last.get('obv_zscore', 0)
+    # ── HARD DISQUALIFIERS — loại ngay, không tính điểm ──
+    # Quá mua: RSI > WAVE_RSI_MAX (52) → đã bứt tốc, không phải chân sóng
     if rsi > WAVE_RSI_MAX:
-        return {'score':0,'total':12,'flags':[],'is_wave_bottom':False,
-                'label':f'❌ RSI {rsi:.1f} quá cao — đã bứt tốc'}
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ RSI {rsi:.1f} quá cao — đã bứt tốc, không phải chân sóng'}
+    # Quá bán cực đoan: RSI < WAVE_RSI_MIN → downtrend mạnh, chưa đủ an toàn
     if rsi < WAVE_RSI_MIN:
-        return {'score':0,'total':12,'flags':[],'is_wave_bottom':False,
-                'label':f'❌ RSI {rsi:.1f} quá thấp — downtrend mạnh'}
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ RSI {rsi:.1f} quá thấp — downtrend mạnh'}
+    # Giá đã vượt MA20 > 5% → không còn là chân sóng nữa
     if price > ma20 * 1.05:
-        return {'score':0,'total':12,'flags':[],'is_wave_bottom':False,
-                'label':'❌ Giá vượt MA20 > 5% — đã bứt phá'}
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ Giá vượt MA20 quá 5% — cổ phiếu đã bứt phá'}
+    # ADX ≥ 35: xu hướng đang bùng nổ mạnh → không phải tích lũy nền
     if adx >= 35:
-        return {'score':0,'total':12,'flags':[],'is_wave_bottom':False,
-                'label':f'❌ ADX {adx:.1f} ≥ 35 — đang trend mạnh'}
-
-    # [V24 NEW] Hard disqualifier: MA200 dốc xuống = Stage 4
-    if not np.isnan(ma200) and len(df) >= 5:
-        ma200_5d_ago = float(df['ma200'].iloc[-5])
-        if not np.isnan(ma200_5d_ago) and ma200 < ma200_5d_ago * WAVE_STAGE4_THRESHOLD:
-            return {'score':0,'total':12,'flags':[],'is_wave_bottom':False,
-                    'label':'❌ MA200 đang dốc xuống — Stage 4 downtrend'}
-
-    # 1-8: Tiêu chí kỹ thuật (V23)
+        return {'score': 0, 'flags': [], 'is_wave_bottom': False,
+                'label': f'❌ ADX {adx:.1f} ≥ 35 — xu hướng bùng nổ, không phải nền'}
+    # 1. RSI trong vùng hồi phục (không quá mua, không quá bán thái quá)
     if WAVE_RSI_MIN <= rsi <= WAVE_RSI_MAX:
-        score += 1; flags.append("RSI vùng hồi phục")
+        score += 1
+        flags.append("RSI vùng hồi phục")
+    # 2. Giá gần/trên MA50 (nền trung hạn còn tốt)
     if price >= ma50 * WAVE_PRICE_MA50:
-        score += 1; flags.append("Gần MA50")
-    bb_min30 = float(df['bb_width'].tail(30).min())
+        score += 1
+        flags.append("Gần MA50")
+    # 3. BB đang co lại (Squeeze) — năng lượng đang tích tụ
+    bb_min30 = df['bb_width'].tail(30).min()
     if bb_wid <= bb_min30 * 1.3:
-        score += 1; flags.append("BB Squeeze")
+        score += 1
+        flags.append("BB Squeeze")
+    # 4. Cạn Cung — Vol thấp trên nến đỏ (người bán cạn kiệt)
     if df['can_cung'].tail(7).sum() >= 2:
-        score += 1; flags.append("Cạn Cung")
+        score += 1
+        flags.append("Cạn Cung")
+    # 5. OBV đang tích lũy dương (dòng tiền thực chảy vào)
     if obv_z > 0.3:
-        score += 1; flags.append("OBV tích lũy")
+        score += 1
+        flags.append("OBV tích lũy")
+    # 6. ADX thấp = sideways = đang tích lũy nền (không phải downtrend mạnh)
     if 10 < adx < 25:
-        score += 1; flags.append("ADX sideways")
+        score += 1
+        flags.append("ADX sideways")
+    # 7. Giá đang nằm giữa Lower BB và MA20 (vùng hỗ trợ kép)
     if bb_low * 0.98 <= price <= ma20 * 1.02:
-        score += 1; flags.append("Vùng hỗ trợ kép BB-MA20")
-    ret = float(last.get('return_1d', 0))
-    vol = float(last['vol_strength'])
+        score += 1
+        flags.append("Nằm vùng hỗ trợ kép BB-MA20")
+    # 8. Nến xanh nhẹ + Vol bình thường (rục rịch thoát đáy)
+    ret = last.get('return_1d', 0)
+    vol = last['vol_strength']
     if ret > 0 and 0.7 <= vol <= 1.4:
-        score += 1; flags.append("Giá xanh nhẹ + Vol bình thường")
-
-    # 9-11: Bổ sung V23
-    if smart_flow:    score += 1; flags.append("Tổ Chức gom")
-    if near_52w_high: score += 1; flags.append("Gần đỉnh 52W")
-    if div_bullish:   score += 1; flags.append("Phân kỳ dương")
-
-    # 12: [V24 NEW] Stage 2
-    if not np.isnan(ma200) and len(df) >= 5:
-        ma200_5d_ago = float(df['ma200'].iloc[-5])
-        if not np.isnan(ma200_5d_ago):
-            slope_ok = ma200 >= ma200_5d_ago * WAVE_MA200_SLOPE_MIN
-            if price >= ma200 and slope_ok:
-                score += 1; flags.append("Stage 2 (>MA200, MA200↗)")
-
+        score += 1
+        flags.append("Giá xanh nhẹ + Vol bình thường")
+    # ── 3 TIÊU CHÍ BỔ SUNG (V23) ──
+    # 9. Tổ Chức gom (Ngoại/Tự doanh mua ròng)
+    if smart_flow:
+        score += 1
+        flags.append("Tổ Chức gom")
+    # 10. Gần đỉnh 52 tuần (trong 8%) — Stage 2 sắp breakout
+    if near_52w_high:
+        score += 1
+        flags.append("Gần đỉnh 52W")
+    # 11. Phân kỳ dương RSI/MACD — động lượng đang phục hồi
+    if div_bullish:
+        score += 1
+        flags.append("Phân kỳ dương")
     is_wave_bottom = score >= WAVE_SCORE_MIN
-    total_criteria = 12
+    total_criteria = 11
     if is_wave_bottom:
         label = f"✅ Chân Sóng ({score}/{total_criteria}: {', '.join(flags)})"
     else:
         label = f"Chưa đủ tiêu chí ({score}/{total_criteria})"
     return {
-        'score': score, 'total': total_criteria, 'flags': flags,
-        'is_wave_bottom': is_wave_bottom, 'label': label,
+        'score':          score,
+        'total':          total_criteria,
+        'flags':          flags,
+        'is_wave_bottom': is_wave_bottom,
+        'label':          label,
     }
 # ==============================================================================
 # ==============================================================================
@@ -2590,7 +2371,7 @@ def load_hose_tickers() -> list[str]:
     stock = Vnstock()
     attempts = [
         lambda: stock.market.listing(),
-        lambda: _get_listing_safe(),
+        lambda: Vnstock().stock(symbol='ACB', source='VCI').listing.all_symbols(),
     ]
     for attempt in attempts:
         try:
@@ -2759,18 +2540,18 @@ def render_radar_summary_banner(breakouts, sell_dumps, watchlist, wave_bottom, w
               delta="Không mua đuổi" if running_strong else None, delta_color="off")
 # ==============================================================================
 
+
 # ==============================================================================
-# [V24] NEW FUNCTIONS — Bổ sung tính năng V24
+# [V24] NEW FUNCTIONS — Bổ sung tính năng V24 (không thay thế V23)
 # ==============================================================================
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bayesian winrate — shrink về 50% khi sample nhỏ
+# Bayesian winrate
 # ──────────────────────────────────────────────────────────────────────────────
 def bayes_winrate(wins: int, total: int,
                    prior_winrate: float = BAYES_PRIOR_WR,
                    prior_n: float = BAYES_PRIOR_N) -> float:
-    """[V24] Bayesian-shrunk winrate.
-    Sample nhỏ → kéo về prior; sample lớn ≈ winrate thô.
+    """[V24] Bayesian-shrunk winrate. Sample nhỏ → kéo về prior 50%.
     Ví dụ: 6/8 = 75% thô → 61% Bayes."""
     if total <= 0:
         return round(prior_winrate * 100, 1)
@@ -2779,8 +2560,8 @@ def bayes_winrate(wins: int, total: int,
     return round(adjusted_wins / adjusted_n * 100, 1)
 
 
-def is_data_fresh(df: pd.DataFrame, max_days_old: int = MAX_DATA_DAYS_OLD) -> bool:
-    """[V24] Kiểm tra dữ liệu có cập nhật trong N ngày qua không."""
+def is_data_fresh(df, max_days_old: int = MAX_DATA_DAYS_OLD) -> bool:
+    """[V24] Check dữ liệu có cập nhật trong N ngày qua không."""
     if not valid(df) or 'date' not in df.columns:
         return False
     try:
@@ -2792,7 +2573,7 @@ def is_data_fresh(df: pd.DataFrame, max_days_old: int = MAX_DATA_DAYS_OLD) -> bo
 
 
 def is_backtest_significant(bt: dict, min_signals: int = MIN_SIGNALS_RELIABLE):
-    """[V24] Kiểm tra backtest có đủ signals để tin metric không."""
+    """[V24] Check backtest đủ signals?"""
     n = bt.get('signals', 0)
     if n < min_signals:
         return False, f"⚠️ Chỉ {n} signals — không đủ tin cậy (cần ≥{min_signals})"
@@ -2800,20 +2581,11 @@ def is_backtest_significant(bt: dict, min_signals: int = MIN_SIGNALS_RELIABLE):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Smart Flow Proxy — lấp foreign flow stub
+# Smart Flow Proxy — proxy cho dòng tiền tổ chức khi không có dữ liệu khối ngoại
 # ──────────────────────────────────────────────────────────────────────────────
-def smart_flow_proxy(df: pd.DataFrame, lookback: int = SMART_FLOW_LOOKBACK) -> dict:
-    """
-    [V24] Proxy 'tổ chức gom' khi không có dữ liệu khối ngoại thực tế.
-    Trả về dict tương thích với foreign_trend cũ (key 'score', 'trend', 'label').
-
-    Tiêu chí 0-20 điểm:
-      • OBV hiện tại tích cực (z > 0.5)    → +5
-      • OBV trung bình lookback > 0        → +4
-      • Vol ổn định (0.9-1.6x) ≥ 7/10 phiên → +4
-      • Giá không giảm > 2%/phiên ≥ 7/10    → +4
-      • Đóng trên MA20 ≥ 6/10 phiên         → +3
-    """
+def smart_flow_proxy(df, lookback: int = SMART_FLOW_LOOKBACK) -> dict:
+    """[V24] Proxy 'tổ chức gom' khi không có dữ liệu khối ngoại thực tế.
+    Output tương thích với foreign_trend dict."""
     if len(df) < lookback + 20:
         return {'score': 0, 'trend': 'UNKNOWN',
                 'label': '❓ Thiếu dữ liệu', 'flags': [], 'is_proxy': True}
@@ -2825,8 +2597,7 @@ def smart_flow_proxy(df: pd.DataFrame, lookback: int = SMART_FLOW_LOOKBACK) -> d
     price_ok    = int((recent['return_1d'] >= -0.02).sum())
     close_above = int((recent['close'] > recent['ma20']).sum())
 
-    score = 0
-    flags = []
+    score, flags = 0, []
     if obv_z_now > 0.5:    score += 5; flags.append('OBV tích cực')
     if obv_z_mean > 0:     score += 4; flags.append('OBV xu hướng tăng')
     if vol_stable >= 7:    score += 4; flags.append('Vol ổn định')
@@ -2845,14 +2616,8 @@ def smart_flow_proxy(df: pd.DataFrame, lookback: int = SMART_FLOW_LOOKBACK) -> d
 # ──────────────────────────────────────────────────────────────────────────────
 # Market Regime Filter
 # ──────────────────────────────────────────────────────────────────────────────
-def detect_market_regime(df_vni: pd.DataFrame, breadth: dict) -> dict:
-    """
-    [V24] Phát hiện trạng thái thị trường (4 regimes) + đề xuất size lệnh.
-        STRONG_BULL → mua tích cực, size 100%
-        CAUTIOUS_BULL → mua chọn lọc, size 60%
-        MIXED → chỉ mã siêu mạnh (RS≥80), size 30%
-        BEAR → KHÔNG mở vị thế mới
-    """
+def detect_market_regime(df_vni, breadth: dict) -> dict:
+    """[V24] Phát hiện trạng thái thị trường (4 regimes)."""
     if not valid(df_vni) or len(df_vni) < 210:
         return {'regime': 'UNKNOWN', 'size_mult': 0.3, 'buy_allowed': True,
                 'min_score_buy': SCORE_BUY_MIN + 5,
@@ -2868,7 +2633,6 @@ def detect_market_regime(df_vni: pd.DataFrame, breadth: dict) -> dict:
     above_200 = bool(last['close'] > last['ma200'])
     pct_ma20  = float(breadth.get('pct_above_ma20', 50))
     adr       = float(breadth.get('advance_decline', 50))
-
     base = {'above_50': above_50, 'above_200': above_200,
             'pct_ma20': pct_ma20, 'adr': adr}
 
@@ -2890,7 +2654,7 @@ def detect_market_regime(df_vni: pd.DataFrame, breadth: dict) -> dict:
 
 
 def render_market_regime_banner(regime: dict, breadth: dict) -> None:
-    """[V24] Banner trạng thái thị trường — đặt đầu mỗi tab."""
+    """[V24] Banner trạng thái thị trường."""
     c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5])
     with c1:
         st.markdown(f"### {regime['label']}")
@@ -2898,39 +2662,29 @@ def render_market_regime_banner(regime: dict, breadth: dict) -> None:
                    f"vs MA200: {'✅' if regime['above_200'] else '❌'}")
     with c2:
         st.metric("% > MA20", f"{regime['pct_ma20']:.0f}%",
-                  help="Tỷ lệ mã đang đóng trên MA20")
+                  help="Tỷ lệ mã đóng trên MA20")
     with c3:
         st.metric("Adv/Decl", f"{regime['adr']:.0f}%",
-                  help="Tỷ lệ mã tăng giá trong phiên")
+                  help="Tỷ lệ mã tăng giá")
     with c4:
         if regime['buy_allowed']:
-            st.metric("Điểm BUY tối thiểu", f"{regime['min_score_buy']}/90",
-                      help="Điểm tổng hợp tối thiểu để xét mua")
+            st.metric("Điểm BUY tối thiểu", f"{regime['min_score_buy']}/90")
         else:
             st.metric("Vị thế mới", "❌ KHÔNG", delta="Bảo vệ vốn",
                       delta_color="inverse")
     if not regime['buy_allowed']:
-        st.error("🔴 Thị trường BEAR — Hệ thống đề nghị KHÔNG mở vị thế mới. "
-                 "Tập trung quản trị rủi ro các vị thế đang có.")
+        st.error("🔴 Thị trường BEAR — Hệ thống đề nghị KHÔNG mở vị thế mới.")
     elif regime['regime'] == 'MIXED':
-        st.warning("🟠 Thị trường phân hoá — chỉ vào lệnh với mã có RS Rating ≥ 80 "
-                   "và điểm tổng hợp vượt ngưỡng cao hơn.")
+        st.warning("🟠 Thị trường phân hoá — chỉ vào lệnh với mã RS Rating ≥ 80.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Exit Signal System
 # ──────────────────────────────────────────────────────────────────────────────
-def generate_exit_signal(
-    last: pd.Series, df: pd.DataFrame,
-    entry_price: float, current_price: float,
-    weekly_trend: str, divergence: dict, ai_score,
-) -> dict:
-    """
-    [V24] Đánh giá có nên thoát không, ĐỘC LẬP với SL/TP tự động.
-    Trả về action: HOLD | WATCH | TRIM_50 | EXIT_ALL.
-    """
-    red_flags = []
-    score = 0
+def generate_exit_signal(last, df, entry_price: float, current_price: float,
+                          weekly_trend: str, divergence: dict, ai_score) -> dict:
+    """[V24] Tín hiệu THOÁT độc lập với SL/TP."""
+    red_flags, score = [], 0
     rsi = float(last['rsi'])
     macd, sig = float(last['macd']), float(last['signal'])
     adx = float(last.get('adx', 0))
@@ -2948,56 +2702,46 @@ def generate_exit_signal(
         macd_prev = float(df['macd'].iloc[-2])
         sig_prev  = float(df['signal'].iloc[-2])
         if macd_prev > sig_prev and macd < sig:
-            red_flags.append("🔴 MACD vừa cắt xuống signal")
-            score += 2
+            red_flags.append("🔴 MACD vừa cắt xuống signal"); score += 2
 
     if divergence and divergence.get('signal') == 'BEARISH':
-        red_flags.append("🔴 Phân kỳ âm xác nhận")
-        score += 3
-
+        red_flags.append("🔴 Phân kỳ âm xác nhận"); score += 3
     if weekly_trend == 'DOWN':
-        red_flags.append("🔴 Weekly đã đảo về DOWN")
-        score += 3
-
+        red_flags.append("🔴 Weekly đã đảo về DOWN"); score += 3
     if vol > EXIT_VOL_DISTRIBUTION and ret < -0.02:
         red_flags.append(f"🔴 Distribution day — Vol {vol:.1f}x + giảm {ret*100:.1f}%")
         score += 4
-
     if len(df) >= 5:
         adx_5d_ago = float(df['adx'].iloc[-5])
         if adx < 20 and adx_5d_ago > 30:
-            red_flags.append(f"🟠 ADX suy yếu nhanh: {adx_5d_ago:.1f} → {adx:.1f}")
-            score += 2
-
+            red_flags.append(f"🟠 ADX suy yếu: {adx_5d_ago:.1f} → {adx:.1f}"); score += 2
     if _is_valid_score(ai_score) and float(ai_score) < 40:
-        red_flags.append(f"🔴 AI T+3 chỉ {float(ai_score):.1f}% — đảo chiều")
-        score += 2
+        red_flags.append(f"🔴 AI T+3 chỉ {float(ai_score):.1f}% — đảo chiều"); score += 2
 
     ma20 = float(last['ma20'])
     if len(df) >= 3 and current_price < ma20 * 0.98:
         was_above = float(df['close'].iloc[-3]) > float(df['ma20'].iloc[-3])
         if was_above:
-            red_flags.append("🟠 Vừa rớt khỏi MA20")
-            score += 2
+            red_flags.append("🟠 Vừa rớt khỏi MA20"); score += 2
 
     pnl_pct = (current_price - entry_price) / entry_price * 100
 
     if score >= EXIT_SCORE_EXIT_ALL:
-        return {'action': 'EXIT_ALL', 'score': score, 'flags': red_flags,
-                'label': f'🚨 THOÁT TOÀN BỘ — {len(red_flags)} cảnh báo nghiêm trọng',
-                'color': 'error', 'pnl_pct': round(pnl_pct, 2)}
+        return {'action':'EXIT_ALL','score':score,'flags':red_flags,
+                'label':f'🚨 THOÁT TOÀN BỘ — {len(red_flags)} cảnh báo nghiêm trọng',
+                'color':'error','pnl_pct':round(pnl_pct,2)}
     if score >= EXIT_SCORE_TRIM:
-        return {'action': 'TRIM_50', 'score': score, 'flags': red_flags,
-                'label': '⚠️ CHỐT 50% — Bảo toàn lợi nhuận, dời SL về breakeven',
-                'color': 'warning', 'pnl_pct': round(pnl_pct, 2)}
+        return {'action':'TRIM_50','score':score,'flags':red_flags,
+                'label':'⚠️ CHỐT 50% — Bảo toàn lợi nhuận, dời SL về breakeven',
+                'color':'warning','pnl_pct':round(pnl_pct,2)}
     if score >= EXIT_SCORE_WATCH:
-        return {'action': 'WATCH', 'score': score, 'flags': red_flags,
-                'label': '👁️ THEO DÕI CHẶT — Chuẩn bị tâm lý thoát',
-                'color': 'warning', 'pnl_pct': round(pnl_pct, 2)}
-    return {'action': 'HOLD', 'score': score,
-            'flags': red_flags or ['✅ Chưa có red flag'],
-            'label': '✅ TIẾP TỤC GIỮ', 'color': 'success',
-            'pnl_pct': round(pnl_pct, 2)}
+        return {'action':'WATCH','score':score,'flags':red_flags,
+                'label':'👁️ THEO DÕI CHẶT — Chuẩn bị tâm lý thoát',
+                'color':'warning','pnl_pct':round(pnl_pct,2)}
+    return {'action':'HOLD','score':score,
+            'flags':red_flags or ['✅ Chưa có red flag'],
+            'label':'✅ TIẾP TỤC GIỮ','color':'success',
+            'pnl_pct':round(pnl_pct,2)}
 
 
 def render_exit_signal_card(exit_sig: dict, current_price: float,
@@ -3013,100 +2757,53 @@ def render_exit_signal_card(exit_sig: dict, current_price: float,
                       delta=f"{(current_price-entry_price)*shares:+,.0f} đ")
         with c3:
             action = exit_sig['action']
-            if action == 'EXIT_ALL': st.error("THOÁT NGAY")
-            elif action == 'TRIM_50': st.warning("CHỐT 50%")
-            elif action == 'WATCH':   st.warning("THEO DÕI")
-            else:                      st.success("GIỮ")
-        with st.expander("Chi tiết red flags", expanded=(exit_sig['score'] >= 2)):
+            if   action == 'EXIT_ALL': st.error("THOÁT NGAY")
+            elif action == 'TRIM_50':  st.warning("CHỐT 50%")
+            elif action == 'WATCH':    st.warning("THEO DÕI")
+            else:                       st.success("GIỮ")
+        with st.expander("Chi tiết red flags", expanded=(exit_sig['score']>=2)):
             for f in exit_sig['flags']:
                 st.write(f)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Position Sizing — Volatility Parity
+# Position Sizing — Vol Parity
 # ──────────────────────────────────────────────────────────────────────────────
-def calc_position_size_vol_parity(
-    capital: float, entry_price: float, atr: float,
-    risk_per_trade: float = RISK_PER_TRADE_DEFAULT,
-    max_size_pct: float = MAX_POSITION_PCT,
-    size_mult: float = 1.0,
-) -> dict:
-    """
-    [V24] Position sizing theo dollar-risk constant.
-    Mỗi lệnh chỉ 'đặt cược' tối đa risk_per_trade × capital (mặc định 1%).
-    SL = entry - 2×ATR; số share = dollar_risk / (2×ATR).
-    Cap tại max_size_pct (mặc định 20%/mã) để tránh concentration.
-    size_mult: hệ số từ market regime (0.0-1.0).
-    """
+def calc_position_size_vol_parity(capital: float, entry_price: float, atr: float,
+                                    risk_per_trade: float = RISK_PER_TRADE_DEFAULT,
+                                    max_size_pct: float = MAX_POSITION_PCT,
+                                    size_mult: float = 1.0) -> dict:
+    """[V24] Position sizing theo dollar-risk constant."""
     if atr <= 0 or entry_price <= 0 or capital <= 0:
-        return {'shares': 0, 'value': 0, 'size_pct': 0,
-                'dollar_risk': 0, 'risk_per_share': 0,
-                'sl_price': 0, 'tp2_price': 0, 'tp3_price': 0,
-                'r_multiple_tp2': 0, 'r_multiple_tp3': 0}
+        return {'shares':0,'value':0,'size_pct':0,'dollar_risk':0,
+                'risk_per_share':0,'sl_price':0,'tp2_price':0,'tp3_price':0}
 
     risk_per_share = ATR_MULTIPLIER * atr
     dollar_risk    = capital * risk_per_trade * size_mult
-    shares_by_risk = dollar_risk / risk_per_share if risk_per_share > 0 else 0
-
-    max_shares_by_cap = (capital * max_size_pct * size_mult) / entry_price
-    raw_shares = min(shares_by_risk, max_shares_by_cap)
-    shares = int(raw_shares // 100 * 100)
+    shares_by_risk = dollar_risk / risk_per_share
+    max_shares     = (capital * max_size_pct * size_mult) / entry_price
+    shares = int(min(shares_by_risk, max_shares) // 100 * 100)
     value  = shares * entry_price
-    size_pct = (value / capital * 100) if capital > 0 else 0
-
-    sl_price  = entry_price - risk_per_share
-    tp2_price = entry_price + 2 * risk_per_share
-    tp3_price = entry_price + 3 * risk_per_share
 
     return {
         'shares': shares, 'value': round(value, 0),
-        'size_pct': round(size_pct, 2),
+        'size_pct': round(value / capital * 100, 2) if capital > 0 else 0,
         'dollar_risk': round(dollar_risk, 0),
         'risk_per_share': round(risk_per_share, 0),
-        'sl_price': round(sl_price, 0),
-        'tp2_price': round(tp2_price, 0),
-        'tp3_price': round(tp3_price, 0),
+        'sl_price': round(entry_price - risk_per_share, 0),
+        'tp2_price': round(entry_price + 2 * risk_per_share, 0),
+        'tp3_price': round(entry_price + 3 * risk_per_share, 0),
         'r_multiple_tp2': 2.0, 'r_multiple_tp3': 3.0,
-        'size_mult_applied': size_mult,
-    }
-
-
-def combine_kelly_and_vol_parity(kelly_pct: float, vol_parity_result: dict,
-                                  capital: float) -> dict:
-    """[V24] Kết hợp Half-Kelly và Vol-Parity — lấy MIN để bảo thủ."""
-    kelly_value  = capital * (kelly_pct / 100.0)
-    parity_value = vol_parity_result.get('value', 0)
-    final_value  = min(kelly_value, parity_value)
-
-    entry_price = (vol_parity_result.get('value', 0) /
-                    max(1, vol_parity_result.get('shares', 1)))
-    if entry_price <= 0:
-        entry_price = 1
-
-    final_shares = int(final_value / entry_price // 100 * 100)
-    final_value  = final_shares * entry_price
-
-    return {
-        'kelly_value': round(kelly_value, 0),
-        'parity_value': round(parity_value, 0),
-        'final_value': round(final_value, 0),
-        'final_shares': final_shares,
-        'final_size_pct': round(final_value / capital * 100, 2) if capital > 0 else 0,
-        'limiter': 'Kelly' if kelly_value < parity_value else 'Vol-Parity',
     }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Correlation Check — diversified Top Pick
+# Correlation Check
 # ──────────────────────────────────────────────────────────────────────────────
 def diversified_top_pick(candidates: list, n: int = 3,
                           max_corr: float = CORR_MAX_PAIR,
                           days_corr: int = CORR_LOOKBACK) -> list:
-    """
-    [V24] Chọn Top N từ candidates đảm bảo correlation thấp.
-    Greedy: candidate có score cao nhất luôn được chọn; sau đó chỉ thêm
-    candidate có max correlation với những cái đã chọn < max_corr.
-    """
+    """[V24] Top N candidates với correlation < max_corr."""
     if len(candidates) <= n:
         return candidates[:n]
 
@@ -3135,85 +2832,128 @@ def diversified_top_pick(candidates: list, n: int = 3,
     selected = []
     for c in candidates:
         t = c.get('ticker')
-        if t not in corr_matrix.columns:
-            continue
+        if t not in corr_matrix.columns: continue
         if not selected:
-            selected.append(c)
-            continue
+            selected.append(c); continue
         max_pair = max(corr_matrix.loc[t, s['ticker']]
                         for s in selected if s.get('ticker') in corr_matrix.columns)
         if max_pair < max_corr:
             selected.append(c)
             c['_max_corr_to_selected'] = round(float(max_pair), 2)
-        if len(selected) >= n:
-            break
+        if len(selected) >= n: break
 
     if len(selected) < n:
         for c in candidates:
-            if c in selected: continue
-            t = c.get('ticker')
-            if t not in corr_matrix.columns: continue
-            if not selected:
-                selected.append(c); continue
-            max_pair = max(corr_matrix.loc[t, s['ticker']]
-                            for s in selected if s.get('ticker') in corr_matrix.columns)
-            if max_pair < CORR_FALLBACK_MAX:
+            if c not in selected and len(selected) < n:
                 selected.append(c)
-                c['_max_corr_to_selected'] = round(float(max_pair), 2)
-                c['_fallback'] = True
-            if len(selected) >= n:
-                break
-
-    if len(selected) < n:
-        for c in candidates:
-            if c not in selected:
-                selected.append(c)
-            if len(selected) >= n:
-                break
 
     return selected[:n]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# A/B Strategy Testing
+# Risk Thermometer
 # ──────────────────────────────────────────────────────────────────────────────
-def run_backtest_param(df: pd.DataFrame,
-                        rsi_buy: float = 45,
-                        profit_target: float = 0.05,
-                        days_fwd: int = 10,
-                        use_wave_filter: bool = False,
-                        use_macd_cross: bool = True,
-                        use_adx_filter: bool = False,
-                        adx_min: float = 20) -> dict:
-    """[V24] Backtest tham số hoá — cho A/B testing strategy variants."""
-    wins = 0
-    profits = []
-    signals_data = []
-    n = len(df)
+def calc_risk_temperature(regime: dict, breadth: dict,
+                            portfolio_metrics: dict = None) -> dict:
+    """[V24] Nhiệt kế rủi ro 0-100."""
+    regime_map = {'STRONG_BULL':10,'CAUTIOUS_BULL':30,'UNKNOWN':50,'MIXED':60,'BEAR':90}
+    components = {'market_regime': regime_map.get(regime.get('regime','UNKNOWN'), 50)}
 
+    pct_ma20 = float(breadth.get('pct_above_ma20', 50))
+    if   pct_ma20 >= 70: c2 = 10
+    elif pct_ma20 >= 50: c2 = 30
+    elif pct_ma20 >= 40: c2 = 60
+    else:                c2 = 85
+    components['breadth'] = c2
+
+    if portfolio_metrics:
+        dd = abs(portfolio_metrics.get('dd_pct', 0))
+        components['drawdown'] = 10 if dd<3 else (35 if dd<7 else (65 if dd<12 else 90))
+        pct_hot = portfolio_metrics.get('pct_rsi_overheat', 0)
+        components['rsi_overheat'] = 15 if pct_hot<10 else (40 if pct_hot<30 else (70 if pct_hot<50 else 90))
+        conc = portfolio_metrics.get('concentration_sector_pct', 0)
+        components['concentration'] = 15 if conc<30 else (45 if conc<50 else (70 if conc<70 else 90))
+    else:
+        components.update({'drawdown':30,'rsi_overheat':30,'concentration':30})
+
+    weights = {'market_regime':0.40,'breadth':0.15,'drawdown':0.20,
+                'rsi_overheat':0.15,'concentration':0.10}
+    total = round(sum(components[k] * weights[k] for k in components), 1)
+
+    if   total < 25: emoji, label = '🟢', 'AN TOÀN'
+    elif total < 50: emoji, label = '🟡', 'BÌNH THƯỜNG'
+    elif total < 75: emoji, label = '🟠', 'CẨN TRỌNG'
+    else:            emoji, label = '🔴', 'NGUY HIỂM'
+
+    return {'score':total,'emoji':emoji,'label':label,
+            'components':components,'weights':weights}
+
+
+def render_risk_thermometer(risk: dict) -> None:
+    """[V24] Widget nhiệt kế rủi ro."""
+    st.markdown(f"### {risk['emoji']} Nhiệt kế rủi ro: **{risk['score']}/100** — {risk['label']}")
+    with st.expander("Chi tiết các thành phần"):
+        for k in risk['components']:
+            c1, c2, c3 = st.columns([2,1,1])
+            c1.write(f"**{k.replace('_',' ').title()}**")
+            c2.write(f"{risk['components'][k]:.0f}/100")
+            c3.write(f"trọng số {risk['weights'][k]*100:.0f}%")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# UI helpers — Tooltips
+# ──────────────────────────────────────────────────────────────────────────────
+METRIC_HELP = {
+    'rsi':        'RSI 14: <30 quá bán, >70 quá mua',
+    'macd':       'MACD = EMA12 - EMA26. >Signal = bullish',
+    'adx':        'ADX: >25 trend mạnh, <20 sideways',
+    'obv':        'OBV: tích lũy volume theo chiều giá',
+    'atr':        'ATR: thước đo biến động thực tế',
+    'rs_rating':  'RS vs VN-Index 3 tháng. 🔥≥80 ✅≥65 🟡≥45 🔴<45',
+    'sharpe':     'Sharpe: >1 tốt, >1.5 rất tốt, >2 nghi overfit',
+    'max_dd':     'Max DD: % sụt lớn nhất. <10% tốt, >20% nguy hiểm',
+    'winrate':    'Tỷ lệ thắng. Sample <30 nên xem Bayesian',
+    'expectancy': 'Lợi nhuận kỳ vọng/lệnh (%). >0 = có edge',
+    'vwap':       'VWAP 20: giá>VWAP = phe mua chủ động',
+    'kelly':      'Half-Kelly: % vốn tối ưu',
+    'ai_t3':      'Xác suất AI giá tăng ≥2% trong 3 phiên',
+    'wave_bot':   'Chân Sóng: 11 tiêu chí, cần ≥4',
+    'divergence': 'Phân kỳ giá vs động lượng',
+    '52w_high':   'Tỷ lệ so với đỉnh 52 tuần',
+    'regime':     'Trạng thái thị trường tổng thể',
+}
+
+def help_for(metric_key: str) -> str:
+    """[V24] Lấy tooltip."""
+    return METRIC_HELP.get(metric_key, '')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Strategy A/B Testing
+# ──────────────────────────────────────────────────────────────────────────────
+def run_backtest_param(df, rsi_buy: float = 45, profit_target: float = 0.05,
+                        days_fwd: int = 10, use_wave_filter: bool = False,
+                        use_macd_cross: bool = True, use_adx_filter: bool = False,
+                        adx_min: float = 20) -> dict:
+    """[V24] Backtest tham số hoá cho A/B testing."""
+    wins, profits, signals_data = 0, [], []
+    n = len(df)
     for i in range(100, n - days_fwd):
-        rsi_now  = df['rsi'].iloc[i]
-        rsi_ok   = rsi_now < rsi_buy
+        rsi_now = df['rsi'].iloc[i]
+        if not (rsi_now < rsi_buy):
+            continue
         if use_macd_cross:
-            macd_cross = (
-                df['macd'].iloc[i]   > df['signal'].iloc[i] and
-                df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]
-            )
+            macd_cross = (df['macd'].iloc[i] > df['signal'].iloc[i] and
+                          df['macd'].iloc[i-1] <= df['signal'].iloc[i-1])
         else:
             macd_cross = df['macd'].iloc[i] > df['signal'].iloc[i]
-        if not (rsi_ok and macd_cross):
-            continue
+        if not macd_cross: continue
 
         if use_wave_filter:
-            if not (WAVE_RSI_MIN <= rsi_now <= WAVE_RSI_MAX):
-                continue
-            ma20 = df['ma20'].iloc[i]
-            if df['close'].iloc[i] > ma20 * 1.05:
-                continue
-
+            if not (WAVE_RSI_MIN <= rsi_now <= WAVE_RSI_MAX): continue
+            if df['close'].iloc[i] > df['ma20'].iloc[i] * 1.05: continue
         if use_adx_filter and 'adx' in df.columns:
-            if df['adx'].iloc[i] < adx_min:
-                continue
+            if df['adx'].iloc[i] < adx_min: continue
 
         buy_price = df['close'].iloc[i] * (1 + SLIPPAGE)
         target    = buy_price * (1 + profit_target)
@@ -3224,22 +2964,19 @@ def run_backtest_param(df: pd.DataFrame,
         date_i    = df['date'].iloc[i] if 'date' in df.columns else i
 
         if hit_tp:
-            p = profit_target - ROUND_TRIP_COST
-            profits.append(p); wins += 1
-            signals_data.append({'date': date_i, 'result': 'WIN', 'pnl': p})
+            p = profit_target - ROUND_TRIP_COST; profits.append(p); wins += 1
+            signals_data.append({'date':date_i,'result':'WIN','pnl':p})
         elif hit_sl:
-            p = -SL_PCT - ROUND_TRIP_COST
-            profits.append(p)
-            signals_data.append({'date': date_i, 'result': 'LOSS', 'pnl': p})
+            p = -SL_PCT - ROUND_TRIP_COST; profits.append(p)
+            signals_data.append({'date':date_i,'result':'LOSS','pnl':p})
         else:
             exit_price = future.iloc[-1] if len(future) > 0 else buy_price
-            p = (exit_price - buy_price) / buy_price - ROUND_TRIP_COST
-            profits.append(p)
-            signals_data.append({'date': date_i, 'result': 'HOLD', 'pnl': p})
+            p = (exit_price - buy_price)/buy_price - ROUND_TRIP_COST; profits.append(p)
+            signals_data.append({'date':date_i,'result':'HOLD','pnl':p})
 
     if not profits:
-        return {'winrate':0.0,'expectancy':0.0,'sharpe':0.0,
-                'max_drawdown':0.0,'signals':0,'profits':[],'signals_data':[]}
+        return {'winrate':0.0,'expectancy':0.0,'sharpe':0.0,'max_drawdown':0.0,
+                'signals':0,'profits':[],'signals_data':[]}
 
     n_trades = len(profits)
     winrate  = round((wins / n_trades) * 100, 1)
@@ -3257,39 +2994,31 @@ def run_backtest_param(df: pd.DataFrame,
         except Exception:
             pass
 
-    sharpe = (round((excess.mean() / excess.std()) * np.sqrt(signals_per_year), 2)
+    sharpe = (round((excess.mean()/excess.std())*np.sqrt(signals_per_year), 2)
               if excess.std() > 1e-9 else 0.0)
-    equity = np.cumprod([1 + p for p in profits])
-    rolling_max = np.maximum.accumulate(equity)
-    max_dd = round(((equity - rolling_max) / rolling_max).min() * 100, 2)
-    expectancy = round(np.mean(profits) * 100, 2)
+    equity = np.cumprod([1+p for p in profits])
+    max_dd = round(((equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity)).min() * 100, 2)
 
-    return {'winrate':winrate, 'expectancy':expectancy, 'sharpe':sharpe,
-            'max_drawdown':max_dd, 'signals':n_trades,
-            'signals_per_year':round(signals_per_year, 1),
-            'profits':profits, 'signals_data':signals_data}
+    return {'winrate':winrate,'expectancy':round(np.mean(profits)*100,2),
+            'sharpe':sharpe,'max_drawdown':max_dd,'signals':n_trades,
+            'signals_per_year':round(signals_per_year,1),
+            'profits':profits,'signals_data':signals_data}
 
 
-def compare_strategies(df: pd.DataFrame, strategies: dict) -> pd.DataFrame:
-    """[V24] So sánh nhiều variant strategy trên cùng dữ liệu."""
-    rows = []
-    equity_curves = {}
+def compare_strategies(df, strategies: dict) -> pd.DataFrame:
+    """[V24] So sánh nhiều variant strategy."""
+    rows, equity_curves = [], {}
     for name, params in strategies.items():
         try:
             bt = run_backtest_param(df, **params)
-            rows.append({
-                'Strategy': name, 'Signals': bt['signals'],
-                'Winrate (%)': bt['winrate'],
-                'Expectancy (%)': bt['expectancy'],
-                'Sharpe': bt['sharpe'],
-                'Max DD (%)': bt['max_drawdown'],
-                'Sigs/Year': bt.get('signals_per_year', 0),
-            })
+            rows.append({'Strategy':name,'Signals':bt['signals'],
+                         'Winrate (%)':bt['winrate'],'Expectancy (%)':bt['expectancy'],
+                         'Sharpe':bt['sharpe'],'Max DD (%)':bt['max_drawdown'],
+                         'Sigs/Year':bt.get('signals_per_year',0)})
             if bt['profits']:
-                equity = np.cumprod([1 + p for p in bt['profits']]).tolist()
-                equity_curves[name] = equity
+                equity_curves[name] = np.cumprod([1+p for p in bt['profits']]).tolist()
         except Exception as e:
-            rows.append({'Strategy': name, 'Error': str(e)[:50]})
+            rows.append({'Strategy':name,'Error':str(e)[:50]})
 
     df_out = pd.DataFrame(rows)
     df_out.attrs['equity_curves'] = equity_curves
@@ -3297,29 +3026,15 @@ def compare_strategies(df: pd.DataFrame, strategies: dict) -> pd.DataFrame:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Cache + Parallel Scan
+# Parallel scan
 # ──────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, max_entries=500)
-def calc_indicators_cached(ticker: str, date_key: str) -> pd.DataFrame:
-    """[V24] Cache calc_indicators theo (ticker, ngày).
-    Tránh re-compute cùng dữ liệu nhiều lần trong session."""
-    df = get_price(ticker)
-    if not valid(df):
-        return pd.DataFrame()
-    return calc_indicators(df)
-
-
 def scan_parallel(tickers: list, scan_fn,
-                   max_workers: int = 10,
-                   show_progress: bool = True,
+                   max_workers: int = 10, show_progress: bool = True,
                    timeout_per_task: int = 30) -> list:
-    """[V24] Quét song song danh sách ticker.
-    scan_fn(ticker) -> result_or_None.
-    Tăng tốc radar 400 mã từ ~200s xuống ~30-60s."""
+    """[V24] Quét song song. scan_fn(ticker) -> result or None."""
     results = []
     total = len(tickers)
-    if total == 0:
-        return results
+    if total == 0: return results
 
     progress = st.progress(0) if show_progress else None
     status   = st.empty()    if show_progress else None
@@ -3331,8 +3046,7 @@ def scan_parallel(tickers: list, scan_fn,
             t = futures[f]
             try:
                 r = f.result(timeout=timeout_per_task)
-                if r is not None:
-                    results.append(r)
+                if r is not None: results.append(r)
             except Exception as e:
                 print(f"[WARN] scan_parallel {t}: {e}")
             done += 1
@@ -3346,18 +3060,17 @@ def scan_parallel(tickers: list, scan_fn,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Watchlist Persistence (Gist + fallback file)
+# Watchlist persistence (Gist + fallback file)
 # ──────────────────────────────────────────────────────────────────────────────
 def load_watchlist_from_gist() -> list:
-    """[V24] Đọc watchlist từ private GitHub Gist.
-    Cần secrets.toml: gist_id, github_token."""
+    """[V24] Đọc watchlist từ private GitHub Gist."""
+    if not HAS_REQUESTS: return []
     try:
         gist_id = st.secrets.get('gist_id', '')
         token   = st.secrets.get('github_token', '')
         if not gist_id or not token: return []
         r = requests.get(f"https://api.github.com/gists/{gist_id}",
-                          headers={'Authorization': f'token {token}'},
-                          timeout=5)
+                          headers={'Authorization': f'token {token}'}, timeout=5)
         if r.status_code != 200: return []
         data = r.json()
         if WATCHLIST_GIST_FILENAME not in data.get('files', {}):
@@ -3371,6 +3084,7 @@ def load_watchlist_from_gist() -> list:
 
 def save_watchlist_to_gist(tickers: list) -> bool:
     """[V24] Ghi watchlist lên Gist."""
+    if not HAS_REQUESTS: return False
     try:
         gist_id = st.secrets.get('gist_id', '')
         token   = st.secrets.get('github_token', '')
@@ -3387,7 +3101,6 @@ def save_watchlist_to_gist(tickers: list) -> bool:
 
 
 def load_watchlist_from_file(path: str = 'watchlist.json') -> list:
-    """[V24] Fallback: lưu vào file JSON local."""
     try:
         if not os.path.exists(path): return []
         with open(path, 'r', encoding='utf-8') as f:
@@ -3400,8 +3113,8 @@ def load_watchlist_from_file(path: str = 'watchlist.json') -> list:
 def save_watchlist_to_file(tickers: list, path: str = 'watchlist.json') -> bool:
     try:
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(sorted(set(t.upper() for t in tickers)),
-                      f, ensure_ascii=False, indent=2)
+            json.dump(sorted(set(t.upper() for t in tickers)), f,
+                      ensure_ascii=False, indent=2)
         return True
     except Exception:
         return False
@@ -3409,148 +3122,23 @@ def save_watchlist_to_file(tickers: list, path: str = 'watchlist.json') -> bool:
 
 def watchlist_persist(tickers: list) -> bool:
     """[V24] Persist: thử Gist trước, fallback file."""
-    if save_watchlist_to_gist(tickers):
-        return True
-    return save_watchlist_to_file(tickers)
+    return save_watchlist_to_gist(tickers) or save_watchlist_to_file(tickers)
 
 
 def watchlist_load() -> list:
     """[V24] Load: thử Gist trước, fallback file."""
-    wl = load_watchlist_from_gist()
-    if wl: return wl
-    return load_watchlist_from_file()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Risk Thermometer (KHÔNG auto-pause theo yêu cầu)
-# ──────────────────────────────────────────────────────────────────────────────
-def calc_risk_temperature(regime: dict, breadth: dict,
-                            portfolio_metrics: dict = None) -> dict:
-    """
-    [V24] Nhiệt kế rủi ro tổng hợp 0-100.
-    Trộn: regime (40%) + breadth (15%) + drawdown (20%)
-        + rsi overheat (15%) + concentration (10%).
-    """
-    components = {}
-
-    regime_map = {'STRONG_BULL':10, 'CAUTIOUS_BULL':30, 'UNKNOWN':50, 'MIXED':60, 'BEAR':90}
-    c1 = regime_map.get(regime.get('regime', 'UNKNOWN'), 50)
-    components['market_regime'] = c1
-
-    pct_ma20 = float(breadth.get('pct_above_ma20', 50))
-    if   pct_ma20 >= 70: c2 = 10
-    elif pct_ma20 >= 50: c2 = 30
-    elif pct_ma20 >= 40: c2 = 60
-    else:                c2 = 85
-    components['breadth'] = c2
-
-    if portfolio_metrics:
-        dd = abs(portfolio_metrics.get('dd_pct', 0))
-        if   dd < 3:   c3 = 10
-        elif dd < 7:   c3 = 35
-        elif dd < 12:  c3 = 65
-        else:          c3 = 90
-    else:
-        c3 = 30
-    components['drawdown'] = c3
-
-    if portfolio_metrics:
-        pct_hot = portfolio_metrics.get('pct_rsi_overheat', 0)
-        if   pct_hot < 10: c4 = 15
-        elif pct_hot < 30: c4 = 40
-        elif pct_hot < 50: c4 = 70
-        else:              c4 = 90
-    else:
-        c4 = 30
-    components['rsi_overheat'] = c4
-
-    if portfolio_metrics:
-        conc = portfolio_metrics.get('concentration_sector_pct', 0)
-        if   conc < 30:  c5 = 15
-        elif conc < 50:  c5 = 45
-        elif conc < 70:  c5 = 70
-        else:            c5 = 90
-    else:
-        c5 = 30
-    components['concentration'] = c5
-
-    weights = {'market_regime':0.40,'breadth':0.15,'drawdown':0.20,
-                'rsi_overheat':0.15,'concentration':0.10}
-    total = round(sum(components[k] * weights[k] for k in components), 1)
-
-    if   total < 25: emoji, label, color = '🟢', 'AN TOÀN',     'success'
-    elif total < 50: emoji, label, color = '🟡', 'BÌNH THƯỜNG', 'warning'
-    elif total < 75: emoji, label, color = '🟠', 'CẨN TRỌNG',   'warning'
-    else:            emoji, label, color = '🔴', 'NGUY HIỂM',   'error'
-
-    return {'score':total, 'emoji':emoji, 'label':label, 'color':color,
-            'components':components, 'weights':weights}
-
-
-def render_risk_thermometer(risk: dict) -> None:
-    """[V24] Widget nhiệt kế rủi ro."""
-    st.markdown(f"### {risk['emoji']} Nhiệt kế rủi ro: **{risk['score']}/100** "
-                f"— {risk['label']}")
-    with st.expander("Chi tiết các thành phần"):
-        for k in risk['components']:
-            c1, c2, c3 = st.columns([2,1,1])
-            c1.write(f"**{k.replace('_',' ').title()}**")
-            c2.write(f"{risk['components'][k]:.0f}/100")
-            c3.write(f"trọng số {risk['weights'][k]*100:.0f}%")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# SHAP AI Explanation
-# ──────────────────────────────────────────────────────────────────────────────
-def render_ai_explanation_card(ai_result: dict) -> None:
-    """[V24] Render card AI prediction + SHAP top drivers (vì sao AI nói thế)."""
-    with st.container(border=True):
-        prob = ai_result.get('prob')
-        cv_auc = ai_result.get('cv_auc')
-        drivers = ai_result.get('top_drivers', [])
-
-        c1, c2 = st.columns([2, 3])
-        with c1:
-            if _is_valid_score(prob):
-                v = float(prob)
-                if   v >= 70: badge = '🔥 Rất tốt'
-                elif v >= 55: badge = '✅ Tốt'
-                elif v >= 45: badge = '🟡 Trung bình'
-                else:         badge = '🔴 Rủi ro'
-                st.metric("🤖 AI T+3", f"{v:.1f}%",
-                          help="Xác suất AI dự đoán giá tăng ≥2% trong 3 phiên tới")
-                st.caption(badge)
-                if cv_auc is not None:
-                    st.caption(f"Độ tin cậy CV (AUC): {cv_auc:.2f}")
-            else:
-                st.metric("🤖 AI T+3", "N/A")
-
-        with c2:
-            if drivers:
-                st.markdown("**Top đặc trưng ảnh hưởng:**")
-                for d in drivers:
-                    icon = '↑' if d['direction'] == '↑' else '↓'
-                    color = 'green' if d['direction'] == '↑' else 'red'
-                    st.markdown(
-                        f"<span style='color:{color}'>{icon}</span> "
-                        f"<code>{d['feature']}</code> = {d['value']} "
-                        f"<span style='color:gray'>(SHAP {d['shap']:+.3f})</span>",
-                        unsafe_allow_html=True)
-            elif not HAS_SHAP:
-                st.caption("💡 Cài `shap` để xem chi tiết: `pip install shap`")
+    return load_watchlist_from_gist() or load_watchlist_from_file()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PDF Export
 # ──────────────────────────────────────────────────────────────────────────────
-def export_stock_report_pdf(
-    ticker: str, scoring: dict, last: pd.Series, bt: dict,
-    ai_score, kelly_pct: float, entry_signal: dict,
-    chart_png_bytes: bytes = None, extra_sections: dict = None,
-):
-    """[V24] Xuất báo cáo PDF cho 1 mã. Trả về bytes hoặc None."""
+def export_stock_report_pdf(ticker: str, scoring: dict, last, bt: dict,
+                              ai_score, kelly_pct: float, entry_signal: dict,
+                              chart_png_bytes: bytes = None, extra_sections: dict = None):
+    """[V24] Xuất báo cáo PDF."""
     if not HAS_REPORTLAB:
-        print("[WARN] reportlab chưa cài. pip install reportlab")
+        print("[WARN] reportlab chưa cài")
         return None
 
     buf = io.BytesIO()
@@ -3578,13 +3166,12 @@ def export_stock_report_pdf(
     ]
     t = RLTable(summary, colWidths=[120, 360])
     t.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(0,-1), colors.HexColor('#E7EAF6')),
+        ('BACKGROUND',(0,0),(0,-1),colors.HexColor('#E7EAF6')),
         ('FONT',(0,0),(-1,-1),'Helvetica',10),
         ('GRID',(0,0),(-1,-1),0.4,colors.grey),
         ('PADDING',(0,0),(-1,-1),6),
     ]))
-    flow.append(t)
-    flow.append(Spacer(1, 12))
+    flow.append(t); flow.append(Spacer(1, 12))
 
     flow.append(RLPar("Phân tích điểm số", h2))
     sb = [['Thành phần','Điểm','Tối đa'],
@@ -3592,7 +3179,7 @@ def export_stock_report_pdf(
            ['Kỹ thuật',str(scoring['tech_pts']),'20'],
            ['Dòng tiền',str(scoring['flow_pts']),'20'],
            ['Tài chính',str(scoring['fin_pts']),'15'],
-           ['Ngành',str(scoring['sector_pts']),'10']]
+           ['Ngành',str(scoring.get('sector_pts',0)),'10']]
     sbt = RLTable(sb, colWidths=[160,80,80])
     sbt.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1F3864')),
@@ -3602,16 +3189,14 @@ def export_stock_report_pdf(
         ('GRID',(0,0),(-1,-1),0.4,colors.grey),
         ('PADDING',(0,0),(-1,-1),5),
     ]))
-    flow.append(sbt)
-    flow.append(Spacer(1, 12))
+    flow.append(sbt); flow.append(Spacer(1, 12))
 
     flow.append(RLPar("Hiệu năng backtest", h2))
-    btab = [['Win rate (thô)',     f"{bt.get('winrate', 0):.1f}%"],
-             ['Win rate (Bayes)',   f"{bt.get('winrate_bayes', 0):.1f}%"],
-             ['Expectancy',         f"{bt.get('expectancy', 0):+.2f}%"],
-             ['Sharpe',             f"{bt.get('sharpe', 0):.2f}"],
-             ['Max DD',             f"{bt.get('max_drawdown', 0):.2f}%"],
-             ['Số signals',         f"{bt.get('signals', 0)}"]]
+    btab = [['Win rate',     f"{bt.get('winrate', 0):.1f}%"],
+             ['Expectancy',   f"{bt.get('expectancy', 0):+.2f}%"],
+             ['Sharpe',       f"{bt.get('sharpe', 0):.2f}"],
+             ['Max DD',       f"{bt.get('max_drawdown', 0):.2f}%"],
+             ['Số signals',   f"{bt.get('signals', 0)}"]]
     bt_tab = RLTable(btab, colWidths=[160,320])
     bt_tab.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(0,-1),colors.HexColor('#F2F2F2')),
@@ -3619,18 +3204,12 @@ def export_stock_report_pdf(
         ('GRID',(0,0),(-1,-1),0.4,colors.grey),
         ('PADDING',(0,0),(-1,-1),5),
     ]))
-    flow.append(bt_tab)
-    flow.append(Spacer(1, 12))
+    flow.append(bt_tab); flow.append(Spacer(1, 12))
 
     if entry_signal:
         flow.append(RLPar("Tín hiệu vào lệnh", h2))
-        flow.append(RLPar(f"<b>{entry_signal.get('action', '-')}</b> — "
-                            f"Size đề xuất: {entry_signal.get('size_pct', 0)}%", body))
-        flow.append(RLPar(
-            f"Entry: {entry_signal.get('entry', 0):,.0f} | "
-            f"SL: {entry_signal.get('sl', 0):,.0f} ({entry_signal.get('sl_pct', 0):+.1f}%) | "
-            f"TP2: {entry_signal.get('tp2', 0):,.0f} | "
-            f"TP3: {entry_signal.get('tp3', 0):,.0f}", body))
+        flow.append(RLPar(f"<b>{entry_signal.get('action','-')}</b> — "
+                            f"Size: {entry_signal.get('size_pct',0)}%", body))
         flow.append(Spacer(1, 12))
 
     if chart_png_bytes:
@@ -3639,7 +3218,7 @@ def export_stock_report_pdf(
             flow.append(RLImage(io.BytesIO(chart_png_bytes), width=500, height=280))
             flow.append(Spacer(1, 12))
         except Exception as e:
-            print(f"[WARN] PDF chart embed: {e}")
+            print(f"[WARN] PDF chart: {e}")
 
     if extra_sections:
         for title, content in extra_sections.items():
@@ -3647,18 +3226,15 @@ def export_stock_report_pdf(
             flow.append(RLPar(str(content), body))
             flow.append(Spacer(1, 12))
 
-    flow.append(Spacer(1, 12))
-    flow.append(RLPar("<i>Báo cáo tự động sinh bởi Quant System V24. "
-                       "Không phải khuyến nghị đầu tư.</i>",
-                       ParagraphStyle('F', parent=body, fontSize=8,
-                                        textColor=colors.grey)))
+    flow.append(RLPar("<i>Báo cáo tự động — Quant System V24. Không phải khuyến nghị đầu tư.</i>",
+                       ParagraphStyle('F', parent=body, fontSize=8, textColor=colors.grey)))
     doc.build(flow)
     return buf.getvalue()
 
 
 def streamlit_pdf_download_button(pdf_bytes, ticker: str,
                                     label: str = "📄 Tải báo cáo PDF") -> None:
-    """[V24] Helper hiển thị nút download PDF."""
+    """[V24] Nút download PDF."""
     if pdf_bytes is None:
         st.warning("⚠️ Cài reportlab để xuất PDF: `pip install reportlab`")
         return
@@ -3668,167 +3244,65 @@ def streamlit_pdf_download_button(pdf_bytes, ticker: str,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI helpers — Tooltips
+# Divergence với scipy find_peaks (V24 IMPROVED)
 # ──────────────────────────────────────────────────────────────────────────────
-METRIC_HELP = {
-    'rsi':        'Relative Strength Index 14: <30 quá bán, >70 quá mua',
-    'macd':       'MACD = EMA12 - EMA26. >Signal = bullish',
-    'adx':        'Average Directional Index: >25 = trend mạnh, <20 = sideways',
-    'obv':        'On-Balance Volume: tích lũy volume theo chiều giá',
-    'atr':        'Average True Range: thước đo biến động thực tế',
-    'rs_rating':  'Relative Strength vs VN-Index 3 tháng. 🔥≥80 | ✅≥65 | 🟡≥45 | 🔴<45',
-    'sharpe':     'Sharpe Ratio: >1 tốt, >1.5 rất tốt, >2 cần kiểm tra overfit',
-    'max_dd':     'Max Drawdown: % sụt lớn nhất từ peak. <10% tốt, >20% nguy hiểm',
-    'winrate':    'Tỷ lệ thắng. Với sample <30, xem winrate Bayesian thay vì thô',
-    'expectancy': 'Lợi nhuận kỳ vọng mỗi lệnh (%). >0 = có edge',
-    'vwap':       'Volume Weighted Average Price 20 phiên. Giá>VWAP = phe mua chủ động',
-    'kelly':      'Half-Kelly: % vốn tối ưu dựa trên winrate/avg_profit',
-    'ai_t3':      'Xác suất AI dự đoán giá tăng ≥2% trong 3 phiên tới',
-    'wave_bot':   'Chân Sóng (Wave Bottom): 12 tiêu chí, cần ≥4 điểm',
-    'divergence': 'Phân kỳ giá vs động lượng. Dương=sắp đảo tăng; Âm=sắp đảo giảm',
-    '52w_high':   'Tỷ lệ so với đỉnh 52 tuần. Trong 8% đỉnh = CANSLIM Stage 2',
-    'regime':     'Trạng thái thị trường: STRONG_BULL / CAUTIOUS / MIXED / BEAR',
-}
-
-
-def help_for(metric_key: str) -> str:
-    """[V24] Lấy tooltip cho 1 metric."""
-    return METRIC_HELP.get(metric_key, '')
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Quick Pick V24 — tích hợp regime + correlation + parallel
-# ──────────────────────────────────────────────────────────────────────────────
-def quick_pick_stocks_v24(
-    tickers_list: list, market_regime: dict,
-    ai_min: float = 45.0, n_results: int = 3,
-    parallel: bool = True, max_corr: float = CORR_MAX_PAIR,
-) -> list:
+def detect_divergence_v24(df, lookback: int = None) -> dict:
     """
-    [V24] Quick Pick nâng cấp:
-      • BEAR market → trả list rỗng (KHÔNG gợi ý)
-      • MIXED → chỉ mã có RS ≥ 80
-      • Áp min_score_buy động theo regime
-      • Quét song song
-      • Diversified top-pick (correlation check)
+    [V24 NEW — KHÔNG thay V23] Phân kỳ với find_peaks.
+    Dùng tên khác để KHÔNG override V23's detect_divergence.
+    Nếu muốn dùng: gọi explicit detect_divergence_v24(df).
     """
-    if not market_regime.get('buy_allowed', True):
-        return []
+    DIV_LOOKBACK_LOCAL = globals().get('DIV_LOOKBACK', 20)
+    if lookback is None:
+        lookback = DIV_LOOKBACK_LOCAL
 
-    date_key = datetime.now(TZ_VN).strftime('%Y-%m-%d')
-    sample   = list(dict.fromkeys(tickers_list))[:200]
+    result = {
+        'bullish_rsi': False, 'bearish_rsi': False,
+        'bullish_macd': False, 'bearish_macd': False,
+        'label': '➡️ Không có phân kỳ rõ ràng',
+        'signal': 'NONE',
+    }
+    if len(df) < lookback or not HAS_SCIPY:
+        if not HAS_SCIPY:
+            result['label'] = '⚠️ Thiếu scipy — divergence V24 không khả dụng'
+        return result
 
-    def _eval(t: str):
-        try:
-            df_q = get_price(t, days=SCAN_DAYS)
-            if not valid(df_q) or len(df_q) < 100:
-                return None
-            if not is_data_fresh(df_q):
-                return None
-            df_q = calc_indicators(df_q)
-            last_q  = df_q.iloc[-1]
-            rsi_q   = float(last_q['rsi'])
-            price_q = float(last_q['close'])
-            ma20_q  = float(last_q['ma20'])
-            vol_q   = float(last_q['vol_strength'])
-            adx_q   = float(last_q.get('adx', 0))
+    try:
+        w = df.tail(lookback).reset_index(drop=True)
+        close = w['close'].values
+        rsi   = w['rsi'].values
+        macd  = w['macd'].values
 
-            if rsi_q > 60 or rsi_q < 25:    return None
-            if price_q < ma20_q * 0.93:      return None
-            if vol_q > VOL_BREAKOUT:         return None
+        dist   = max(3, lookback // 5)
+        prom_p = (close.max() - close.min()) * 0.02 if close.max() > close.min() else 1
+        prom_r = 3.0
 
-            ai_q = predict_ai_cached(t, date_key)
-            if not _is_valid_score(ai_q):    return None
-            ai_f = float(ai_q)
-            if ai_f < ai_min:                return None
+        price_lows,  _ = find_peaks(-close, distance=dist, prominence=prom_p)
+        rsi_lows,    _ = find_peaks(-rsi,   distance=dist, prominence=prom_r)
+        price_highs, _ = find_peaks(close,  distance=dist, prominence=prom_p)
+        rsi_highs,   _ = find_peaks(rsi,    distance=dist, prominence=prom_r)
 
-            w52   = calc_52w_info(df_q)
-            div_q = detect_divergence(df_q)
-            smart = smart_flow_proxy(df_q)
-            wave  = calc_wave_bottom_score(
-                df_q, last_q,
-                smart_flow=(smart['trend'] in ('BUY','STRONG_BUY')),
-                near_52w_high=w52['near_high'],
-                div_bullish=(div_q['signal'] == 'BULLISH'),
-            )
+        if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+            p1, p2 = price_lows[-2], price_lows[-1]
+            r1, r2 = rsi_lows[-2],   rsi_lows[-1]
+            if close[p2] < close[p1] * 0.99 and rsi[r2] > rsi[r1] + 2:
+                result['bullish_rsi'] = True
 
-            df_vni_local = st.session_state.get('df_vni', pd.DataFrame())
-            rs_q = calc_rs_rating(df_q, df_vni_local)
+        if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+            p1, p2 = price_highs[-2], price_highs[-1]
+            r1, r2 = rsi_highs[-2],   rsi_highs[-1]
+            if close[p2] > close[p1] * 1.01 and rsi[r2] < rsi[r1] - 2:
+                result['bearish_rsi'] = True
 
-            if market_regime.get('regime') == 'MIXED' and rs_q < 80:
-                return None
-
-            weekly_q = get_weekly_trend(df_q)
-            atr_q    = float(last_q.get('atr', price_q * 0.02))
-            sl_q     = price_q - ATR_MULTIPLIER * atr_q
-            tp2_q    = price_q + 2 * ATR_MULTIPLIER * atr_q
-            tp3_q    = price_q + 3 * ATR_MULTIPLIER * atr_q
-
-            score_q = (ai_f * 0.4 + rs_q * 0.25 + wave['score'] * 4 +
-                        (10 if weekly_q == 'UP' else 0) +
-                        (5 if adx_q > 20 else 0))
-
-            return {
-                'ticker': t, 'price': round(price_q, 0),
-                'ai': round(ai_f, 1), 'rsi': round(rsi_q, 1),
-                'rs': round(rs_q, 1), 'vol': round(vol_q, 2),
-                'adx': round(adx_q, 1), 'weekly': weekly_q,
-                'wave': wave['score'], 'wave_total': wave['total'],
-                'wave_flags': wave['flags'],
-                'sl': round(sl_q, 0), 'tp2': round(tp2_q, 0), 'tp3': round(tp3_q, 0),
-                'sl_pct': round((sl_q - price_q)/price_q*100, 2),
-                'tp2_pct': round((tp2_q - price_q)/price_q*100, 2),
-                'sector': (get_ticker_sector(t) or 'Khác'),
-                'score': round(score_q, 1),
-                'smart_flow_label': smart['label'],
-                'div_label': div_q['label'],
-            }
-        except Exception as e:
-            print(f"[WARN] quickpick v24 {t}: {e}")
-            return None
-
-    candidates = (scan_parallel(sample, _eval, max_workers=10)
-                    if parallel else
-                    [r for r in (_eval(t) for t in sample) if r is not None])
-
-    candidates.sort(key=lambda x: x['score'], reverse=True)
-    top = diversified_top_pick(candidates, n=n_results, max_corr=max_corr)
-    return top
-
-
-def render_quick_pick_v24(picks: list) -> None:
-    """[V24] Render Quick Pick với cảnh báo correlation."""
-    if not picks:
-        st.info("ℹ️ Không có mã nào đạt tiêu chí hiện tại "
-                "(có thể do market regime BEAR hoặc tiêu chí khắt khe).")
-        return
-    for i, p in enumerate(picks, 1):
-        with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([1.2, 1.5, 1.5, 1.5, 2])
-            c1.markdown(f"### #{i} `{p['ticker']}`")
-            c1.caption(f"💰 {p['price']:,.0f}")
-            c2.metric("🤖 AI",  f"{p['ai']}%",   help=help_for('ai_t3'))
-            c3.metric("📈 RS",  f"{p['rs']:.0f}", help=help_for('rs_rating'))
-            c4.metric("📊 RSI", f"{p['rsi']}")
-            c5.metric("🌊 Chân Sóng", f"{p['wave']}/{p.get('wave_total', 12)}",
-                       help=help_for('wave_bot'))
-            cols2 = st.columns(4)
-            cols2[0].caption(f"🎯 SL: {p['sl']:,.0f} ({p['sl_pct']:+.1f}%)")
-            cols2[1].caption(f"🎯 TP2: {p['tp2']:,.0f} ({p['tp2_pct']:+.1f}%)")
-            cols2[2].caption(f"📐 ADX: {p['adx']} | Vol: {p['vol']}x")
-            cols2[3].caption(f"🏢 {p['sector']} | {p['weekly']}")
-            if p.get('_max_corr_to_selected'):
-                cv = p['_max_corr_to_selected']
-                if p.get('_fallback'):
-                    st.warning(f"⚠️ Correlation cao với mã khác trong top: {cv} "
-                                "(nới quy tắc do không đủ candidate)")
-                else:
-                    st.caption(f"✅ Correlation tối đa với top khác: {cv} < {CORR_MAX_PAIR}")
-            with st.expander("Chi tiết tín hiệu"):
-                st.write(f"**Smart Flow:** {p['smart_flow_label']}")
-                st.write(f"**Divergence:** {p['div_label']}")
-                if p.get('wave_flags'):
-                    st.write("**Chân Sóng flags:** " + ", ".join(p['wave_flags']))
+        if result['bullish_rsi']:
+            result['signal'] = 'BULLISH'
+            result['label']  = "📈 Phân Kỳ Dương V24 — Động lượng phục hồi"
+        elif result['bearish_rsi']:
+            result['signal'] = 'BEARISH'
+            result['label']  = "📉 Phân Kỳ Âm V24 — Động lượng suy yếu"
+    except Exception as e:
+        print(f"[WARN] detect_divergence_v24: {e}")
+    return result
 
 
 # ==============================================================================
@@ -3841,13 +3315,8 @@ def render_quick_pick_v24(picks: list) -> None:
 # ==============================================================================
 if not authenticate():
     st.stop()
-# [V24 PATCH] Lazy init vnstock_engine — tránh khởi tạo eager có thể fail
 if 'vnstock_engine' not in st.session_state:
-    try:
-        st.session_state['vnstock_engine'] = Vnstock()
-    except Exception as e:
-        st.session_state['vnstock_engine'] = None
-        print(f"[WARN] Vnstock init failed: {e}")
+    st.session_state['vnstock_engine'] = Vnstock()
 st.set_page_config(
     page_title="Quant System V22.0 Supreme",
     layout="wide",
@@ -3902,66 +3371,7 @@ manual   = st.sidebar.text_input("Hoặc nhập trực tiếp (VD: FPT):").strip
 ticker   = manual if manual else dropdown
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
-
-# ============================================================================
-# [V24] MARKET REGIME BANNER + RISK THERMOMETER (xuyên 7 tab) — SAFE VERSION
-# ============================================================================
-# Mặc định session_state market_regime để các tab có thể đọc an toàn
-st.session_state.setdefault('market_regime', {
-    'regime': 'UNKNOWN', 'buy_allowed': True,
-    'min_score_buy': SCORE_BUY_MIN + 5, 'size_mult': 0.3,
-    'label': '❓ UNKNOWN — Chưa tính được',
-    'above_50': False, 'above_200': False, 'pct_ma20': 0, 'adr': 0,
-})
-
-# User có thể tắt banner V24 nếu nghi ngờ banner gây lỗi
-if 'show_v24_banner' not in st.session_state:
-    st.session_state['show_v24_banner'] = True
-
-with st.sidebar:
-    st.markdown("---")
-    st.session_state['show_v24_banner'] = st.checkbox(
-        "📊 Hiện banner Market Regime (V24)",
-        value=st.session_state['show_v24_banner'],
-        help="Tắt nếu banner gây lỗi để xem các tab"
-    )
-
-if st.session_state['show_v24_banner']:
-    try:
-        with st.spinner("⏳ Đang tính market regime..."):
-            if 'df_vni' not in st.session_state or st.session_state.get('df_vni') is None:
-                st.session_state['df_vni'] = get_vnindex_cached()
-            df_vni_global = st.session_state.get('df_vni', pd.DataFrame())
-
-            breadth_sample = tuple(PILLARS + FALLBACK_TICKERS[:30])
-            breadth_global = calc_market_breadth(breadth_sample)
-            st.session_state['breadth'] = breadth_global
-
-            regime_global = detect_market_regime(df_vni_global, breadth_global)
-            st.session_state['market_regime'] = regime_global
-
-            risk_global = calc_risk_temperature(
-                regime_global, breadth_global,
-                portfolio_metrics=st.session_state.get('portfolio_metrics'),
-            )
-            st.session_state['risk_temperature'] = risk_global
-
-        # Render banner — nếu render lỗi cũng bắt riêng
-        try:
-            render_market_regime_banner(regime_global, breadth_global)
-            with st.expander("🌡️ Nhiệt kế rủi ro chi tiết", expanded=False):
-                render_risk_thermometer(risk_global)
-        except Exception as render_err:
-            st.warning(f"⚠️ Lỗi hiển thị banner (app vẫn chạy bình thường): {render_err}")
-    except Exception as e:
-        st.warning(f"⚠️ Không thể tính market regime (app vẫn chạy): {e}")
-        import traceback
-        with st.expander("Chi tiết lỗi (debug)"):
-            st.code(traceback.format_exc())
-
-
 # --- TABS ---
-st.markdown("---")  # [V24] separator visible — nếu thấy dòng kẻ này nghĩa là code chạy tới tabs
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
@@ -4974,17 +4384,7 @@ with tab2:
         # ── [#6] Biểu đồ PE/ROE xu hướng + Trading Stats ──
         st.write("### 📊 Dữ Liệu Thị Trường Chi Tiết")
         try:
-            # [V24 PATCH] Fallback source VCI → TCBS nếu VCI bị chặn
-            stk_fin = None
-            for _src in ['VCI', 'TCBS']:
-                try:
-                    stk_fin = Vnstock().stock(symbol=ticker, source=_src)
-                    break
-                except Exception as _e:
-                    print(f"[INFO] {_src} fin failed: {str(_e)[:60]}")
-                    continue
-            if stk_fin is None:
-                raise ConnectionError("Không thể kết nối tới mọi data source")
+            stk_fin = Vnstock().stock(symbol=ticker, source='VCI')
             df_ts   = stk_fin.company.trading_stats()
             if valid(df_ts):
                 row_ts = df_ts.iloc[0]
@@ -5181,16 +4581,7 @@ with tab3:
         # PHƯƠNG ÁN A: dùng company.trading_stats thay chart trống
         st.info("ℹ️ API dòng tiền theo ngày không khả dụng. Hiển thị dữ liệu tổng hợp từ nguồn khác.")
         try:
-            # [V24 PATCH] Fallback source
-            stk_ts = None
-            for _src in ['VCI', 'TCBS']:
-                try:
-                    stk_ts = Vnstock().stock(symbol=ticker, source=_src)
-                    break
-                except Exception:
-                    continue
-            if stk_ts is None:
-                raise ConnectionError("Không thể kết nối tới mọi data source")
+            stk_ts  = Vnstock().stock(symbol=ticker, source='VCI')
             df_ts   = stk_ts.company.trading_stats()
             if valid(df_ts):
                 row_ts = df_ts.iloc[0]
