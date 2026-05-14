@@ -8,3 +8,6 @@ scikit-learn
 xgboost
 lightgbm
 nltk
+scipy>=1.10
+shap>=0.42       # optional — cho AI explain
+reportlab>=4.0   # optional — cho PDF export
