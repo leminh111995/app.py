@@ -3662,13 +3662,36 @@ with tab1:
                             sell_set.add(p)
                 except Exception:
                     pass
-            # [V24 #2] Pass market_regime để áp downgrade tự động
-            _v24_regime = st.session_state.get('market_regime', None)
             scoring = calc_total_score(
                 last, ai_score, bt, foreign_trend, growth, pe,
-                weekly_trend, sentiment['score'], sector_score,
-                market_regime=_v24_regime,
+                weekly_trend, sentiment['score'], sector_score
             )
+
+            # [V24 #2] Market Timing Filter — áp downgrade SAU scoring (không sửa V23)
+            try:
+                _v24_regime = st.session_state.get('market_regime', None)
+                if _v24_regime is not None:
+                    _rg = _v24_regime.get('regime', 'UNKNOWN')
+                    _orig_decision = scoring['decision']
+                    _orig_color = scoring.get('decision_color', 'green')
+                    # Downgrade theo regime
+                    if _rg == 'BEAR':
+                        scoring['decision'] = "🔴 BEAR MARKET — ĐỨNG NGOÀI [V24 downgrade]"
+                        scoring['decision_color'] = "red"
+                        scoring['_v24_downgraded'] = True
+                        scoring['_orig_decision'] = _orig_decision
+                    elif _rg == 'MIXED' and ('MUA' in _orig_decision or 'STRONG BUY' in _orig_decision):
+                        scoring['decision'] = "⚖️ THEO DÕI (V24: hạ 1 bậc do MIXED)"
+                        scoring['decision_color'] = "orange"
+                        scoring['_v24_downgraded'] = True
+                        scoring['_orig_decision'] = _orig_decision
+                    elif _rg == 'CAUTIOUS_BULL' and 'STRONG BUY' in _orig_decision:
+                        scoring['decision'] = "🟡 MUA THẬN TRỌNG (V24: CAUTIOUS market)"
+                        scoring['decision_color'] = "orange"
+                        scoring['_v24_downgraded'] = True
+                        scoring['_orig_decision'] = _orig_decision
+            except Exception as _mtf_err:
+                print(f"[V24 market timing filter] {_mtf_err}")
             # [NÂNG CẤP #12] Kelly
             kelly_pct = calc_kelly(bt['winrate'], bt['avg_profit'], abs(bt['avg_loss']))
             # [NÂNG CẤP #10] ATR Trailing Stop
