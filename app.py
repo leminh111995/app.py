@@ -3478,7 +3478,7 @@ st.caption("**V24.0:** V23 + Market Regime | Exit Signal | Correlation Check | R
 st.markdown("---")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# [V24 #2] MARKET REGIME BANNER xuyên 7 tab
+# [V24 #2] MINI MARKET PULSE — Thay banner Market Regime (tránh lỗi 403)
 # ──────────────────────────────────────────────────────────────────────────────
 # Cho phép user tắt banner nếu thấy chậm
 if 'show_v24_banner' not in st.session_state:
@@ -3486,47 +3486,97 @@ if 'show_v24_banner' not in st.session_state:
 
 with st.sidebar:
     st.session_state['show_v24_banner'] = st.checkbox(
-        "🌐 Banner Market Regime",
+        "📊 Banner Mini Market Pulse",
         value=st.session_state['show_v24_banner'],
-        help="Tắt nếu thấy load chậm")
+        help="Tắt nếu thấy chậm")
 
-# Mặc định regime an toàn (BEAR fallback) để các tab vẫn đọc được
+# Mặc định regime an toàn để các tab vẫn đọc được
 st.session_state.setdefault('market_regime', {
     'regime': 'UNKNOWN', 'buy_allowed': True,
-    'min_score_buy': SCORE_BUY_MIN + 5, 'size_mult': 0.5,
-    'label': '❓ UNKNOWN', 'above_50': False, 'above_200': False,
-    'pct_ma20': 50, 'adr': 50,
+    'min_score_buy': SCORE_BUY_MIN, 'size_mult': 1.0,
+    'label': '❓ UNKNOWN — chưa quét', 'pct_ma20': 50, 'adr': 50,
 })
-st.session_state.setdefault('breadth', {'pct_above_ma20': 50, 'advance_decline': 50,
-                                          'pct_rsi_ok': 50, 'total': 0,
-                                          'market_status': 'UNKNOWN'})
 
 if st.session_state['show_v24_banner']:
+    # [V24 NEW] MINI PULSE: chỉ quét 8 mã PILLARS (đã có cache từ V23 quét pillars)
+    # KHÔNG gọi VNINDEX, KHÔNG gọi basket lớn → tránh 403
     try:
-        # Cache theo phiên — chỉ tính 1 lần/phiên
-        if 'v24_regime_computed' not in st.session_state:
-            with st.spinner("⏳ Đang tính Market Regime (1 lần/phiên)..."):
-                df_vni_g = get_vnindex_cached()
-                sample_g = tuple(PILLARS + FALLBACK_TICKERS[:25])
-                breadth_g = calc_market_breadth(sample_g)
-                regime_g = detect_market_regime(df_vni_g, breadth_g)
-                risk_g = calc_risk_temperature(regime_g, breadth_g, None)
-                st.session_state['breadth'] = breadth_g
-                st.session_state['market_regime'] = regime_g
-                st.session_state['risk_temperature'] = risk_g
-                st.session_state['v24_regime_computed'] = True
+        if 'v24_pulse_computed' not in st.session_state:
+            pillars_sample = list(PILLARS)[:8]  # 8 mã trụ cột, mỗi mã nhanh
+            n_above_ma20 = 0
+            n_advancing = 0
+            n_total = 0
+            for _t in pillars_sample:
+                try:
+                    _df = get_price(_t, days=30)
+                    if not valid(_df) or len(_df) < 21:
+                        continue
+                    _df = calc_indicators(_df)
+                    _l = _df.iloc[-1]
+                    n_total += 1
+                    if _l['close'] > _l['ma20']:
+                        n_above_ma20 += 1
+                    if _l.get('return_1d', 0) > 0:
+                        n_advancing += 1
+                except Exception:
+                    continue
 
-        regime_g = st.session_state['market_regime']
-        breadth_g = st.session_state['breadth']
-        risk_g = st.session_state.get('risk_temperature', {'score': 50, 'emoji': '🟡', 'label': 'N/A'})
+            if n_total >= 4:
+                pct_ma20 = n_above_ma20 / n_total * 100
+                pct_adv  = n_advancing / n_total * 100
+                # Suy ra regime đơn giản
+                if pct_ma20 >= 70 and pct_adv >= 55:
+                    pulse_regime = 'STRONG_BULL'
+                    pulse_label  = '🟢 STRONG BULL — Mua tích cực'
+                    size_mult    = 1.0
+                    buy_allowed  = True
+                elif pct_ma20 >= 50:
+                    pulse_regime = 'CAUTIOUS_BULL'
+                    pulse_label  = '🟡 CAUTIOUS BULL — Mua chọn lọc'
+                    size_mult    = 0.6
+                    buy_allowed  = True
+                elif pct_ma20 >= 30:
+                    pulse_regime = 'MIXED'
+                    pulse_label  = '🟠 MIXED — Chỉ mã siêu mạnh'
+                    size_mult    = 0.3
+                    buy_allowed  = True
+                else:
+                    pulse_regime = 'BEAR'
+                    pulse_label  = '🔴 BEAR — KHÔNG mở vị thế mới'
+                    size_mult    = 0.0
+                    buy_allowed  = False
 
-        try:
-            render_market_regime_banner(regime_g, breadth_g)
-            st.caption(f"🌡️ Nhiệt kế rủi ro: {risk_g['emoji']} **{risk_g['score']}/100** — {risk_g['label']}")
-        except Exception as ren_err:
-            st.warning(f"⚠️ Lỗi hiển thị banner: {ren_err}")
+                st.session_state['market_regime'] = {
+                    'regime': pulse_regime, 'label': pulse_label,
+                    'size_mult': size_mult, 'buy_allowed': buy_allowed,
+                    'min_score_buy': SCORE_BUY_MIN + (5 if pulse_regime == 'CAUTIOUS_BULL'
+                                                       else 10 if pulse_regime == 'MIXED'
+                                                       else 999 if pulse_regime == 'BEAR' else 0),
+                    'pct_ma20': pct_ma20, 'adr': pct_adv,
+                    'n_sample': n_total,
+                }
+                st.session_state['v24_pulse_computed'] = True
+
+        rg = st.session_state['market_regime']
+        if rg.get('regime') != 'UNKNOWN':
+            # Banner gọn 1 dòng
+            pulse_c1, pulse_c2, pulse_c3, pulse_c4 = st.columns([3, 1.2, 1.2, 1.2])
+            with pulse_c1:
+                st.markdown(f"#### {rg['label']}")
+                st.caption(f"📊 Mini Pulse từ {rg.get('n_sample', 8)} mã trụ cột — không gọi VNINDEX/basket")
+            pulse_c2.metric("% > MA20", f"{rg.get('pct_ma20', 0):.0f}%")
+            pulse_c3.metric("% Tăng", f"{rg.get('adr', 0):.0f}%")
+            pulse_c4.metric("Size đề xuất", f"{rg.get('size_mult', 1.0)*100:.0f}%")
+
+            if not rg.get('buy_allowed', True):
+                st.error("🔴 BEAR — Hệ thống đề nghị KHÔNG mở vị thế mới")
+            elif rg.get('regime') == 'MIXED':
+                st.warning("🟠 Thị trường phân hoá — chỉ chọn mã RS Rating ≥ 80")
+        else:
+            st.caption("📊 Mini Market Pulse: chưa quét được (thử reload)")
     except Exception as e:
-        st.warning(f"⚠️ Không tính được Market Regime: {e}")
+        st.caption(f"📊 Mini Market Pulse tạm không khả dụng")
+        print(f"[V24 mini pulse] {e}")
 
 st.markdown("---")
 # [V24 BANNER END]
@@ -3566,23 +3616,26 @@ if st.session_state.get('wl_alerts'):
         st.markdown("---")
 # --- SIDEBAR ---
 tickers = load_hose_tickers()
-# [V24 #5] RISK THERMOMETER trong sidebar
+# [V24 #5] MARKET PULSE compact ở sidebar (thay Risk Thermometer)
 with st.sidebar:
-    risk_sb = st.session_state.get('risk_temperature', None)
-    if risk_sb:
+    regime_sb = st.session_state.get('market_regime', {})
+    if regime_sb.get('regime') and regime_sb.get('regime') != 'UNKNOWN':
         st.markdown("---")
-        st.markdown(f"### {risk_sb['emoji']} Rủi ro thị trường")
-        st.metric("Mức rủi ro", f"{risk_sb['score']}/100",
-                  delta=risk_sb['label'], delta_color="off")
-        regime_sb = st.session_state.get('market_regime', {})
-        if regime_sb.get('regime') == 'BEAR':
-            st.error("🚫 KHÔNG mở vị thế mới")
-        elif regime_sb.get('regime') == 'MIXED':
-            st.warning("⚠️ Chỉ chọn mã RS≥80")
-        elif regime_sb.get('regime') == 'STRONG_BULL':
-            st.success("✅ Mua tích cực")
-        else:
-            st.info(regime_sb.get('label', ''))
+        st.markdown(f"#### 📊 Market Pulse")
+        # Mini chỉ số gọn
+        ms_c1, ms_c2 = st.columns(2)
+        ms_c1.metric("% > MA20", f"{regime_sb.get('pct_ma20', 0):.0f}%")
+        ms_c2.metric("% Tăng", f"{regime_sb.get('adr', 0):.0f}%")
+        # Tô màu trạng thái
+        rg_code = regime_sb.get('regime', 'UNKNOWN')
+        if rg_code == 'BEAR':
+            st.error("🔴 BEAR — Đứng ngoài")
+        elif rg_code == 'MIXED':
+            st.warning("🟠 MIXED — Chỉ RS≥80")
+        elif rg_code == 'STRONG_BULL':
+            st.success("🟢 BULL — Mua tích cực")
+        elif rg_code == 'CAUTIOUS_BULL':
+            st.info("🟡 Cautious — Chọn lọc")
 
 st.sidebar.header("🕹️ Trung Tâm Giao Dịch Định Lượng")
 if st.sidebar.button("🔄 Làm mới danh sách mã (Xóa Cache)"):
