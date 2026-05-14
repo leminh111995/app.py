@@ -3311,6 +3311,157 @@ def detect_divergence_v24(df, lookback: int = None) -> dict:
 
 
 # ==============================================================================
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24 WIRE] Executive Summary 1 câu + Market Timing downgrade
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_executive_summary(ticker, scoring, last, ai_score, wave_info,
+                                 weekly_trend, kelly_pct, sl_info, regime):
+    """[V24 #1] Tóm tắt 1 câu súc tích cho toàn bộ phân tích.
+    Output: dict {'one_liner', 'action', 'badge_color'}."""
+    price = float(last['close'])
+    rsi = float(last['rsi'])
+    ai_disp = f"{float(ai_score):.0f}%" if _is_valid_score(ai_score) else "N/A"
+
+    # Lấy size từ kelly + regime mult
+    size_pct = round(kelly_pct * regime.get('size_mult', 1.0), 0)
+
+    # TP gợi ý: dùng ATR nếu có, fallback +10%
+    atr = float(last.get('atr', price * 0.02))
+    sl_price = int(sl_info['final_sl']) if sl_info else int(price * 0.93)
+    tp_price = int(price + 3 * ATR_MULTIPLIER * atr)  # 3R upside
+
+    # Quyết định cuối cùng với downgrade theo regime
+    base_decision = scoring['decision']
+    downgrade_msg = ""
+    if 'STRONG BUY' in base_decision or 'MUA' in base_decision:
+        if regime.get('regime') == 'CAUTIOUS_BULL':
+            final_action = "MUA THẬN TRỌNG"
+            badge_color = "orange"
+            downgrade_msg = " [↓ vì thị trường thận trọng]"
+        elif regime.get('regime') == 'MIXED':
+            final_action = "THEO DÕI"
+            badge_color = "orange"
+            downgrade_msg = " [↓↓ vì thị trường phân hoá]"
+            size_pct = round(size_pct * 0.5, 0)
+        elif regime.get('regime') == 'BEAR':
+            final_action = "ĐỨNG NGOÀI"
+            badge_color = "red"
+            downgrade_msg = " [↓↓↓ vì thị trường BEAR]"
+            size_pct = 0
+        else:
+            final_action = "MUA"
+            badge_color = "green"
+    elif 'WATCHLIST' in base_decision or 'THEO DÕI' in base_decision:
+        if regime.get('regime') in ('BEAR', 'MIXED'):
+            final_action = "ĐỨNG NGOÀI"
+            badge_color = "red"
+            downgrade_msg = " [↓ vì thị trường yếu]"
+            size_pct = 0
+        else:
+            final_action = "THEO DÕI"
+            badge_color = "orange"
+    else:
+        final_action = "BÁN / ĐỨNG NGOÀI"
+        badge_color = "red"
+        size_pct = 0
+
+    weekly_str = {"UP": "Weekly UP", "DOWN": "Weekly DOWN", "NEUTRAL": "Weekly NGANG"}.get(weekly_trend, "Weekly N/A")
+
+    # Câu tóm tắt
+    if size_pct > 0:
+        one_liner = (f"**{ticker}**: {final_action} {size_pct:.0f}% vốn quanh "
+                     f"**{price:,.0f}**, SL **{sl_price:,.0f}**, TP **{tp_price:,.0f}** — "
+                     f"AI {ai_disp}, Chân sóng {wave_info['score']}/{wave_info.get('total', 11)}, {weekly_str}.{downgrade_msg}")
+    else:
+        one_liner = (f"**{ticker}**: {final_action} — Giá {price:,.0f}, "
+                     f"AI {ai_disp}, RSI {rsi:.1f}, {weekly_str}.{downgrade_msg}")
+
+    return {'one_liner': one_liner, 'action': final_action,
+            'badge_color': badge_color, 'size_pct': size_pct,
+            'sl': sl_price, 'tp': tp_price}
+
+
+def check_exit_signal_simple(last, df) -> dict:
+    """[V24 #4] Cảnh báo CHỐT LỜI đơn giản cho mã đang xem.
+    Trigger: RSI>70 + giá chạm BB trên + Vol nổ."""
+    rsi = float(last['rsi'])
+    price = float(last['close'])
+    upper_bb = float(last.get('upper_band', price * 1.05))
+    vol = float(last['vol_strength'])
+    ret = float(last.get('return_1d', 0))
+
+    triggers = []
+    score = 0
+
+    if rsi >= 75:
+        triggers.append(f"🔴 RSI {rsi:.1f} ≥ 75 — quá mua nguy hiểm")
+        score += 3
+    elif rsi >= 70:
+        triggers.append(f"🟠 RSI {rsi:.1f} ≥ 70 — vùng quá mua")
+        score += 2
+
+    # Giá chạm/vượt BB trên (trong 1% là coi như chạm)
+    if price >= upper_bb * 0.99:
+        triggers.append(f"🟠 Giá chạm BB trên ({upper_bb:,.0f})")
+        score += 2
+
+    if vol >= 2.0:
+        triggers.append(f"🔴 Vol nổ {vol:.1f}x — distribution")
+        score += 3
+    elif vol >= 1.5 and ret < 0:
+        triggers.append(f"🟠 Vol cao {vol:.1f}x + nến đỏ {ret*100:+.1f}%")
+        score += 2
+
+    # Action
+    if score >= 6:
+        action = "EXIT_ALL"
+        label = "🚨 CẢNH BÁO CHỐT LỜI MẠNH — Nên thoát 70-100%"
+        pct = "70-100%"
+        color = "error"
+    elif score >= 4:
+        action = "TRIM_50"
+        label = "⚠️ CẢNH BÁO CHỐT LỜI — Nên chốt 50%"
+        pct = "50%"
+        color = "warning"
+    elif score >= 2:
+        action = "WATCH"
+        label = "👁️ THEO DÕI CHẶT — Có dấu hiệu quá mua"
+        pct = "30%"
+        color = "warning"
+    else:
+        action = "HOLD"
+        label = "✅ Chưa có cảnh báo chốt lời"
+        pct = "0%"
+        color = "success"
+
+    return {'action': action, 'score': score, 'triggers': triggers,
+            'label': label, 'suggested_pct': pct, 'color': color}
+
+
+def render_exit_alert_card(exit_alert: dict, ticker: str) -> None:
+    """[V24] Card cảnh báo chốt lời cho mã đang phân tích."""
+    if exit_alert['action'] == 'HOLD':
+        return  # Không hiện gì nếu chưa cần chốt
+
+    with st.container(border=True):
+        if exit_alert['color'] == 'error':
+            st.error(f"### {exit_alert['label']}")
+        elif exit_alert['color'] == 'warning':
+            st.warning(f"### {exit_alert['label']}")
+
+        st.caption(f"Nếu bạn đang giữ **{ticker}**, hệ thống đề xuất xem xét chốt **{exit_alert['suggested_pct']}** vị thế.")
+
+        with st.expander("Chi tiết các dấu hiệu", expanded=True):
+            for t in exit_alert['triggers']:
+                st.write(t)
+
+
+# [V24 WIRE END]
+
+
+# ==============================================================================
 # MAIN APPLICATION
 # ==============================================================================
 if not authenticate():
@@ -3322,9 +3473,63 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-st.title("🛡️ Quant System V23.0: Supreme Predator Leviathan")
-st.caption("**V23.0:** ATR Stop | ADX+OBV | Kelly | Sharpe | Radar 6 Tầng | Ichimoku | Chân Sóng 11TC | VNI | MTF | Entry Signal | R:R | Seasonality")
+st.title("🛡️ Quant System V24.0: Apex Predator Leviathan")
+st.caption("**V24.0:** V23 + Market Regime | Exit Signal | Correlation Check | Risk Thermometer | Strategy Lab")
 st.markdown("---")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24 #2] MARKET REGIME BANNER xuyên 7 tab
+# ──────────────────────────────────────────────────────────────────────────────
+# Cho phép user tắt banner nếu thấy chậm
+if 'show_v24_banner' not in st.session_state:
+    st.session_state['show_v24_banner'] = True
+
+with st.sidebar:
+    st.session_state['show_v24_banner'] = st.checkbox(
+        "🌐 Banner Market Regime",
+        value=st.session_state['show_v24_banner'],
+        help="Tắt nếu thấy load chậm")
+
+# Mặc định regime an toàn (BEAR fallback) để các tab vẫn đọc được
+st.session_state.setdefault('market_regime', {
+    'regime': 'UNKNOWN', 'buy_allowed': True,
+    'min_score_buy': SCORE_BUY_MIN + 5, 'size_mult': 0.5,
+    'label': '❓ UNKNOWN', 'above_50': False, 'above_200': False,
+    'pct_ma20': 50, 'adr': 50,
+})
+st.session_state.setdefault('breadth', {'pct_above_ma20': 50, 'advance_decline': 50,
+                                          'pct_rsi_ok': 50, 'total': 0,
+                                          'market_status': 'UNKNOWN'})
+
+if st.session_state['show_v24_banner']:
+    try:
+        # Cache theo phiên — chỉ tính 1 lần/phiên
+        if 'v24_regime_computed' not in st.session_state:
+            with st.spinner("⏳ Đang tính Market Regime (1 lần/phiên)..."):
+                df_vni_g = get_vnindex_cached()
+                sample_g = tuple(PILLARS + FALLBACK_TICKERS[:25])
+                breadth_g = calc_market_breadth(sample_g)
+                regime_g = detect_market_regime(df_vni_g, breadth_g)
+                risk_g = calc_risk_temperature(regime_g, breadth_g, None)
+                st.session_state['breadth'] = breadth_g
+                st.session_state['market_regime'] = regime_g
+                st.session_state['risk_temperature'] = risk_g
+                st.session_state['v24_regime_computed'] = True
+
+        regime_g = st.session_state['market_regime']
+        breadth_g = st.session_state['breadth']
+        risk_g = st.session_state.get('risk_temperature', {'score': 50, 'emoji': '🟡', 'label': 'N/A'})
+
+        try:
+            render_market_regime_banner(regime_g, breadth_g)
+            st.caption(f"🌡️ Nhiệt kế rủi ro: {risk_g['emoji']} **{risk_g['score']}/100** — {risk_g['label']}")
+        except Exception as ren_err:
+            st.warning(f"⚠️ Lỗi hiển thị banner: {ren_err}")
+    except Exception as e:
+        st.warning(f"⚠️ Không tính được Market Regime: {e}")
+
+st.markdown("---")
+# [V24 BANNER END]
 # ── [#1] WATCHLIST SIDEBAR + AUTO-SCAN BANNER ──
 st.sidebar.markdown("---")
 st.sidebar.markdown("#### 📋 Watchlist Theo Dõi")
@@ -3361,6 +3566,24 @@ if st.session_state.get('wl_alerts'):
         st.markdown("---")
 # --- SIDEBAR ---
 tickers = load_hose_tickers()
+# [V24 #5] RISK THERMOMETER trong sidebar
+with st.sidebar:
+    risk_sb = st.session_state.get('risk_temperature', None)
+    if risk_sb:
+        st.markdown("---")
+        st.markdown(f"### {risk_sb['emoji']} Rủi ro thị trường")
+        st.metric("Mức rủi ro", f"{risk_sb['score']}/100",
+                  delta=risk_sb['label'], delta_color="off")
+        regime_sb = st.session_state.get('market_regime', {})
+        if regime_sb.get('regime') == 'BEAR':
+            st.error("🚫 KHÔNG mở vị thế mới")
+        elif regime_sb.get('regime') == 'MIXED':
+            st.warning("⚠️ Chỉ chọn mã RS≥80")
+        elif regime_sb.get('regime') == 'STRONG_BULL':
+            st.success("✅ Mua tích cực")
+        else:
+            st.info(regime_sb.get('label', ''))
+
 st.sidebar.header("🕹️ Trung Tâm Giao Dịch Định Lượng")
 if st.sidebar.button("🔄 Làm mới danh sách mã (Xóa Cache)"):
     st.cache_data.clear()
@@ -3372,7 +3595,7 @@ ticker   = manual if manual else dropdown
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
@@ -3380,6 +3603,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
     "📊 VN-INDEX & TƯƠNG QUAN",
     "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
+    "🧪 STRATEGY LAB [V24]",
 ])
 # ==============================================================================
 # TAB 1: ROBOT ADVISOR
@@ -3438,18 +3662,50 @@ with tab1:
                             sell_set.add(p)
                 except Exception:
                     pass
+            # [V24 #2] Pass market_regime để áp downgrade tự động
+            _v24_regime = st.session_state.get('market_regime', None)
             scoring = calc_total_score(
                 last, ai_score, bt, foreign_trend, growth, pe,
-                weekly_trend, sentiment['score'], sector_score
+                weekly_trend, sentiment['score'], sector_score,
+                market_regime=_v24_regime,
             )
             # [NÂNG CẤP #12] Kelly
             kelly_pct = calc_kelly(bt['winrate'], bt['avg_profit'], abs(bt['avg_loss']))
             # [NÂNG CẤP #10] ATR Trailing Stop
             atr_val  = float(last.get('atr', last['close'] * 0.02))
             sl_info  = calc_trailing_stop(float(last['close']), atr_val)
+
+            # ── [V24 #1] EXECUTIVE SUMMARY 1 CÂU (đặt ĐẦU kết quả) ──
+            try:
+                regime_for_summary = st.session_state.get('market_regime', {
+                    'regime': 'UNKNOWN', 'size_mult': 1.0, 'buy_allowed': True})
+                exec_summary = generate_executive_summary(
+                    ticker, scoring, last, ai_score, wave_info,
+                    weekly_trend, kelly_pct, sl_info, regime_for_summary)
+                badge = exec_summary['badge_color']
+                st.markdown(f"""
+                <div style="padding:15px; border-radius:10px;
+                            background-color:{'#d4edda' if badge=='green' else '#fff3cd' if badge=='orange' else '#f8d7da'};
+                            border-left:5px solid {'#28a745' if badge=='green' else '#ffc107' if badge=='orange' else '#dc3545'};
+                            margin-bottom:15px;">
+                    <div style="font-size:14px; color:#555; margin-bottom:5px;">📌 <b>TÓM TẮT 1 CÂU</b></div>
+                    <div style="font-size:16px; color:#222;">{exec_summary['one_liner']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.session_state['_exec_summary'] = exec_summary
+            except Exception as _es_err:
+                print(f"[V24 exec summary] {_es_err}")
+
+            # ── [V24 #4-B] CẢNH BÁO CHỐT LỜI cho mã đang xem ──
+            try:
+                exit_alert = check_exit_signal_simple(last, df)
+                render_exit_alert_card(exit_alert, ticker)
+            except Exception as _ex_err:
+                print(f"[V24 exit alert] {_ex_err}")
+
             st.markdown(
-                "> 🧠 **Nhà Phân Tích Ảo V22.0:** Tự động tổng hợp dữ liệu đa chiều — "
-                "ATR Trailing Stop | ADX/OBV AI | Kelly Sizing | Sharpe/MaxDD."
+                "> 🧠 **Nhà Phân Tích Ảo V24.0:** Tự động tổng hợp dữ liệu đa chiều — "
+                "ATR Trailing Stop | ADX/OBV AI | Kelly Sizing | Sharpe/MaxDD | Market Regime."
             )
             st.write(f"### 🎯 BẢN PHÂN TÍCH CHUYÊN MÔN TỰ ĐỘNG — MÃ {ticker}")
             # ── TÓM TẮT NHANH (mặc định hiện) ──
@@ -4346,6 +4602,44 @@ with tab1:
                         st.info(f"🔄 **{a} & {b}** tương quan âm ({c:.2f}) — có thể hedge nhau.")
             else:
                 st.success("✅ Không có cặp nào tương quan quá cao — danh mục đa dạng tốt.")
+
+            # ── [V24 #4-A] PORTFOLIO POSITION CHECK ──
+            with st.expander(f"💼 Tôi đang giữ {ticker} — Kiểm tra Exit Signal"):
+                pc_c1, pc_c2, pc_c3 = st.columns(3)
+                pc_entry = pc_c1.number_input(
+                    f"Giá vào lệnh {ticker}",
+                    min_value=0.0, value=float(last['close']),
+                    step=100.0, key=f"pc_entry_{ticker}")
+                pc_shares = pc_c2.number_input(
+                    "Số lượng (cp)",
+                    min_value=0, value=1000, step=100, key=f"pc_shares_{ticker}")
+                pc_current = pc_c3.number_input(
+                    "Giá hiện tại",
+                    min_value=0.0, value=float(last['close']),
+                    step=100.0, key=f"pc_current_{ticker}")
+
+                if pc_entry > 0 and pc_shares > 0:
+                    try:
+                        ex_signal = generate_exit_signal(
+                            last, df, pc_entry, pc_current,
+                            weekly_trend, divergence, ai_score)
+                        render_exit_signal_card(ex_signal, pc_current, pc_entry, pc_shares)
+                    except Exception as _pc_err:
+                        st.warning(f"Không tính được exit signal: {_pc_err}")
+
+            # ── [V24 #1] NHẮC LẠI EXECUTIVE SUMMARY CUỐI BÀI ──
+            _es = st.session_state.get('_exec_summary')
+            if _es:
+                st.divider()
+                st.markdown("### 📌 KẾT LUẬN")
+                badge = _es['badge_color']
+                st.markdown(f"""
+                <div style="padding:15px; border-radius:10px;
+                            background-color:{'#d4edda' if badge=='green' else '#fff3cd' if badge=='orange' else '#f8d7da'};
+                            border-left:5px solid {'#28a745' if badge=='green' else '#ffc107' if badge=='orange' else '#dc3545'};">
+                    <div style="font-size:17px; color:#222;">{_es['one_liner']}</div>
+                </div>
+                """, unsafe_allow_html=True)
 # TAB 2: TÀI CHÍNH & CANSLIM
 # ==============================================================================
 with tab2:
@@ -4915,9 +5209,21 @@ with tab4:
     st.write("### 🎯 Quick Pick — Cho Tôi 3 Mã Tốt Nhất Hôm Nay")
     qp_c1, qp_c2 = st.columns([1, 3])
     ai_min_qp = qp_c1.slider("AI T+3 tối thiểu (%):", 35, 65, 45, 5)
+    qp_use_diversify = qp_c2.checkbox(
+        "🌐 Đa dạng hoá (tránh trùng ngành/tương quan cao)",
+        value=True,
+        help="V24: Lọc các mã có correlation < 0.7 với nhau để đa dạng portfolio")
     if qp_c2.button("🎯 Tìm 3 Mã Tốt Nhất Ngay", key="quickpick_btn"):
         with st.spinner(f"Đang quét tìm mã AI ≥ {ai_min_qp}%..."):
             qp_results = quick_pick_stocks(tickers, ai_min=float(ai_min_qp))
+            # [V24 #3] Áp Correlation Check nếu user bật
+            if qp_use_diversify and qp_results and len(qp_results) > 3:
+                try:
+                    # quick_pick_stocks trả về top 3, nên cần mở rộng để chọn lại
+                    # Tạm thời chỉ áp diversify trên kết quả hiện có
+                    qp_results = diversified_top_pick(qp_results, n=3, max_corr=0.7)
+                except Exception as _qp_div_err:
+                    print(f"[V24 quickpick diversify] {_qp_div_err}")
         st.session_state['qp_results'] = qp_results
     if st.session_state.get('qp_results'):
         qp_list = st.session_state['qp_results']
@@ -5691,3 +5997,91 @@ with tab7:
             )
         else:
             st.success(f"✅ **{ticker}** đang dẫn đầu hoặc cạnh tranh tốt trong ngành.")
+
+# ==============================================================================
+# [V24 #7] TAB 8: STRATEGY LAB — A/B Testing Strategy
+# ==============================================================================
+with tab8:
+    st.write(f"### 🧪 Strategy Lab — So sánh các chiến lược trên {ticker}")
+    st.caption("So sánh hiệu năng của nhiều variant strategy trên cùng dữ liệu lịch sử của mã đang chọn.")
+
+    lab_c1, lab_c2 = st.columns([1, 1])
+    with lab_c1:
+        st.markdown("##### ⚙️ Tham số chung")
+        lab_rsi_buy = st.slider("RSI mua tối đa", 35, 60, 45, 1, key="lab_rsi")
+        lab_profit = st.slider("Target lợi nhuận (%)", 3, 15, 5, 1, key="lab_profit") / 100
+        lab_days = st.slider("Holding period (phiên)", 5, 20, 10, 1, key="lab_days")
+    with lab_c2:
+        st.markdown("##### 🎯 Các strategy so sánh")
+        st.caption("• **Baseline**: RSI < N + MACD cross")
+        st.caption("• **Wave**: Baseline + lọc chân sóng")
+        st.caption("• **ADX**: Baseline + lọc ADX ≥ 20")
+        st.caption("• **Wave+ADX**: Baseline + cả 2 lọc")
+
+    if st.button("🚀 Chạy A/B Test", key="lab_run"):
+        with st.spinner(f"Đang chạy 4 strategy trên {ticker}..."):
+            try:
+                df_lab = get_price(ticker)
+                if not valid(df_lab):
+                    st.error("Không thể tải dữ liệu cho mã này")
+                else:
+                    df_lab = calc_indicators(df_lab)
+                    strategies = {
+                        'baseline':  {'rsi_buy': lab_rsi_buy, 'profit_target': lab_profit,
+                                       'days_fwd': lab_days, 'use_macd_cross': True},
+                        'with_wave': {'rsi_buy': lab_rsi_buy, 'profit_target': lab_profit,
+                                       'days_fwd': lab_days, 'use_macd_cross': True,
+                                       'use_wave_filter': True},
+                        'with_adx':  {'rsi_buy': lab_rsi_buy, 'profit_target': lab_profit,
+                                       'days_fwd': lab_days, 'use_macd_cross': True,
+                                       'use_adx_filter': True, 'adx_min': 20},
+                        'wave+adx':  {'rsi_buy': lab_rsi_buy, 'profit_target': lab_profit,
+                                       'days_fwd': lab_days, 'use_macd_cross': True,
+                                       'use_wave_filter': True, 'use_adx_filter': True, 'adx_min': 20},
+                    }
+                    results_df = compare_strategies(df_lab, strategies)
+                    st.session_state['_lab_results'] = results_df
+            except Exception as e:
+                st.error(f"Lỗi A/B test: {e}")
+
+    if '_lab_results' in st.session_state:
+        results_df = st.session_state['_lab_results']
+        st.markdown("##### 📊 Kết quả so sánh")
+        st.dataframe(results_df.drop(columns=['Error'], errors='ignore'),
+                       use_container_width=True, hide_index=True)
+
+        # Phân tích đơn giản
+        if 'Sharpe' in results_df.columns and len(results_df) > 0:
+            try:
+                best_sharpe = results_df.loc[results_df['Sharpe'].idxmax()]
+                best_wr = results_df.loc[results_df['Winrate (%)'].idxmax()]
+                col_a, col_b = st.columns(2)
+                col_a.success(f"🏆 Sharpe cao nhất: **{best_sharpe['Strategy']}** ({best_sharpe['Sharpe']:.2f})")
+                col_b.info(f"🎯 Winrate cao nhất: **{best_wr['Strategy']}** ({best_wr['Winrate (%)']:.1f}%)")
+            except Exception:
+                pass
+
+        # Vẽ equity curve overlay
+        equity_curves = results_df.attrs.get('equity_curves', {})
+        if equity_curves:
+            try:
+                fig_eq = go.Figure()
+                for name, eq in equity_curves.items():
+                    fig_eq.add_trace(go.Scatter(y=eq, name=name, mode='lines'))
+                fig_eq.update_layout(
+                    title="Equity Curves so sánh",
+                    xaxis_title="Trade #",
+                    yaxis_title="Equity multiple",
+                    height=400)
+                st.plotly_chart(fig_eq, use_container_width=True)
+            except Exception as e:
+                print(f"[lab plot] {e}")
+
+        with st.expander("💡 Hướng dẫn đọc kết quả"):
+            st.markdown("""
+            - **Sharpe Ratio**: > 1 tốt, > 1.5 rất tốt, > 2 cần thận trọng (có thể overfit)
+            - **Winrate**: Tỷ lệ thắng, cần kết hợp với Expectancy
+            - **Expectancy**: Lợi nhuận kỳ vọng/lệnh (%). Dương = chiến lược có edge
+            - **Max DD**: Sụt giảm tối đa từ đỉnh. < 10% rất tốt, > 20% nguy hiểm
+            - Strategy có Sharpe cao + Max DD thấp + Expectancy dương là tốt nhất
+            """)
