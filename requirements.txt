@@ -8,4 +8,7 @@ scikit-learn
 xgboost
 lightgbm
 nltk
-
+scipy>=1.10.0
+reportlab>=4.0.0
+requests>=2.31.0
+shap>=0.42.0     
