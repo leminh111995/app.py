@@ -36,6 +36,17 @@
 # --- IMPORTS ---
 import streamlit as st
 from vnstock import Vnstock
+# [V24 PATCH] Import Quote trực tiếp để bypass Company init (đang bị 403)
+try:
+    from vnstock.api.quote import Quote
+    HAS_QUOTE_DIRECT = True
+except ImportError:
+    try:
+        from vnstock.explorer.vci.quote import Quote
+        HAS_QUOTE_DIRECT = True
+    except ImportError:
+        Quote = None
+        HAS_QUOTE_DIRECT = False
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -252,6 +263,23 @@ SMART_FLOW_MAX_SCORE = 20
 # Watchlist persistence
 WATCHLIST_GIST_FILENAME = 'watchlist.txt'
 
+# [V24 PATCH] Helper an toàn cho listing.all_symbols() — thử nhiều source
+def _get_listing_safe() -> pd.DataFrame:
+    """Lấy danh sách mã, thử nhiều source. Trả về DataFrame rỗng nếu thất bại."""
+    for src in ['VCI', 'TCBS']:
+        try:
+            vs = Vnstock().stock(symbol='ACB', source=src)
+            df = vs.listing.all_symbols()
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            print(f"[INFO] listing {src} fail: {str(e)[:60]}")
+            continue
+    print("[WARN] Tất cả source listing đều fail — trả về empty")
+    return pd.DataFrame()
+
+
+
 
 # HELPER FUNCTIONS
 # ==============================================================================
@@ -320,37 +348,62 @@ def get_price(ticker: str, days: int = HISTORY_DAYS) -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def get_vnindex_cached() -> pd.DataFrame:
     """
-    [V23 gốc — KHÔNG sửa] Lấy VN-Index proxy từ 10 mã thanh khoản cao nhất VN30.
-    Không dùng yfinance (bị block trên Streamlit Cloud).
-    Không dùng engine() (không hoạt động trong cache).
+    [V24 PATCH] Lấy VN-Index proxy.
+    THỬ TUẦN TỰ:
+      1. Quote trực tiếp (API mới, không gọi Company → tránh 403)
+      2. Vnstock().stock(...) cũ
+      3. yfinance ^VNINDEX
     """
     start = (datetime.now() - timedelta(days=400)).strftime(DATE_FMT)
     end   = datetime.now().strftime(DATE_FMT)
-    vci   = Vnstock().stock(symbol='ACB', source='VCI')
 
-    # Tầng 1: Thử symbol VNINDEX/VN30 trực tiếp
+    def _try_quote_direct(sym):
+        """Thử dùng Quote API trực tiếp (không khởi tạo Company)."""
+        if not HAS_QUOTE_DIRECT:
+            return None
+        for src in ['VCI', 'TCBS']:
+            try:
+                q = Quote(symbol=sym, source=src)
+                df = q.history(start=start, end=end)
+                if df is not None and not df.empty and len(df) >= 30:
+                    df.columns = [str(c).lower() for c in df.columns]
+                    return df
+            except Exception as e:
+                print(f"[INFO] Quote direct {sym} {src}: {str(e)[:80]}")
+                continue
+        return None
+
+    def _try_vnstock_old(sym):
+        """Thử Vnstock().stock(...) cũ — có thể bị 403."""
+        for src in ['VCI', 'TCBS']:
+            try:
+                vs = Vnstock().stock(symbol='ACB', source=src)
+                df = vs.quote.history(symbol=sym, start=start, end=end)
+                if df is not None and not df.empty and len(df) >= 30:
+                    df.columns = [str(c).lower() for c in df.columns]
+                    return df
+            except Exception as e:
+                print(f"[INFO] Vnstock old {sym} {src}: {str(e)[:80]}")
+                continue
+        return None
+
+    # Tầng 1: VNINDEX trực tiếp
     for sym in ['VNINDEX', 'VN30', 'E1VFVN30']:
-        try:
-            df = vci.quote.history(symbol=sym, start=start, end=end)
-            if df is not None and not df.empty and len(df) >= 30:
-                df.columns = [str(c).lower() for c in df.columns]
-                return df
-        except Exception:
-            pass
+        df = _try_quote_direct(sym) or _try_vnstock_old(sym)
+        if df is not None:
+            return df
 
-    # Tầng 2: 10 mã thanh khoản cao nhất — nhanh (~10 giây)
+    # Tầng 2: Basket 10 mã VN30 — tính proxy index
     TOP10 = ["VCB", "HPG", "FPT", "MBB", "TCB", "VPB", "ACB", "VNM", "GAS", "SSI"]
     price_data = {}
     for sym in TOP10:
-        try:
-            df_s = vci.quote.history(symbol=sym, start=start, end=end)
-            if df_s is not None and not df_s.empty:
-                df_s.columns = [str(c).lower() for c in df_s.columns]
-                if 'date' in df_s.columns and 'close' in df_s.columns:
-                    df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
-                    price_data[sym] = df_s.set_index('date')['close']
-        except Exception:
-            continue
+        df_s = _try_quote_direct(sym) or _try_vnstock_old(sym)
+        if df_s is not None and 'date' in df_s.columns and 'close' in df_s.columns:
+            try:
+                df_s['date'] = pd.to_datetime(df_s['date']).dt.strftime('%Y-%m-%d')
+                price_data[sym] = df_s.set_index('date')['close']
+            except Exception:
+                continue
 
     if len(price_data) < 3:
         return pd.DataFrame()
@@ -2537,7 +2590,7 @@ def load_hose_tickers() -> list[str]:
     stock = Vnstock()
     attempts = [
         lambda: stock.market.listing(),
-        lambda: Vnstock().stock(symbol='ACB', source='VCI').listing.all_symbols(),
+        lambda: _get_listing_safe(),
     ]
     for attempt in attempts:
         try:
@@ -3788,8 +3841,13 @@ def render_quick_pick_v24(picks: list) -> None:
 # ==============================================================================
 if not authenticate():
     st.stop()
+# [V24 PATCH] Lazy init vnstock_engine — tránh khởi tạo eager có thể fail
 if 'vnstock_engine' not in st.session_state:
-    st.session_state['vnstock_engine'] = Vnstock()
+    try:
+        st.session_state['vnstock_engine'] = Vnstock()
+    except Exception as e:
+        st.session_state['vnstock_engine'] = None
+        print(f"[WARN] Vnstock init failed: {e}")
 st.set_page_config(
     page_title="Quant System V22.0 Supreme",
     layout="wide",
@@ -4916,7 +4974,17 @@ with tab2:
         # ── [#6] Biểu đồ PE/ROE xu hướng + Trading Stats ──
         st.write("### 📊 Dữ Liệu Thị Trường Chi Tiết")
         try:
-            stk_fin = Vnstock().stock(symbol=ticker, source='VCI')
+            # [V24 PATCH] Fallback source VCI → TCBS nếu VCI bị chặn
+            stk_fin = None
+            for _src in ['VCI', 'TCBS']:
+                try:
+                    stk_fin = Vnstock().stock(symbol=ticker, source=_src)
+                    break
+                except Exception as _e:
+                    print(f"[INFO] {_src} fin failed: {str(_e)[:60]}")
+                    continue
+            if stk_fin is None:
+                raise ConnectionError("Không thể kết nối tới mọi data source")
             df_ts   = stk_fin.company.trading_stats()
             if valid(df_ts):
                 row_ts = df_ts.iloc[0]
@@ -5113,7 +5181,16 @@ with tab3:
         # PHƯƠNG ÁN A: dùng company.trading_stats thay chart trống
         st.info("ℹ️ API dòng tiền theo ngày không khả dụng. Hiển thị dữ liệu tổng hợp từ nguồn khác.")
         try:
-            stk_ts  = Vnstock().stock(symbol=ticker, source='VCI')
+            # [V24 PATCH] Fallback source
+            stk_ts = None
+            for _src in ['VCI', 'TCBS']:
+                try:
+                    stk_ts = Vnstock().stock(symbol=ticker, source=_src)
+                    break
+                except Exception:
+                    continue
+            if stk_ts is None:
+                raise ConnectionError("Không thể kết nối tới mọi data source")
             df_ts   = stk_ts.company.trading_stats()
             if valid(df_ts):
                 row_ts = df_ts.iloc[0]
