@@ -1936,15 +1936,23 @@ def detect_price_action(df: pd.DataFrame) -> dict:
         result['patterns'].append("↔️ Cấu trúc giá đang sideway / chuyển tiếp")
 
     # Double Top
-    recent_highs = [highs[i] for i in range(-20, -1) if highs[i] == max(highs[max(0,i-3):i+4])]
+    recent_highs = []
+    for i in range(len(highs)-20, len(highs)-1):
+        if i < 3: continue
+        if highs[i] == max(highs[max(0,i-3):i+4]):
+            recent_highs.append(highs[i])
     if len(recent_highs) >= 2:
-        if abs(recent_highs[-1] - recent_highs[-2]) / recent_highs[-1] < 0.02:
+        if abs(recent_highs[-1] - recent_highs[-2]) / (recent_highs[-1] + 1e-9) < 0.02:
             result['patterns'].append("🔴 Double Top — Đỉnh kép, cảnh báo đảo chiều giảm")
 
     # Double Bottom
-    recent_lows = [lows[i] for i in range(-20, -1) if lows[i] == min(lows[max(0,i-3):i+4])]
+    recent_lows = []
+    for i in range(len(lows)-20, len(lows)-1):
+        if i < 3: continue
+        if lows[i] == min(lows[max(0,i-3):i+4]):
+            recent_lows.append(lows[i])
     if len(recent_lows) >= 2:
-        if abs(recent_lows[-1] - recent_lows[-2]) / recent_lows[-1] < 0.02:
+        if abs(recent_lows[-1] - recent_lows[-2]) / (recent_lows[-1] + 1e-9) < 0.02:
             result['patterns'].append("🟢 Double Bottom — Đáy kép, tín hiệu đảo chiều tăng")
 
     # Inside Bar (nến nằm trong nến trước)
