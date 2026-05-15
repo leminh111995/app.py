@@ -2931,78 +2931,6 @@ def help_for(metric_key: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Strategy A/B Testing
 # ──────────────────────────────────────────────────────────────────────────────
-def run_backtest_param(df, rsi_buy: float = 45, profit_target: float = 0.05,
-                        days_fwd: int = 10, use_wave_filter: bool = False,
-                        use_macd_cross: bool = True, use_adx_filter: bool = False,
-                        adx_min: float = 20) -> dict:
-    """[V24] Backtest tham số hoá cho A/B testing."""
-    wins, profits, signals_data = 0, [], []
-    n = len(df)
-    for i in range(100, n - days_fwd):
-        rsi_now = df['rsi'].iloc[i]
-        if not (rsi_now < rsi_buy):
-            continue
-        if use_macd_cross:
-            macd_cross = (df['macd'].iloc[i] > df['signal'].iloc[i] and
-                          df['macd'].iloc[i-1] <= df['signal'].iloc[i-1])
-        else:
-            macd_cross = df['macd'].iloc[i] > df['signal'].iloc[i]
-        if not macd_cross: continue
-
-        if use_wave_filter:
-            if not (WAVE_RSI_MIN <= rsi_now <= WAVE_RSI_MAX): continue
-            if df['close'].iloc[i] > df['ma20'].iloc[i] * 1.05: continue
-        if use_adx_filter and 'adx' in df.columns:
-            if df['adx'].iloc[i] < adx_min: continue
-
-        buy_price = df['close'].iloc[i] * (1 + SLIPPAGE)
-        target    = buy_price * (1 + profit_target)
-        sl_price  = buy_price * (1 - SL_PCT)
-        future    = df['close'].iloc[i+1 : i+1+days_fwd]
-        hit_tp    = any(future >= target)
-        hit_sl    = any(future <= sl_price)
-        date_i    = df['date'].iloc[i] if 'date' in df.columns else i
-
-        if hit_tp:
-            p = profit_target - ROUND_TRIP_COST; profits.append(p); wins += 1
-            signals_data.append({'date':date_i,'result':'WIN','pnl':p})
-        elif hit_sl:
-            p = -SL_PCT - ROUND_TRIP_COST; profits.append(p)
-            signals_data.append({'date':date_i,'result':'LOSS','pnl':p})
-        else:
-            exit_price = future.iloc[-1] if len(future) > 0 else buy_price
-            p = (exit_price - buy_price)/buy_price - ROUND_TRIP_COST; profits.append(p)
-            signals_data.append({'date':date_i,'result':'HOLD','pnl':p})
-
-    if not profits:
-        return {'winrate':0.0,'expectancy':0.0,'sharpe':0.0,'max_drawdown':0.0,
-                'signals':0,'profits':[],'signals_data':[]}
-
-    n_trades = len(profits)
-    winrate  = round((wins / n_trades) * 100, 1)
-    arr = np.array(profits)
-    rf_per_trade = 0.045 * (days_fwd / 252)
-    excess = arr - rf_per_trade
-
-    signals_per_year = 12.0
-    if signals_data and 'date' in df.columns:
-        try:
-            first_dt = pd.to_datetime(signals_data[0]['date'])
-            last_dt  = pd.to_datetime(signals_data[-1]['date'])
-            years = max(0.25, (last_dt - first_dt).days / 365.25)
-            signals_per_year = n_trades / years
-        except Exception:
-            pass
-
-    sharpe = (round((excess.mean()/excess.std())*np.sqrt(signals_per_year), 2)
-              if excess.std() > 1e-9 else 0.0)
-    equity = np.cumprod([1+p for p in profits])
-    max_dd = round(((equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity)).min() * 100, 2)
-
-    return {'winrate':winrate,'expectancy':round(np.mean(profits)*100,2),
-            'sharpe':sharpe,'max_drawdown':max_dd,'signals':n_trades,
-            'signals_per_year':round(signals_per_year,1),
-            'profits':profits,'signals_data':signals_data}
 
 
 def compare_strategies(df, strategies: dict) -> pd.DataFrame:
@@ -3077,24 +3005,6 @@ def load_watchlist_from_gist() -> list:
             return []
         content = data['files'][WATCHLIST_GIST_FILENAME]['content']
         return [x.strip().upper() for x in content.splitlines() if x.strip()]
-    except Exception as e:
-        print(f"[WARN] load_watchlist: {e}")
-        return []
-
-
-def save_watchlist_to_gist(tickers: list) -> bool:
-    """[V24] Ghi watchlist lên Gist."""
-    if not HAS_REQUESTS: return False
-    try:
-        gist_id = st.secrets.get('gist_id', '')
-        token   = st.secrets.get('github_token', '')
-        if not gist_id or not token: return False
-        body = {'files': {WATCHLIST_GIST_FILENAME: {
-            'content': '\n'.join(sorted(set(t.upper() for t in tickers)))}}}
-        r = requests.patch(f"https://api.github.com/gists/{gist_id}",
-                            headers={'Authorization': f'token {token}'},
-                            json=body, timeout=5)
-        return r.status_code == 200
     except Exception as e:
         print(f"[WARN] save_watchlist: {e}")
         return False
@@ -3555,7 +3465,22 @@ def ai_score_to_language(ai_score) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # [V24-M1] Score Trend 7 ngày
 # ──────────────────────────────────────────────────────────────────────────────
-def calc_score_trend_7d(df: pd.DataFrame, foreign_trend: dict,
+@st.cache_data(ttl=3600, max_entries=100)
+def _calc_score_trend_7d_cached(ticker: str, date_key: str, weekly_trend: str, sector_score: int = 0) -> list:
+    """[F4] Cache wrapper cho score trend."""
+    df_c = get_price(ticker)
+    if not valid(df_c):
+        return []
+    df_c = calc_indicators(df_c)
+    # Foreign trend dùng smart_flow_proxy đơn giản
+    try:
+        ft = smart_flow_proxy(df_c)
+    except Exception:
+        ft = {'score': 10}
+    return _calc_score_trend_7d_impl(df_c, ft, weekly_trend, sector_score)
+
+
+def _calc_score_trend_7d_impl(df: pd.DataFrame, foreign_trend: dict,
                           weekly_trend: str, sector_score: int = 0,
                           n_days: int = 7) -> list:
     """[M1] Tính lại điểm tổng cho 7 phiên gần nhất.
@@ -3827,6 +3752,457 @@ def whatif_recalc_score(last_real: pd.Series, sim_price: float, sim_rsi: float,
 
 # [V24 NEW HELPERS END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-Q1] Auto-refresh trong trading hours
+# ──────────────────────────────────────────────────────────────────────────────
+def is_trading_hours_vn() -> bool:
+    """[Q1] True nếu đang trong giờ giao dịch HOSE (9h-15h, T2-T6)."""
+    now = datetime.now(TZ_VN)
+    if now.weekday() >= 5:  # T7, CN
+        return False
+    h, m = now.hour, now.minute
+    # 9:00 - 11:30 và 13:00 - 15:00 (sàn HOSE)
+    is_morning = (h == 9) or (h == 10) or (h == 11 and m <= 30)
+    is_afternoon = (h == 13) or (h == 14) or (h == 15 and m == 0)
+    return is_morning or is_afternoon
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-S2] Position Risk Heatmap
+# ──────────────────────────────────────────────────────────────────────────────
+def calc_position_risk_score(pos: dict, df_current: pd.DataFrame) -> dict:
+    """[S2] Tính risk score 0-10 cho 1 vị thế (10=rủi ro cao nhất).
+    Dựa trên: SL distance, RSI, ATR/price, P&L hiện tại."""
+    if not valid(df_current) or len(df_current) < 30:
+        return {'score': 5, 'label': 'N/A', 'flags': []}
+
+    last = df_current.iloc[-1]
+    cur_price = float(last['close'])
+    entry = float(pos.get('entry', cur_price))
+    rsi = float(last['rsi'])
+    atr = float(last.get('atr', cur_price * 0.02))
+    pnl_pct = (cur_price - entry) / entry * 100
+
+    score = 5  # base
+    flags = []
+
+    # P&L
+    if pnl_pct < -7:
+        score += 3; flags.append(f"❌ Lỗ {pnl_pct:.1f}% (>SL 7%)")
+    elif pnl_pct < -3:
+        score += 1; flags.append(f"⚠️ Lỗ {pnl_pct:.1f}%")
+    elif pnl_pct > 15:
+        score -= 1; flags.append(f"💰 Lời {pnl_pct:.1f}% (cân nhắc chốt)")
+
+    # RSI extremes
+    if rsi >= 75:
+        score += 2; flags.append(f"🔴 RSI {rsi:.0f} quá mua")
+    elif rsi < 30:
+        score += 2; flags.append(f"🔴 RSI {rsi:.0f} quá bán")
+
+    # Volatility cao
+    atr_pct = atr / cur_price * 100
+    if atr_pct > 4:
+        score += 1; flags.append(f"⚡ Vol cao {atr_pct:.1f}%")
+
+    # MACD bearish cross gần đây
+    if len(df_current) >= 3:
+        if (df_current['macd'].iloc[-2] > df_current['signal'].iloc[-2]
+            and last['macd'] < last['signal']):
+            score += 2; flags.append("🔴 MACD vừa cắt xuống")
+
+    # Trên/dưới MA20
+    ma20 = float(last['ma20'])
+    if cur_price < ma20 * 0.97:
+        score += 1; flags.append("⚠️ Rơi dưới MA20")
+
+    score = max(0, min(10, score))
+    if score >= 8: label = '🔴 RỦI RO CAO'
+    elif score >= 6: label = '🟠 RỦI RO VỪA'
+    elif score >= 4: label = '🟡 BÌNH THƯỜNG'
+    else: label = '🟢 AN TOÀN'
+
+    return {'score': score, 'label': label, 'flags': flags,
+            'pnl_pct': round(pnl_pct, 2), 'rsi': round(rsi, 1)}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-S3] "Hôm nay nên xem mã nào" — Top 3 mã đáng follow
+# ──────────────────────────────────────────────────────────────────────────────
+def get_daily_recommendations(watchlist: list, max_check: int = 20) -> dict:
+    """[S3] Quét watchlist + PILLARS, tìm 3 mã đáng follow hôm nay.
+    Tiêu chí: vol bất thường, RSI hồi từ thấp, hoặc breakout MA20."""
+    candidates = []
+    universe = list(set(watchlist + PILLARS[:10]))[:max_check]
+
+    for t in universe:
+        try:
+            df = get_price(t, days=60)
+            if not valid(df) or len(df) < 40:
+                continue
+            df = calc_indicators(df)
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+
+            rsi = float(last['rsi'])
+            price = float(last['close'])
+            ma20 = float(last['ma20'])
+            vol = float(last['vol_strength'])
+            ret = float(last.get('return_1d', 0))
+
+            reasons = []
+            score = 0
+
+            # 1. Vol bất thường (>1.8x)
+            if vol >= 1.8:
+                score += 30
+                reasons.append(f"⚡ Vol nổ {vol:.1f}x")
+
+            # 2. RSI hồi phục từ vùng thấp
+            if 35 <= rsi <= 55 and float(prev['rsi']) < 40:
+                score += 25
+                reasons.append(f"🔄 RSI hồi từ {prev['rsi']:.0f} → {rsi:.0f}")
+
+            # 3. Breakout MA20 (vừa vượt MA20)
+            if price > ma20 and float(prev['close']) <= float(prev['ma20']):
+                score += 30
+                reasons.append("🚀 Vừa break MA20")
+
+            # 4. MACD bullish cross gần đây
+            if (last['macd'] > last['signal']
+                and float(prev['macd']) <= float(prev['signal'])):
+                score += 25
+                reasons.append("📈 MACD vừa cắt lên")
+
+            # 5. Tăng mạnh hôm nay (>2%)
+            if ret > 0.02:
+                score += 15
+                reasons.append(f"🟢 Tăng {ret*100:.1f}%")
+
+            if score > 0:
+                candidates.append({
+                    'ticker': t,
+                    'score': score,
+                    'price': price,
+                    'rsi': round(rsi, 1),
+                    'vol': round(vol, 2),
+                    'ret_pct': round(ret*100, 2),
+                    'reasons': reasons,
+                })
+        except Exception:
+            continue
+
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    return {
+        'top3': candidates[:3],
+        'all': candidates,
+        'n_checked': len(universe),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-S5] Daily Commentary auto-generated
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_daily_commentary(regime: dict, breadth: dict,
+                                sector_flow: list = None) -> str:
+    """[S5] Sinh câu mô tả thị trường hôm nay tự động."""
+    parts = []
+
+    pct_ma20 = regime.get('pct_ma20', 50)
+    adr = regime.get('adr', 50)
+    rg = regime.get('regime', 'UNKNOWN')
+
+    # Câu 1: tổng quan
+    if rg == 'STRONG_BULL':
+        parts.append(f"📈 **Thị trường mạnh mẽ** — {pct_ma20:.0f}% mã đang trên MA20, dòng tiền tích cực.")
+    elif rg == 'CAUTIOUS_BULL':
+        parts.append(f"🟡 **Thị trường tích cực có chọn lọc** — {pct_ma20:.0f}% mã trên MA20.")
+    elif rg == 'BEAR':
+        parts.append(f"🔴 **Thị trường yếu** — chỉ {pct_ma20:.0f}% mã trên MA20, nên đứng ngoài.")
+    elif rg == 'MIXED':
+        parts.append(f"🟠 **Thị trường phân hoá** — {pct_ma20:.0f}% mã trên MA20, cần chọn lọc cao.")
+    else:
+        parts.append(f"❓ **Trạng thái thị trường:** {pct_ma20:.0f}% mã trên MA20.")
+
+    # Câu 2: ngành nóng nhất
+    if sector_flow and len(sector_flow) >= 2:
+        hot = sector_flow[0]
+        cold = sector_flow[-1]
+        parts.append(f"🏭 **{hot['sector']}** dẫn dắt "
+                       f"({hot['pct_above_ma20']:.0f}% trên MA20); "
+                       f"yếu nhất là **{cold['sector']}** ({cold['pct_above_ma20']:.0f}%).")
+
+    # Câu 3: gợi ý hành động
+    if rg == 'STRONG_BULL':
+        parts.append(f"💡 **Hành động:** Có thể chủ động mua các mã có RS tốt + breakout.")
+    elif rg == 'CAUTIOUS_BULL':
+        parts.append(f"💡 **Hành động:** Chỉ mua mã có điểm tổng ≥ {regime.get('min_score_buy', 63)}/90.")
+    elif rg == 'MIXED':
+        parts.append(f"💡 **Hành động:** Chỉ mã siêu mạnh (RS ≥ 80), size nhỏ.")
+    elif rg == 'BEAR':
+        parts.append(f"💡 **Hành động:** Không mở vị thế mới, bảo vệ vốn.")
+
+    return " ".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-R1] Daily Loss Limit Check
+# ──────────────────────────────────────────────────────────────────────────────
+def check_daily_loss_limit(trades: list, limit_pct: float = 3.0) -> dict:
+    """[R1] Kiểm tra mức lỗ trong ngày so với limit."""
+    today = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+    today_trades = [t for t in trades if t.get('date', '').startswith(today)]
+
+    if not today_trades:
+        return {'today_pnl': 0, 'limit_pct': limit_pct,
+                'status': 'OK', 'label': '✅ Chưa có trade nào hôm nay',
+                'n_trades': 0}
+
+    pnls_today = [t['pnl_pct'] for t in today_trades]
+    # Compound P&L hôm nay
+    cum_pnl = (np.prod([1 + p/100 for p in pnls_today]) - 1) * 100
+    n_wins = sum(1 for p in pnls_today if p > 0)
+    n_losses = sum(1 for p in pnls_today if p < 0)
+
+    if cum_pnl <= -limit_pct:
+        status = 'STOP'
+        label = f'🚫 ĐÃ CHẠM LIMIT — Dừng giao dịch hôm nay'
+    elif cum_pnl <= -limit_pct * 0.7:
+        status = 'WARNING'
+        label = f'⚠️ Sắp chạm limit ({cum_pnl:.1f}% / -{limit_pct}%)'
+    elif cum_pnl > 0:
+        status = 'GAIN'
+        label = f'🟢 Đang LỜI {cum_pnl:+.1f}% hôm nay'
+    else:
+        status = 'OK'
+        label = f'🟡 Lỗ nhẹ {cum_pnl:.1f}% (limit -{limit_pct}%)'
+
+    return {'today_pnl': round(cum_pnl, 2), 'limit_pct': limit_pct,
+            'status': status, 'label': label,
+            'n_trades': len(today_trades),
+            'n_wins': n_wins, 'n_losses': n_losses}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-R2] Auto Position Sizing — kết hợp Vol regime + Kelly + Portfolio
+# ──────────────────────────────────────────────────────────────────────────────
+def calc_auto_position_size(capital: float, entry: float, atr: float,
+                              kelly_pct: float, vol_regime: dict,
+                              market_regime: dict, n_existing_positions: int = 0) -> dict:
+    """[R2] Tính position size tự động kết hợp 4 yếu tố:
+    1. Vol-Parity (dollar risk 1%)
+    2. Half-Kelly cap
+    3. Volatility regime mult (LOW=1.0, NORMAL=0.85, HIGH=0.5)
+    4. Market regime mult
+    5. Diversification penalty (đã có N positions → giảm size)
+    """
+    if atr <= 0 or entry <= 0 or capital <= 0:
+        return {'shares': 0, 'value': 0, 'reasoning': ['Input invalid']}
+
+    reasoning = []
+    risk_per_share = 2 * atr  # SL = 2 ATR
+    base_risk_pct = 1.0   # 1% vốn dollar risk
+    base_dollar = capital * (base_risk_pct / 100)
+
+    # 1. Base từ vol parity
+    base_shares = base_dollar / risk_per_share
+    reasoning.append(f"Base: 1% risk = {base_dollar:,.0f}đ → {base_shares:.0f} cp")
+
+    # 2. Cap by Half-Kelly
+    kelly_value = capital * (kelly_pct / 100)
+    kelly_shares = kelly_value / entry
+    reasoning.append(f"Half-Kelly cap: {kelly_pct:.1f}% vốn = {kelly_shares:.0f} cp")
+
+    # 3. Vol regime mult
+    vol_mult = vol_regime.get('size_recommend', 1.0)
+    reasoning.append(f"Vol regime ({vol_regime.get('level', 'NORMAL')}): ×{vol_mult}")
+
+    # 4. Market regime mult
+    market_mult = market_regime.get('size_mult', 1.0)
+    reasoning.append(f"Market regime ({market_regime.get('regime', 'UNKNOWN')}): ×{market_mult}")
+
+    # 5. Diversification penalty
+    if n_existing_positions >= 5:
+        div_mult = 0.5
+        reasoning.append(f"⚠️ Đã có {n_existing_positions} vị thế → ×0.5")
+    elif n_existing_positions >= 3:
+        div_mult = 0.75
+        reasoning.append(f"⚠️ Đã có {n_existing_positions} vị thế → ×0.75")
+    else:
+        div_mult = 1.0
+
+    # Final
+    final_shares_raw = min(base_shares, kelly_shares) * vol_mult * market_mult * div_mult
+    final_shares = int(final_shares_raw // 100 * 100)
+    final_value = final_shares * entry
+    final_pct = final_value / capital * 100 if capital > 0 else 0
+
+    return {
+        'shares': final_shares,
+        'value': round(final_value, 0),
+        'size_pct': round(final_pct, 2),
+        'sl_price': round(entry - risk_per_share, 0),
+        'tp1_price': round(entry + risk_per_share, 0),
+        'tp2_price': round(entry + 2 * risk_per_share, 0),
+        'tp3_price': round(entry + 3 * risk_per_share, 0),
+        'dollar_risk': round(final_shares * risk_per_share, 0),
+        'reasoning': reasoning,
+        'limiter': 'Vol-parity' if base_shares < kelly_shares else 'Half-Kelly',
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-S1] Smart Alert — Tier change detection
+# ──────────────────────────────────────────────────────────────────────────────
+V24_TIERS_FILE = 'v24_tier_history.json'
+
+def load_tier_history() -> dict:
+    """[S1] Load lịch sử tier của watchlist."""
+    try:
+        if not os.path.exists(V24_TIERS_FILE):
+            return {}
+        with open(V24_TIERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_tier_history(history: dict) -> bool:
+    try:
+        with open(V24_TIERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def detect_tier_changes(watchlist: list) -> list:
+    """[S1] So sánh tier hôm nay vs hôm qua, return list các thay đổi."""
+    history = load_tier_history()
+    today = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+    changes = []
+    new_history = {}
+
+    for t in watchlist[:30]:  # max 30 mã
+        try:
+            df = get_price(t, days=60)
+            if not valid(df) or len(df) < 40:
+                continue
+            df = calc_indicators(df)
+            last = df.iloc[-1]
+            rsi = float(last['rsi'])
+            vol = float(last['vol_strength'])
+            price = float(last['close'])
+            ma20 = float(last['ma20'])
+            macd_up = last['macd'] > last['signal']
+
+            # Tier logic đơn giản
+            if vol >= 1.5 and price > ma20 and macd_up and 45 < rsi < 70:
+                tier = 'BUY'
+            elif price > ma20 and macd_up:
+                tier = 'WATCH'
+            elif rsi >= 75:
+                tier = 'OVERHEAT'
+            elif price < ma20 * 0.95:
+                tier = 'AVOID'
+            else:
+                tier = 'NEUTRAL'
+
+            new_history[t] = {'tier': tier, 'date': today, 'price': price}
+
+            # So với history cũ
+            old = history.get(t)
+            if old and old.get('tier') != tier:
+                changes.append({
+                    'ticker': t,
+                    'from': old.get('tier'),
+                    'to': tier,
+                    'price': price,
+                    'date_old': old.get('date'),
+                })
+        except Exception:
+            continue
+
+    save_tier_history(new_history)
+    return changes
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-R3] Trade Journal Notes
+# ──────────────────────────────────────────────────────────────────────────────
+# Đã có trades file, mở rộng schema để có note + reason
+def save_trade_with_notes(ticker: str, pnl_pct: float,
+                            entry_reason: str, exit_reason: str,
+                            lesson: str = "") -> bool:
+    """[R3] Lưu trade với ghi chú đầy đủ."""
+    trades = load_trades_from_file()
+    trades.append({
+        'ticker': ticker.upper(),
+        'pnl_pct': float(pnl_pct),
+        'date': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
+        'entry_reason': entry_reason,
+        'exit_reason': exit_reason,
+        'lesson': lesson,
+        'r_multiple': None,  # sẽ tính nếu có SL info
+    })
+    return save_trades_to_file(trades)
+
+
+# [V24 NEW HELPERS DOT 2 END]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-F3] Persist Portfolio + Trades vào file local (không mất khi reload)
+# ──────────────────────────────────────────────────────────────────────────────
+V24_POSITIONS_FILE = 'v24_positions.json'
+V24_TRADES_FILE    = 'v24_trades.json'
+
+def load_positions_from_file() -> list:
+    """[F3] Load positions từ file."""
+    try:
+        if not os.path.exists(V24_POSITIONS_FILE):
+            return []
+        with open(V24_POSITIONS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[F3 load_positions] {e}")
+        return []
+
+
+def save_positions_to_file(positions: list) -> bool:
+    """[F3] Save positions vào file."""
+    try:
+        with open(V24_POSITIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(positions, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[F3 save_positions] {e}")
+        return False
+
+
+def load_trades_from_file() -> list:
+    """[F3] Load trades từ file."""
+    try:
+        if not os.path.exists(V24_TRADES_FILE):
+            return []
+        with open(V24_TRADES_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[F3 load_trades] {e}")
+        return []
+
+
+def save_trades_to_file(trades: list) -> bool:
+    """[F3] Save trades vào file."""
+    try:
+        with open(V24_TRADES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(trades, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[F3 save_trades] {e}")
+        return False
+
+
 
 
 # ==============================================================================
@@ -3843,6 +4219,33 @@ st.set_page_config(
 )
 st.title("🛡️ Quant System V24.0: Apex Predator Leviathan")
 st.caption("**V24.0:** V23 + Market Pulse | Executive Summary | Exit Signal | Correlation Check")
+
+# [V24-Q1] AUTO-REFRESH trong trading hours
+try:
+    if is_trading_hours_vn():
+        _last_refresh = st.session_state.get('_v24_last_refresh', 0)
+        _now_ts = datetime.now(TZ_VN).timestamp()
+        if _now_ts - _last_refresh > 300:  # 5 phút
+            st.session_state['_v24_last_refresh'] = _now_ts
+        # Auto-refresh checkbox
+        ar_col1, ar_col2 = st.columns([3, 1])
+        with ar_col2:
+            auto_refresh = st.checkbox("🔄 Auto-refresh 5p", value=False,
+                                          key="auto_refresh_cb",
+                                          help="Tự refresh mỗi 5 phút (chỉ trong giờ giao dịch)")
+            if auto_refresh:
+                import time
+                # Streamlit không có native auto-refresh, dùng JS hack
+                st.markdown("""
+                <script>
+                setTimeout(function() {
+                    window.location.reload();
+                }, 300000);
+                </script>
+                """, unsafe_allow_html=True)
+                st.caption(f"⏰ Last refresh: {datetime.now(TZ_VN).strftime('%H:%M:%S')}")
+except Exception as _q1_err:
+    print(f"[Q1] {_q1_err}")
 st.markdown("---")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -3851,12 +4254,7 @@ st.markdown("---")
 # Cho phép user tắt banner nếu thấy chậm
 if 'show_v24_banner' not in st.session_state:
     st.session_state['show_v24_banner'] = True
-
-with st.sidebar:
-    st.session_state['show_v24_banner'] = st.checkbox(
-        "📊 Banner Mini Market Pulse",
-        value=st.session_state['show_v24_banner'],
-        help="Tắt nếu thấy chậm")
+# Checkbox đã được chuyển vào tab "Pulse" của sidebar tổng hợp bên dưới
 
 # Mặc định regime an toàn để các tab vẫn đọc được
 st.session_state.setdefault('market_regime', {
@@ -3870,7 +4268,8 @@ if st.session_state['show_v24_banner']:
     # KHÔNG gọi VNINDEX, KHÔNG gọi basket lớn → tránh 403
     try:
         if 'v24_pulse_computed' not in st.session_state:
-            pillars_sample = list(PILLARS)[:8]  # 8 mã trụ cột, mỗi mã nhanh
+            # [F5] Basket cố định 8 mã đại diện đa ngành (không phụ thuộc PILLARS)
+            pillars_sample = ['VCB', 'HPG', 'FPT', 'VNM', 'MWG', 'VHM', 'GAS', 'MSN']
             n_above_ma20 = 0
             n_advancing = 0
             n_total = 0
@@ -3940,6 +4339,16 @@ if st.session_state['show_v24_banner']:
                 st.error("🔴 BEAR — Hệ thống đề nghị KHÔNG mở vị thế mới")
             elif rg.get('regime') == 'MIXED':
                 st.warning("🟠 Thị trường phân hoá — chỉ chọn mã RS Rating ≥ 80")
+
+            # [S5] Daily Commentary
+            try:
+                _sec_flow = st.session_state.get('_mf_cache', [])
+                commentary = generate_daily_commentary(rg, {'pct_above_ma20': rg.get('pct_ma20', 50)},
+                                                          _sec_flow)
+                with st.expander("📝 Bình luận thị trường hôm nay [S5]", expanded=False):
+                    st.markdown(commentary)
+            except Exception:
+                pass
         else:
             st.caption("📊 Mini Market Pulse: chưa quét được (thử reload)")
     except Exception as e:
@@ -3984,216 +4393,314 @@ if st.session_state.get('wl_alerts'):
         st.markdown("---")
 # --- SIDEBAR ---
 tickers = load_hose_tickers()
-# [V24 #5] MARKET PULSE compact ở sidebar (thay Risk Thermometer)
-with st.sidebar:
-    regime_sb = st.session_state.get('market_regime', {})
-    if regime_sb.get('regime') and regime_sb.get('regime') != 'UNKNOWN':
-        st.markdown("---")
-        st.markdown(f"#### 📊 Market Pulse")
-        # Mini chỉ số gọn
-        ms_c1, ms_c2 = st.columns(2)
-        ms_c1.metric("% > MA20", f"{regime_sb.get('pct_ma20', 0):.0f}%")
-        ms_c2.metric("% Tăng", f"{regime_sb.get('adr', 0):.0f}%")
-        # Tô màu trạng thái
-        rg_code = regime_sb.get('regime', 'UNKNOWN')
-        if rg_code == 'BEAR':
-            st.error("🔴 BEAR — Đứng ngoài")
-        elif rg_code == 'MIXED':
-            st.warning("🟠 MIXED — Chỉ RS≥80")
-        elif rg_code == 'STRONG_BULL':
-            st.success("🟢 BULL — Mua tích cực")
-        elif rg_code == 'CAUTIOUS_BULL':
-            st.info("🟡 Cautious — Chọn lọc")
+# [F1] Block đã chuyển vào sidebar tổng hợp bên dưới
 
-# [V24-M3] STOP-LOSS CALCULATOR ĐỘC LẬP
+# [F1] M3 đã chuyển vào sidebar tổng hợp
+
+# [F1] M5 đã chuyển vào sidebar tổng hợp
+
+# [F1] M6 đã chuyển vào sidebar tổng hợp
+
+# [F1] M7 đã chuyển vào sidebar tổng hợp
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-F1] UNIFIED V24 SIDEBAR — Gộp tất cả features vào 1 chỗ với tabs
+# ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    with st.expander("🧮 Máy tính Position & SL/TP (V24)"):
-        st.caption("Tính nhanh số shares, SL, TP cho BẤT KỲ mã nào.")
-        slc_capital = st.number_input("Vốn (đồng)", min_value=1_000_000,
-                                         value=100_000_000, step=10_000_000,
-                                         format="%d", key="slc_capital")
-        slc_entry = st.number_input("Giá vào lệnh", min_value=100.0,
-                                       value=50000.0, step=100.0, key="slc_entry")
-        slc_risk = st.slider("Rủi ro (% vốn)", 0.5, 3.0, 1.0, 0.1, key="slc_risk")
-        slc_atr = st.slider("ATR % (volatility)", 1.0, 5.0, 2.5, 0.1, key="slc_atr",
-                              help="ATR 2.5% là trung bình HOSE; cao = mã biến động mạnh")
-        if st.button("💡 Tính", key="slc_btn"):
-            res = calc_position_simple(slc_capital, slc_entry,
-                                          risk_pct=slc_risk, atr_pct=slc_atr)
-            if 'error' in res:
-                st.error(res['error'])
+    st.markdown("---")
+    st.markdown("### 🛠️ V24 Toolkit")
+    sb_tab_pulse, sb_tab_tools, sb_tab_port = st.tabs(["📊 Pulse", "🛠️ Tools", "💼 Portfolio"])
+
+    # ─── TAB 1: PULSE ───
+    with sb_tab_pulse:
+        st.session_state['show_v24_banner'] = st.checkbox(
+            "📊 Banner Mini Market Pulse",
+            value=st.session_state.get('show_v24_banner', True),
+            help="Tắt nếu thấy chậm",
+            key="sb_pulse_cb")
+        regime_sb = st.session_state.get('market_regime', {})
+        if regime_sb.get('regime') and regime_sb.get('regime') != 'UNKNOWN':
+            ms_c1, ms_c2 = st.columns(2)
+            ms_c1.metric("% > MA20", f"{regime_sb.get('pct_ma20', 0):.0f}%")
+            ms_c2.metric("% Tăng", f"{regime_sb.get('adr', 0):.0f}%")
+            rg_code = regime_sb.get('regime', 'UNKNOWN')
+            if rg_code == 'BEAR':
+                st.error("🔴 BEAR — Đứng ngoài")
+            elif rg_code == 'MIXED':
+                st.warning("🟠 MIXED — Chỉ RS≥80")
+            elif rg_code == 'STRONG_BULL':
+                st.success("🟢 BULL — Mua tích cực")
+            elif rg_code == 'CAUTIOUS_BULL':
+                st.info("🟡 Cautious — Chọn lọc")
+        else:
+            st.caption("Đang quét...")
+
+        # [S1] SMART ALERT — Tier changes
+        with st.expander("🔔 Smart Alerts (S1)", expanded=False):
+            if st.button("🔄 Check changes", key="s1_btn"):
+                with st.spinner("So sánh với phiên trước..."):
+                    wl_s1 = st.session_state.get('watchlist', PILLARS[:10])
+                    changes = detect_tier_changes(list(wl_s1))
+                    st.session_state['_s1_changes'] = changes
+            changes = st.session_state.get('_s1_changes', [])
+            if changes:
+                for c in changes:
+                    # Đổi từ AVOID/NEUTRAL → BUY/WATCH = tin tốt
+                    upgrade = c['from'] in ('AVOID', 'NEUTRAL') and c['to'] in ('BUY', 'WATCH')
+                    downgrade = c['from'] in ('BUY', 'WATCH') and c['to'] in ('AVOID', 'OVERHEAT')
+                    if upgrade:
+                        st.success(f"⬆️ **{c['ticker']}**: {c['from']} → **{c['to']}** "
+                                      f"(giá {c['price']:,.0f})")
+                    elif downgrade:
+                        st.error(f"⬇️ **{c['ticker']}**: {c['from']} → **{c['to']}** "
+                                    f"(giá {c['price']:,.0f})")
+                    else:
+                        st.info(f"🔄 **{c['ticker']}**: {c['from']} → {c['to']}")
             else:
-                st.success(f"📦 **{res['shares']:,} cp** ({res['pct_of_capital']:.1f}% vốn)")
-                st.write(f"💰 Tổng: {res['total_cost']:,.0f}đ")
-                st.write(f"🛡️ SL: {res['sl']:,.0f}đ")
-                st.write(f"🎯 TP1 (1R): {res['tp1']:,.0f}")
-                st.write(f"🎯 TP2 (2R): {res['tp2']:,.0f}")
-                st.write(f"🎯 TP3 (3R): {res['tp3']:,.0f}")
-                st.caption(f"Rủi ro tối đa: {res['dollar_risk']:,.0f}đ")
+                st.caption("Chưa có thay đổi (hoặc chưa quét bao giờ)")
 
-# [V24-M5] PRE-MARKET CHECKLIST
-with st.sidebar:
-    with st.expander("☀️ Pre-market Checklist (V24)"):
-        st.caption("Quét nhanh watchlist mỗi sáng.")
-        pm_wl_input = st.text_area(
-            "Mã cần check (cách nhau bởi dấu phẩy)",
-            value=','.join(st.session_state.get('watchlist', PILLARS[:5])),
-            height=80, key="pm_wl")
-        if st.button("🔍 Quét nhanh", key="pm_btn"):
-            wl_list = [t.strip().upper() for t in pm_wl_input.split(',') if t.strip()]
-            with st.spinner("Quét..."):
-                pm_res = generate_premarket_checklist(wl_list, max_check=15)
-                st.session_state['_pm_result'] = pm_res
-        pm_res = st.session_state.get('_pm_result')
-        if pm_res:
-            if pm_res.get('top3'):
-                st.markdown("**🏆 TOP 3 mã tốt nhất:**")
-                for i, m in enumerate(pm_res['top3'], 1):
-                    st.write(f"{i}. **{m['ticker']}** — {m['score']}/100 "
-                              f"(RSI {m['rsi']:.0f})")
-            if pm_res.get('exit_alerts'):
-                st.markdown("**🚨 Cảnh báo CHỐT LỜI:**")
-                for e in pm_res['exit_alerts']:
-                    st.error(f"• **{e['ticker']}** — {e['reason']}")
-            if pm_res.get('unusual_vol'):
-                st.markdown("**⚡ Vol bất thường:**")
-                for u in pm_res['unusual_vol']:
-                    arrow = '🟢↑' if u['direction'] == 'UP' else '🔴↓'
-                    st.write(f"• **{u['ticker']}** — Vol {u['vol']:.1f}x {arrow} {u['ret_pct']:+.1f}%")
-            if not pm_res.get('top3') and not pm_res.get('exit_alerts') and not pm_res.get('unusual_vol'):
-                st.info("✅ Watchlist không có gì bất thường")
+    # ─── TAB 2: TOOLS ───
+    with sb_tab_tools:
+        with st.expander("🧮 Position & SL/TP Calculator", expanded=False):
+            st.caption("Tính shares + SL/TP cho BẤT KỲ mã nào.")
+            slc_capital = st.number_input("Vốn (đồng)", min_value=1_000_000,
+                                             value=100_000_000, step=10_000_000,
+                                             format="%d", key="slc_capital")
+            slc_entry = st.number_input("Giá vào lệnh", min_value=100.0,
+                                           value=50000.0, step=100.0, key="slc_entry")
+            slc_risk = st.slider("Rủi ro (% vốn)", 0.5, 3.0, 1.0, 0.1, key="slc_risk")
+            slc_atr = st.slider("ATR % (volatility)", 1.0, 5.0, 2.5, 0.1, key="slc_atr",
+                                  help="ATR 2.5% là trung bình HOSE")
+            if st.button("💡 Tính", key="slc_btn"):
+                res = calc_position_simple(slc_capital, slc_entry,
+                                              risk_pct=slc_risk, atr_pct=slc_atr)
+                if 'error' in res:
+                    st.error(res['error'])
+                else:
+                    st.success(f"📦 **{res['shares']:,} cp** ({res['pct_of_capital']:.1f}% vốn)")
+                    st.write(f"💰 Tổng: {res['total_cost']:,.0f}đ")
+                    st.write(f"🛡️ SL: {res['sl']:,.0f}đ")
+                    st.write(f"🎯 TP1: {res['tp1']:,.0f} | TP2: {res['tp2']:,.0f} | TP3: {res['tp3']:,.0f}")
+                    st.caption(f"Rủi ro tối đa: {res['dollar_risk']:,.0f}đ")
 
-# [V24-M6] POSITION MANAGER
-with st.sidebar:
-    with st.expander("💼 Quản lý Portfolio (V24)"):
-        st.caption("Theo dõi các vị thế đang mở.")
+        with st.expander("🎯 Hôm nay xem mã nào? [S3]", expanded=False):
+            st.caption("Gợi ý 3 mã đáng follow nhất hôm nay từ watchlist + pillars.")
+            if st.button("🔍 Quét ngay", key="s3_btn"):
+                with st.spinner("Đang quét..."):
+                    wl = st.session_state.get('watchlist', PILLARS[:5])
+                    s3_res = get_daily_recommendations(wl, max_check=20)
+                    st.session_state['_s3_result'] = s3_res
+            s3_res = st.session_state.get('_s3_result')
+            if s3_res and s3_res.get('top3'):
+                st.caption(f"Đã quét {s3_res['n_checked']} mã")
+                for i, m in enumerate(s3_res['top3'], 1):
+                    with st.container(border=True):
+                        st.markdown(f"**#{i} {m['ticker']}** — score {m['score']}")
+                        st.caption(f"💰 {m['price']:,.0f} | RSI {m['rsi']:.0f} | Vol {m['vol']:.1f}x | {m['ret_pct']:+.1f}%")
+                        for r in m['reasons'][:3]:
+                            st.write(f"   {r}")
+            elif s3_res:
+                st.info("Không có mã nào nổi bật hôm nay")
+
+        with st.expander("☀️ Pre-market Checklist", expanded=False):
+            st.caption("Quét nhanh watchlist mỗi sáng.")
+            pm_wl_input = st.text_area(
+                "Mã cần check",
+                value=','.join(st.session_state.get('watchlist', PILLARS[:5])),
+                height=80, key="pm_wl")
+            if st.button("🔍 Quét nhanh", key="pm_btn"):
+                wl_list = [t.strip().upper() for t in pm_wl_input.split(',') if t.strip()]
+                with st.spinner("Quét..."):
+                    pm_res = generate_premarket_checklist(wl_list, max_check=15)
+                    st.session_state['_pm_result'] = pm_res
+            pm_res = st.session_state.get('_pm_result')
+            if pm_res:
+                if pm_res.get('top3'):
+                    st.markdown("**🏆 TOP 3 mã tốt nhất:**")
+                    for i, m in enumerate(pm_res['top3'], 1):
+                        st.write(f"{i}. **{m['ticker']}** — {m['score']}/100 (RSI {m['rsi']:.0f})")
+                if pm_res.get('exit_alerts'):
+                    st.markdown("**🚨 Cảnh báo CHỐT:**")
+                    for e in pm_res['exit_alerts']:
+                        st.error(f"• **{e['ticker']}** — {e['reason']}")
+                if pm_res.get('unusual_vol'):
+                    st.markdown("**⚡ Vol bất thường:**")
+                    for u in pm_res['unusual_vol']:
+                        arrow = '🟢↑' if u['direction'] == 'UP' else '🔴↓'
+                        st.write(f"• **{u['ticker']}** — Vol {u['vol']:.1f}x {arrow} {u['ret_pct']:+.1f}%")
+
+    # ─── TAB 3: PORTFOLIO ───
+    with sb_tab_port:
+        # [R1] Daily Loss Limit check
+        _trades_for_r1 = st.session_state.get('v24_trades', [])
+        if not _trades_for_r1:
+            _trades_for_r1 = load_trades_from_file()
+        dll_limit = st.number_input("Daily Loss Limit (%)", min_value=1.0,
+                                       max_value=10.0, value=3.0, step=0.5,
+                                       key="r1_limit",
+                                       help="Mức lỗ tối đa/ngày — sẽ cảnh báo khi gần đạt")
+        dll = check_daily_loss_limit(_trades_for_r1, limit_pct=dll_limit)
+        if dll['status'] == 'STOP':
+            st.error(dll['label'])
+        elif dll['status'] == 'WARNING':
+            st.warning(dll['label'])
+        elif dll['status'] == 'GAIN':
+            st.success(dll['label'])
+        else:
+            st.info(dll['label'])
+        if dll['n_trades'] > 0:
+            st.caption(f"Hôm nay: {dll['n_wins']}W / {dll['n_losses']}L")
+        st.divider()
+        # Load từ file lần đầu
         if 'v24_positions' not in st.session_state:
-            st.session_state['v24_positions'] = []
-
-        # Form thêm vị thế
-        with st.form(key="pm_add_form", clear_on_submit=True):
-            pf_c1, pf_c2 = st.columns(2)
-            pf_ticker = pf_c1.text_input("Mã", key="pf_ticker", max_chars=4).upper()
-            pf_shares = pf_c2.number_input("Số cp", min_value=100, step=100,
-                                              value=1000, key="pf_shares")
-            pf_entry = st.number_input("Giá vào", min_value=100.0, step=100.0,
-                                          value=50000.0, key="pf_entry")
-            if st.form_submit_button("➕ Thêm vị thế"):
-                if pf_ticker:
-                    st.session_state['v24_positions'].append({
-                        'ticker': pf_ticker, 'shares': pf_shares, 'entry': pf_entry,
-                    })
-                    st.success(f"Đã thêm {pf_ticker}")
-
-        # Hiển thị vị thế
-        positions = st.session_state.get('v24_positions', [])
-        if positions:
-            total_value = 0
-            total_cost = 0
-            for i, pos in enumerate(positions):
-                try:
-                    df_p = get_price(pos['ticker'], days=30)
-                    if valid(df_p):
-                        cur_price = float(df_p['close'].iloc[-1])
-                        pnl = (cur_price - pos['entry']) * pos['shares']
-                        pnl_pct = (cur_price - pos['entry']) / pos['entry'] * 100
-                        cost_p = pos['shares'] * pos['entry']
-                        val_p = pos['shares'] * cur_price
-                        total_value += val_p
-                        total_cost += cost_p
-                        emoji = '🟢' if pnl >= 0 else '🔴'
-                        st.markdown(f"{emoji} **{pos['ticker']}** ({pos['shares']:,}) "
-                                      f"@{pos['entry']:,.0f} → {cur_price:,.0f} "
-                                      f"({pnl_pct:+.1f}%)")
-                        if st.button(f"❌ Đóng {pos['ticker']}", key=f"pf_close_{i}"):
-                            st.session_state['v24_positions'].pop(i)
-                            st.rerun()
-                except Exception as _pf_err:
-                    st.warning(f"Lỗi {pos['ticker']}: {_pf_err}")
-
-            if total_cost > 0:
-                total_pnl = total_value - total_cost
-                total_pnl_pct = total_pnl / total_cost * 100
-                st.divider()
-                emoji = '🟢' if total_pnl >= 0 else '🔴'
-                st.metric(f"{emoji} Tổng P&L Portfolio",
-                            f"{total_pnl:+,.0f} đ",
-                            delta=f"{total_pnl_pct:+.2f}%")
-                # Lưu để Risk Thermometer dùng (nếu cần sau này)
-                st.session_state['portfolio_metrics'] = {
-                    'dd_pct': total_pnl_pct if total_pnl_pct < 0 else 0,
-                    'total_value': total_value,
-                    'total_cost': total_cost,
-                }
-        else:
-            st.info("Chưa có vị thế nào")
-
-# [V24-M7] USER TRADE TRACKER — Equity Curve thực
-with st.sidebar:
-    with st.expander("📈 Nhật ký Trade & Equity (V24)"):
-        st.caption("Lưu các trade đã đóng để theo dõi performance thực tế.")
+            st.session_state['v24_positions'] = load_positions_from_file()
         if 'v24_trades' not in st.session_state:
-            st.session_state['v24_trades'] = []
+            st.session_state['v24_trades'] = load_trades_from_file()
 
-        with st.form(key="tt_form", clear_on_submit=True):
-            tt_c1, tt_c2 = st.columns(2)
-            tt_ticker = tt_c1.text_input("Mã", max_chars=4, key="tt_ticker").upper()
-            tt_pnl_pct = tt_c2.number_input("% P&L", value=0.0, step=0.5,
-                                                format="%.2f", key="tt_pnl")
-            if st.form_submit_button("➕ Ghi trade"):
-                if tt_ticker:
-                    st.session_state['v24_trades'].append({
-                        'ticker': tt_ticker,
-                        'pnl_pct': tt_pnl_pct,
-                        'date': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
-                    })
-                    st.success(f"Đã ghi {tt_ticker} {tt_pnl_pct:+.2f}%")
+        # Sub-tabs: Vị thế / Trades
+        pt1, pt2 = st.tabs(["💼 Vị thế", "📈 Trades"])
 
-        trades = st.session_state.get('v24_trades', [])
-        if trades:
-            # Equity curve thực
-            pnls = [t['pnl_pct'] for t in trades]
-            equity_real = np.cumprod([1 + p/100 for p in pnls]) * 100
-            wins = sum(1 for p in pnls if p > 0)
-            wr_real = wins / len(pnls) * 100 if pnls else 0
-            final_eq = equity_real[-1] if len(equity_real) > 0 else 100
+        with pt1:
+            with st.form(key="pf_add_form", clear_on_submit=True):
+                pf_c1, pf_c2 = st.columns(2)
+                pf_ticker = pf_c1.text_input("Mã", max_chars=4, key="pf_ticker").upper()
+                pf_shares = pf_c2.number_input("Số cp", min_value=100, step=100,
+                                                  value=1000, key="pf_shares")
+                pf_entry = st.number_input("Giá vào", min_value=100.0, step=100.0,
+                                              value=50000.0, key="pf_entry")
+                if st.form_submit_button("➕ Thêm vị thế"):
+                    if pf_ticker:
+                        st.session_state['v24_positions'].append({
+                            'ticker': pf_ticker, 'shares': pf_shares, 'entry': pf_entry,
+                        })
+                        save_positions_to_file(st.session_state['v24_positions'])
+                        st.success(f"Đã thêm {pf_ticker}")
 
-            tt_m1, tt_m2 = st.columns(2)
-            tt_m1.metric("Win rate thực", f"{wr_real:.0f}%")
-            tt_m2.metric("Equity", f"{final_eq:.1f}%",
-                          delta=f"{final_eq-100:+.1f}%",
-                          delta_color="normal" if final_eq >= 100 else "inverse")
+            positions = st.session_state.get('v24_positions', [])
+            if positions:
+                total_value = total_cost = 0
+                for i, pos in enumerate(positions):
+                    try:
+                        df_p = get_price(pos['ticker'], days=30)
+                        if valid(df_p):
+                            cur_price = float(df_p['close'].iloc[-1])
+                            pnl = (cur_price - pos['entry']) * pos['shares']
+                            pnl_pct = (cur_price - pos['entry']) / pos['entry'] * 100
+                            total_value += pos['shares'] * cur_price
+                            total_cost += pos['shares'] * pos['entry']
+                            emoji = '🟢' if pnl >= 0 else '🔴'
+                            pc1, pc2 = st.columns([3, 1])
+                            pc1.markdown(f"{emoji} **{pos['ticker']}** ({pos['shares']:,}) "
+                                          f"@{pos['entry']:,.0f}→{cur_price:,.0f} ({pnl_pct:+.1f}%)")
+                            if pc2.button("❌", key=f"pf_close_{i}"):
+                                st.session_state['v24_positions'].pop(i)
+                                save_positions_to_file(st.session_state['v24_positions'])
+                                st.rerun()
+                    except Exception:
+                        pass
+                if total_cost > 0:
+                    total_pnl = total_value - total_cost
+                    total_pnl_pct = total_pnl / total_cost * 100
+                    emoji = '🟢' if total_pnl >= 0 else '🔴'
+                    st.metric(f"{emoji} Tổng P&L", f"{total_pnl:+,.0f} đ",
+                                delta=f"{total_pnl_pct:+.2f}%")
 
-            # Mini chart
-            try:
-                fig_tt = go.Figure()
-                fig_tt.add_trace(go.Scatter(
-                    x=list(range(1, len(equity_real)+1)),
-                    y=equity_real, mode='lines+markers',
-                    line=dict(color='green' if final_eq >= 100 else 'red', width=2),
-                    fill='tozeroy',
-                    fillcolor='rgba(0,200,100,0.15)' if final_eq >= 100 else 'rgba(220,50,50,0.15)',
-                ))
-                fig_tt.add_hline(y=100, line_dash='dot', line_color='gray')
-                fig_tt.update_layout(height=180, margin=dict(l=20, r=20, t=20, b=20),
-                                       showlegend=False,
-                                       xaxis_title="Trade #", yaxis_title="% Vốn")
-                st.plotly_chart(fig_tt, use_container_width=True)
-            except Exception:
-                pass
+                    # [S2] Position Risk Heatmap
+                    with st.expander("🌡️ Risk Heatmap", expanded=False):
+                        for pos in positions:
+                            try:
+                                df_r = get_price(pos['ticker'], days=60)
+                                if valid(df_r):
+                                    df_r = calc_indicators(df_r)
+                                    risk = calc_position_risk_score(pos, df_r)
+                                    if risk['score'] >= 8:
+                                        st.error(f"{risk['label']} **{pos['ticker']}** — score {risk['score']}/10")
+                                    elif risk['score'] >= 6:
+                                        st.warning(f"{risk['label']} **{pos['ticker']}** — score {risk['score']}/10")
+                                    elif risk['score'] >= 4:
+                                        st.info(f"{risk['label']} **{pos['ticker']}** — score {risk['score']}/10")
+                                    else:
+                                        st.success(f"{risk['label']} **{pos['ticker']}** — score {risk['score']}/10")
+                                    for f in risk['flags'][:3]:
+                                        st.caption(f"   {f}")
+                            except Exception:
+                                pass
+            else:
+                st.info("Chưa có vị thế")
 
-            # Hiện 5 trade gần nhất
-            with st.expander("5 trade gần nhất"):
-                for t in trades[-5:][::-1]:
-                    emoji = '🟢' if t['pnl_pct'] >= 0 else '🔴'
-                    st.write(f"{emoji} {t['ticker']} {t['pnl_pct']:+.2f}% ({t['date']})")
+        with pt2:
+            with st.form(key="tt_form", clear_on_submit=True):
+                tt_c1, tt_c2 = st.columns(2)
+                tt_ticker = tt_c1.text_input("Mã", max_chars=4, key="tt_ticker").upper()
+                tt_pnl_pct = tt_c2.number_input("% P&L", value=0.0, step=0.5,
+                                                    format="%.2f", key="tt_pnl")
+                # [R3] Notes & lessons
+                tt_entry_reason = st.text_input("Lý do MUA (tuỳ chọn)", key="tt_entry_r",
+                                                   placeholder="VD: MACD bullish + chân sóng 7/12")
+                tt_exit_reason = st.text_input("Lý do BÁN (tuỳ chọn)", key="tt_exit_r",
+                                                  placeholder="VD: RSI 78 quá mua + chốt lời")
+                tt_lesson = st.text_area("Bài học rút ra (tuỳ chọn)", height=60,
+                                            key="tt_lesson",
+                                            placeholder="VD: Lần sau không mua khi VN-Index dưới MA50")
+                if st.form_submit_button("➕ Ghi trade"):
+                    if tt_ticker:
+                        st.session_state['v24_trades'].append({
+                            'ticker': tt_ticker,
+                            'pnl_pct': tt_pnl_pct,
+                            'date': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
+                            'entry_reason': tt_entry_reason,
+                            'exit_reason': tt_exit_reason,
+                            'lesson': tt_lesson,
+                        })
+                        save_trades_to_file(st.session_state['v24_trades'])
+                        st.success(f"Đã ghi {tt_ticker} {tt_pnl_pct:+.2f}%")
 
-            if st.button("🗑️ Xoá tất cả", key="tt_clear"):
-                st.session_state['v24_trades'] = []
-                st.rerun()
-        else:
-            st.info("Chưa có trade nào — Ghi trade đầu tiên ở trên")
+            trades = st.session_state.get('v24_trades', [])
+            if trades:
+                pnls = [t['pnl_pct'] for t in trades]
+                equity_real = np.cumprod([1 + p/100 for p in pnls]) * 100
+                wins = sum(1 for p in pnls if p > 0)
+                wr_real = wins / len(pnls) * 100 if pnls else 0
+                final_eq = equity_real[-1] if len(equity_real) > 0 else 100
+                tt_m1, tt_m2 = st.columns(2)
+                tt_m1.metric("WR thực", f"{wr_real:.0f}%")
+                tt_m2.metric("Equity", f"{final_eq:.1f}%",
+                              delta=f"{final_eq-100:+.1f}%",
+                              delta_color="normal" if final_eq >= 100 else "inverse")
+                try:
+                    fig_tt = go.Figure()
+                    fig_tt.add_trace(go.Scatter(
+                        x=list(range(1, len(equity_real)+1)),
+                        y=equity_real, mode='lines+markers',
+                        line=dict(color='green' if final_eq >= 100 else 'red', width=2),
+                        fill='tozeroy',
+                        fillcolor='rgba(0,200,100,0.15)' if final_eq >= 100 else 'rgba(220,50,50,0.15)',
+                    ))
+                    fig_tt.add_hline(y=100, line_dash='dot', line_color='gray')
+                    fig_tt.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10),
+                                           showlegend=False)
+                    st.plotly_chart(fig_tt, use_container_width=True)
+                except Exception:
+                    pass
+                with st.expander("5 trade gần"):
+                    for t in trades[-5:][::-1]:
+                        emoji = '🟢' if t['pnl_pct'] >= 0 else '🔴'
+                        st.write(f"{emoji} {t['ticker']} {t['pnl_pct']:+.2f}% ({t['date']})")
+                        if t.get('entry_reason'):
+                            st.caption(f"   📥 Mua: {t['entry_reason']}")
+                        if t.get('exit_reason'):
+                            st.caption(f"   📤 Bán: {t['exit_reason']}")
+                        if t.get('lesson'):
+                            st.caption(f"   💡 Lesson: {t['lesson']}")
+                if st.button("🗑️ Xoá tất cả", key="tt_clear"):
+                    st.session_state['v24_trades'] = []
+                    save_trades_to_file([])
+                    st.rerun()
+            else:
+                st.info("Chưa có trade")
 
+# [V24-F1] END UNIFIED SIDEBAR
 st.sidebar.header("🕹️ Trung Tâm Giao Dịch Định Lượng")
 if st.sidebar.button("🔄 Làm mới danh sách mã (Xóa Cache)"):
     st.cache_data.clear()
@@ -4205,7 +4712,7 @@ ticker   = manual if manual else dropdown
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
@@ -4213,6 +4720,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
     "📊 VN-INDEX & TƯƠNG QUAN",
     "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
+    "🆚 SO SÁNH 2 MÃ [V24]",
 ])
 # ==============================================================================
 # TAB 1: ROBOT ADVISOR
@@ -4224,6 +4732,12 @@ with tab1:
     col_btn, col_clear = st.columns([3, 1])
     with col_btn:
         run_analysis = st.button(f"⚡ TIẾN HÀNH PHÂN TÍCH ĐỊNH LƯỢNG TOÀN DIỆN MÃ {ticker}")
+    # [F2] Theo dõi ticker hiện tại để clear cached equity khi đổi mã
+    if run_analysis and st.session_state.get('_v24_last_analyzed_ticker') != ticker:
+        st.session_state.pop('_v24_equity_final', None)
+        st.session_state.pop('_v24_confidence', None)
+        st.session_state.pop('_v24_streak', None)
+        st.session_state['_v24_last_analyzed_ticker'] = ticker
     with col_clear:
         if st.button("🗑️ Xóa kết quả cũ"):
             st.session_state.pop('tab1_done', None)
@@ -4307,6 +4821,14 @@ with tab1:
             atr_val  = float(last.get('atr', last['close'] * 0.02))
             sl_info  = calc_trailing_stop(float(last['close']), atr_val)
 
+            # [V24-F6] Mục lục nhỏ ở đầu tab 1 — giúp navigate nhanh trên mobile
+            with st.container(border=True):
+                st.caption("📑 **Mục lục:** "
+                            "👆 Tóm tắt → 📈 Score Trend → 🌡️ Volatility → "
+                            "🚨 Cảnh báo → 📊 Chi tiết → 📋 Backtest → "
+                            "🔮 What-if → 💼 Vị thế → 📌 Kết luận")
+
+
             # ── [V24-M1] SCORE TREND 7 NGÀY ──
             try:
                 _score_trend = calc_score_trend_7d(df, foreign_trend, weekly_trend,
@@ -4352,8 +4874,10 @@ with tab1:
                     weekly_trend, kelly_pct, sl_info, regime_for_summary)
 
                 # [V24-T3] Downgrade thêm nếu backtest equity tệ
-                _eq_final = st.session_state.get('_v24_equity_final', 100)
-                if _eq_final < 90 and 'MUA' in exec_summary.get('action', ''):
+                # Lưu ý: Exec Summary render TRƯỚC equity → lần đầu sẽ default 100
+                # Lần phân tích thứ 2 cùng mã sẽ có giá trị thực từ session
+                _eq_final = st.session_state.get('_v24_equity_final', None)
+                if _eq_final is not None and _eq_final < 90 and 'MUA' in exec_summary.get('action', ''):
                     exec_summary['one_liner'] += f" ⚠️ Backtest lỗ {100-_eq_final:.0f}% — cân nhắc kỹ"
                     exec_summary['badge_color'] = 'orange'
 
@@ -5355,6 +5879,53 @@ with tab1:
                         render_exit_signal_card(ex_signal, pc_current, pc_entry, pc_shares)
                     except Exception as _pc_err:
                         st.warning(f"Không tính được exit signal: {_pc_err}")
+
+            # ── [V24-Q5] QUICK ADD POSITION ──
+            with st.expander(f"📥 Thêm {ticker} vào Portfolio (Quick Add)"):
+                qa_c1, qa_c2, qa_c3 = st.columns([1, 1, 1])
+                qa_shares = qa_c1.number_input("Số cp", min_value=100, step=100,
+                                                  value=1000, key=f"qa_shares_{ticker}")
+                qa_entry = qa_c2.number_input("Giá vào", min_value=100.0, step=100.0,
+                                                value=float(last['close']),
+                                                key=f"qa_entry_{ticker}")
+                if qa_c3.button(f"➕ Thêm {ticker}", key=f"qa_add_{ticker}"):
+                    if 'v24_positions' not in st.session_state:
+                        st.session_state['v24_positions'] = load_positions_from_file()
+                    st.session_state['v24_positions'].append({
+                        'ticker': ticker, 'shares': qa_shares, 'entry': qa_entry,
+                    })
+                    save_positions_to_file(st.session_state['v24_positions'])
+                    st.success(f"✅ Đã thêm {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ vào portfolio")
+
+            # ── [V24-R2] AUTO POSITION SIZING ──
+            with st.expander(f"🤖 Auto Position Sizing cho {ticker} [R2]"):
+                r2_c1, r2_c2 = st.columns(2)
+                r2_capital = r2_c1.number_input("Vốn (đồng)", min_value=1_000_000,
+                                                   value=100_000_000, step=10_000_000,
+                                                   format="%d", key=f"r2_cap_{ticker}")
+                r2_atr = float(last.get('atr', last['close'] * 0.02))
+                r2_c2.metric("ATR hiện tại", f"{r2_atr:,.0f}")
+
+                # Lấy regime + vol regime
+                _r2_regime = st.session_state.get('market_regime', {})
+                _r2_vol = vol_regime if 'vol_regime' in dir() else {'size_recommend': 1.0, 'level': 'UNKNOWN'}
+                _r2_npos = len(st.session_state.get('v24_positions', []))
+
+                if st.button(f"💡 Tính size tối ưu cho {ticker}", key=f"r2_btn_{ticker}"):
+                    r2_res = calc_auto_position_size(
+                        r2_capital, float(last['close']), r2_atr,
+                        kelly_pct, _r2_vol, _r2_regime, _r2_npos)
+                    if r2_res['shares'] > 0:
+                        st.success(f"📦 Đề xuất: **{r2_res['shares']:,} cp** ({r2_res['size_pct']}% vốn)")
+                        st.write(f"💰 Tổng: {r2_res['value']:,.0f}đ")
+                        st.write(f"🛡️ SL: {r2_res['sl_price']:,.0f} (rủi ro: {r2_res['dollar_risk']:,.0f}đ)")
+                        st.write(f"🎯 TP1: {r2_res['tp1_price']:,.0f} | TP2: {r2_res['tp2_price']:,.0f} | TP3: {r2_res['tp3_price']:,.0f}")
+                        st.caption(f"Limited by: {r2_res['limiter']}")
+                        with st.expander("Logic tính size"):
+                            for r in r2_res['reasoning']:
+                                st.write(f"• {r}")
+                    else:
+                        st.warning("Không tính được — kiểm tra input")
 
             # ── [V24-M2] WHAT-IF SIMULATOR ──
             with st.expander("🔮 What-if: Mô phỏng giá/RSI thay đổi"):
@@ -6801,3 +7372,146 @@ with tab7:
             )
         else:
             st.success(f"✅ **{ticker}** đang dẫn đầu hoặc cạnh tranh tốt trong ngành.")
+
+# ==============================================================================
+# [V24-Q4] TAB COMPARE — So sánh 2 mã side-by-side
+# ==============================================================================
+with tab_compare:
+    st.write("### 🆚 So sánh 2 mã cùng lúc")
+    st.caption("Phân tích nhanh 2 mã để chọn mã tốt hơn vào lệnh.")
+
+    cmp_c1, cmp_c2 = st.columns(2)
+    cmp_t1 = cmp_c1.text_input("Mã 1", value="FPT", max_chars=4, key="cmp_t1").upper()
+    cmp_t2 = cmp_c2.text_input("Mã 2", value="HPG", max_chars=4, key="cmp_t2").upper()
+
+    if st.button("🚀 So sánh", key="cmp_btn"):
+        if cmp_t1 and cmp_t2 and cmp_t1 != cmp_t2:
+            with st.spinner(f"Đang phân tích {cmp_t1} vs {cmp_t2}..."):
+                try:
+                    df1 = get_price(cmp_t1)
+                    df2 = get_price(cmp_t2)
+                    if not valid(df1) or not valid(df2):
+                        st.error("Không tải được dữ liệu cho 1 trong 2 mã")
+                    else:
+                        df1 = calc_indicators(df1)
+                        df2 = calc_indicators(df2)
+                        l1 = df1.iloc[-1]
+                        l2 = df2.iloc[-1]
+                        # AI
+                        date_key = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                        try:
+                            ai1 = predict_ai_cached(cmp_t1, float(l1['close']))
+                            ai2 = predict_ai_cached(cmp_t2, float(l2['close']))
+                        except Exception:
+                            ai1, ai2 = "N/A", "N/A"
+                        # Backtest nhanh
+                        bt1 = run_backtest(df1)
+                        bt2 = run_backtest(df2)
+                        # Wave bottom
+                        w1 = calc_wave_bottom_score(df1, l1)
+                        w2 = calc_wave_bottom_score(df2, l2)
+                        # Weekly
+                        wk1 = get_weekly_trend(df1)
+                        wk2 = get_weekly_trend(df2)
+
+                        st.session_state['_cmp_results'] = {
+                            't1': cmp_t1, 'l1': l1, 'ai1': ai1, 'bt1': bt1, 'w1': w1, 'wk1': wk1,
+                            't2': cmp_t2, 'l2': l2, 'ai2': ai2, 'bt2': bt2, 'w2': w2, 'wk2': wk2,
+                        }
+                except Exception as _cmp_err:
+                    st.error(f"Lỗi: {_cmp_err}")
+        else:
+            st.warning("Nhập 2 mã KHÁC nhau")
+
+    cmp_res = st.session_state.get('_cmp_results')
+    if cmp_res:
+        t1, t2 = cmp_res['t1'], cmp_res['t2']
+        l1, l2 = cmp_res['l1'], cmp_res['l2']
+
+        # Bảng so sánh
+        st.markdown(f"### {t1} vs {t2}")
+        comparison_rows = [
+            ['Chỉ số', t1, t2, 'Mã tốt hơn'],
+            ['💰 Giá', f"{float(l1['close']):,.0f}", f"{float(l2['close']):,.0f}", '—'],
+            ['📊 RSI',
+                f"{float(l1['rsi']):.1f}",
+                f"{float(l2['rsi']):.1f}",
+                t1 if 40 <= l1['rsi'] <= 65 else (t2 if 40 <= l2['rsi'] <= 65 else '—')],
+            ['📈 MACD',
+                '✅' if l1['macd'] > l1['signal'] else '❌',
+                '✅' if l2['macd'] > l2['signal'] else '❌',
+                t1 if (l1['macd'] > l1['signal']) and not (l2['macd'] > l2['signal']) else
+                (t2 if (l2['macd'] > l2['signal']) and not (l1['macd'] > l1['signal']) else '=')],
+            ['📐 ADX',
+                f"{float(l1.get('adx', 0)):.1f}",
+                f"{float(l2.get('adx', 0)):.1f}",
+                t1 if l1.get('adx', 0) > l2.get('adx', 0) else t2],
+            ['⚡ Vol strength',
+                f"{float(l1['vol_strength']):.2f}x",
+                f"{float(l2['vol_strength']):.2f}x",
+                t1 if l1['vol_strength'] > l2['vol_strength'] else t2],
+            ['🤖 AI T+3',
+                f"{cmp_res['ai1']:.1f}%" if _is_valid_score(cmp_res['ai1']) else "N/A",
+                f"{cmp_res['ai2']:.1f}%" if _is_valid_score(cmp_res['ai2']) else "N/A",
+                t1 if (_is_valid_score(cmp_res['ai1']) and _is_valid_score(cmp_res['ai2']) and
+                       float(cmp_res['ai1']) > float(cmp_res['ai2'])) else
+                (t2 if (_is_valid_score(cmp_res['ai1']) and _is_valid_score(cmp_res['ai2'])) else '?')],
+            ['🌊 Chân sóng',
+                f"{cmp_res['w1']['score']}/{cmp_res['w1'].get('total', 11)}",
+                f"{cmp_res['w2']['score']}/{cmp_res['w2'].get('total', 11)}",
+                t1 if cmp_res['w1']['score'] > cmp_res['w2']['score'] else
+                (t2 if cmp_res['w2']['score'] > cmp_res['w1']['score'] else '=')],
+            ['📅 Weekly',
+                cmp_res['wk1'], cmp_res['wk2'],
+                t1 if cmp_res['wk1'] == 'UP' and cmp_res['wk2'] != 'UP' else
+                (t2 if cmp_res['wk2'] == 'UP' and cmp_res['wk1'] != 'UP' else '=')],
+            ['📊 BT Winrate',
+                f"{cmp_res['bt1']['winrate']:.1f}%",
+                f"{cmp_res['bt2']['winrate']:.1f}%",
+                t1 if cmp_res['bt1']['winrate'] > cmp_res['bt2']['winrate'] else t2],
+            ['📈 BT Sharpe',
+                f"{cmp_res['bt1']['sharpe']:.2f}",
+                f"{cmp_res['bt2']['sharpe']:.2f}",
+                t1 if cmp_res['bt1']['sharpe'] > cmp_res['bt2']['sharpe'] else t2],
+            ['📉 BT Max DD',
+                f"{cmp_res['bt1']['max_drawdown']:.1f}%",
+                f"{cmp_res['bt2']['max_drawdown']:.1f}%",
+                t1 if cmp_res['bt1']['max_drawdown'] > cmp_res['bt2']['max_drawdown'] else t2],
+        ]
+        df_cmp = pd.DataFrame(comparison_rows[1:], columns=comparison_rows[0])
+        st.dataframe(df_cmp, use_container_width=True, hide_index=True)
+
+        # Đếm winner
+        winner_count = {t1: 0, t2: 0}
+        for row in comparison_rows[1:]:
+            if row[3] == t1: winner_count[t1] += 1
+            elif row[3] == t2: winner_count[t2] += 1
+        st.divider()
+        cv1, cv2, cv3 = st.columns(3)
+        cv1.metric(f"🏆 {t1} thắng", winner_count[t1])
+        cv2.metric(f"🏆 {t2} thắng", winner_count[t2])
+        if winner_count[t1] > winner_count[t2]:
+            cv3.success(f"🥇 **{t1}** tốt hơn ({winner_count[t1]} vs {winner_count[t2]})")
+        elif winner_count[t2] > winner_count[t1]:
+            cv3.success(f"🥇 **{t2}** tốt hơn ({winner_count[t2]} vs {winner_count[t1]})")
+        else:
+            cv3.info("⚖️ Cân bằng")
+
+        # Vẽ giá overlay 60 phiên gần nhất
+        try:
+            df1_recent = df1.tail(60).reset_index(drop=True) if (df1 := get_price(t1)) is not None else None
+            df2_recent = df2.tail(60).reset_index(drop=True) if (df2 := get_price(t2)) is not None else None
+            if df1_recent is not None and df2_recent is not None:
+                # Normalize về 100
+                n1 = df1_recent['close'] / df1_recent['close'].iloc[0] * 100
+                n2 = df2_recent['close'] / df2_recent['close'].iloc[0] * 100
+                fig_cmp = go.Figure()
+                fig_cmp.add_trace(go.Scatter(y=n1, name=t1, line=dict(color='blue', width=2)))
+                fig_cmp.add_trace(go.Scatter(y=n2, name=t2, line=dict(color='orange', width=2)))
+                fig_cmp.update_layout(title="So sánh % thay đổi giá 60 phiên (cơ sở 100)",
+                                        height=350,
+                                        yaxis_title="Cơ sở 100",
+                                        xaxis_title="Phiên")
+                st.plotly_chart(fig_cmp, use_container_width=True)
+        except Exception:
+            pass
