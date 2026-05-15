@@ -4150,6 +4150,350 @@ def save_trade_with_notes(ticker: str, pnl_pct: float,
 
 # [V24 NEW HELPERS DOT 2 END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-H1] FOMO/Panic Detector
+# ──────────────────────────────────────────────────────────────────────────────
+def detect_fomo_signals(last: pd.Series, df: pd.DataFrame) -> dict:
+    """[H1] Phát hiện dấu hiệu FOMO/Panic trước khi user vào lệnh.
+    Trả về dict với mức cảnh báo + danh sách lý do."""
+    flags = []
+    fomo_score = 0   # 0-10, càng cao càng nguy hiểm
+    panic_score = 0
+
+    ret = float(last.get('return_1d', 0))
+    vol = float(last['vol_strength'])
+    rsi = float(last['rsi'])
+    price = float(last['close'])
+    ma20 = float(last['ma20'])
+    upper_bb = float(last.get('upper_band', price * 1.05))
+
+    # FOMO CLASSIC: Tăng mạnh + Vol nổ + RSI cao
+    if ret > 0.04 and vol > 1.8:
+        fomo_score += 4
+        flags.append(f"🚨 Đang tăng +{ret*100:.1f}% với Vol {vol:.1f}x — FOMO classic")
+    if rsi >= 75:
+        fomo_score += 3
+        flags.append(f"🔴 RSI {rsi:.0f} ≥ 75 — vùng quá mua")
+    if price >= upper_bb * 1.005:
+        fomo_score += 2
+        flags.append(f"📈 Giá đã vượt BB trên — quá xa MA")
+    if price > ma20 * 1.10:
+        fomo_score += 2
+        flags.append(f"💸 Giá vượt MA20 {(price/ma20-1)*100:.1f}% — đuổi đỉnh")
+
+    # Tăng liên tiếp nhiều phiên
+    if len(df) >= 5:
+        last_5_returns = df['return_1d'].tail(5).values
+        green_streak = sum(1 for r in last_5_returns if r > 0)
+        if green_streak >= 4:
+            fomo_score += 2
+            flags.append(f"🔥 {green_streak}/5 phiên gần nhất xanh — mua đuổi rủi ro cao")
+
+    # PANIC: Giảm mạnh + Vol nổ
+    if ret < -0.04 and vol > 1.8:
+        panic_score += 5
+        flags.append(f"💀 Đang giảm {ret*100:.1f}% với Vol {vol:.1f}x — có thể PANIC SELL")
+    if rsi <= 25:
+        panic_score += 3
+        flags.append(f"🔴 RSI {rsi:.0f} ≤ 25 — quá bán, có thể bắt dao rơi")
+
+    if fomo_score >= 7:
+        return {'level': 'FOMO_HIGH', 'fomo': fomo_score, 'panic': panic_score,
+                'flags': flags,
+                'message': '🚨 CẢNH BÁO FOMO MẠNH — Khuyến nghị KHÔNG mua đuổi'}
+    elif fomo_score >= 4:
+        return {'level': 'FOMO_MID', 'fomo': fomo_score, 'panic': panic_score,
+                'flags': flags,
+                'message': '⚠️ Có dấu hiệu FOMO — Cân nhắc đợi pullback'}
+    elif panic_score >= 5:
+        return {'level': 'PANIC', 'fomo': fomo_score, 'panic': panic_score,
+                'flags': flags,
+                'message': '💀 CẢNH BÁO BẮT DAO RƠI — Đợi xác nhận đáy'}
+    elif fomo_score > 0 or panic_score > 0:
+        return {'level': 'WATCH', 'fomo': fomo_score, 'panic': panic_score,
+                'flags': flags,
+                'message': '👁️ Có vài dấu hiệu cần lưu ý'}
+    return {'level': 'OK', 'fomo': 0, 'panic': 0, 'flags': [],
+            'message': '✅ Không có dấu hiệu FOMO/Panic'}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-G1] Smart Tooltip — Context-aware
+# ──────────────────────────────────────────────────────────────────────────────
+def smart_tooltip_rsi(rsi: float, df: pd.DataFrame) -> str:
+    """[G1] Tooltip RSI dựa trên lịch sử của chính mã đó."""
+    if len(df) < 60:
+        return f"RSI = {rsi:.1f}"
+    hist = df['rsi'].tail(60)
+    avg = hist.mean()
+    p20 = hist.quantile(0.2)
+    p80 = hist.quantile(0.8)
+
+    parts = [f"RSI hiện tại: {rsi:.1f}"]
+    parts.append(f"Trung bình 60 phiên: {avg:.1f}")
+    parts.append(f"Vùng thấp (P20): {p20:.1f} | Vùng cao (P80): {p80:.1f}")
+
+    if rsi > p80:
+        parts.append("⚠️ Đang ở vùng CAO của mã này — cẩn trọng quá mua")
+    elif rsi < p20:
+        parts.append("💡 Đang ở vùng THẤP của mã này — có thể là cơ hội")
+    elif abs(rsi - avg) < 5:
+        parts.append("⚪ Bình thường với mã này")
+    return " | ".join(parts)
+
+
+def smart_tooltip_vol(vol: float, df: pd.DataFrame) -> str:
+    """[G1] Tooltip Vol strength dựa lịch sử."""
+    if len(df) < 60:
+        return f"Vol strength = {vol:.2f}x"
+    hist = df['vol_strength'].tail(60)
+    p90 = hist.quantile(0.9)
+    parts = [f"Vol hiện tại: {vol:.2f}x"]
+    parts.append(f"Top 10% mã này: {p90:.2f}x")
+    if vol >= p90:
+        parts.append("🔥 Vol đột biến so với chính mã này — có sự kiện lớn")
+    elif vol >= 1.5:
+        parts.append("⚡ Vol cao hơn trung bình")
+    elif vol < 0.7:
+        parts.append("😴 Vol thấp — kém quan tâm")
+    return " | ".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-G2] Next Step Recommendations
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_next_steps(scoring: dict, last: pd.Series, fomo: dict,
+                         exec_summary: dict, ticker: str) -> list:
+    """[G2] Sinh 3 hành động cụ thể nên làm tiếp theo."""
+    steps = []
+    price = float(last['close'])
+    rsi = float(last['rsi'])
+    decision = scoring.get('decision', '')
+    action = exec_summary.get('action', '')
+
+    if 'MUA' in action.upper() and fomo['level'] in ('OK', 'WATCH'):
+        # Hành động vào lệnh
+        sl_pct = 7
+        sl_price = price * (1 - sl_pct/100)
+        steps.append({
+            'icon': '🎯',
+            'title': f'Vào lệnh {ticker} với Auto Position Sizing',
+            'detail': f'Mở expander "🤖 Auto Position Sizing" để hệ thống tính size phù hợp',
+        })
+        steps.append({
+            'icon': '🔔',
+            'title': f'Đặt alert giá ở {sl_price:,.0f}đ',
+            'detail': f'Đặt SL cứng tại {sl_price:,.0f}đ (-{sl_pct}%) qua broker',
+        })
+        steps.append({
+            'icon': '📝',
+            'title': 'Ghi rõ lý do mua',
+            'detail': 'Mở "Quick Add Position" → ghi lý do trong notes (giúp học sau)',
+        })
+    elif fomo['level'] in ('FOMO_HIGH', 'FOMO_MID'):
+        steps.append({
+            'icon': '⏳',
+            'title': 'CHỜ pullback',
+            'detail': f'Đợi giá test lại MA20 ({last["ma20"]:,.0f}đ) trước khi vào',
+        })
+        steps.append({
+            'icon': '🔍',
+            'title': 'Quan sát 2-3 phiên',
+            'detail': 'Vol có duy trì không? RSI có giảm về 60-65 không?',
+        })
+        steps.append({
+            'icon': '🆚',
+            'title': 'So sánh với mã khác',
+            'detail': 'Vào tab "🆚 SO SÁNH 2 MÃ" để tìm cơ hội tốt hơn',
+        })
+    elif 'THEO DÕI' in decision:
+        steps.append({
+            'icon': '👁️',
+            'title': f'Thêm {ticker} vào watchlist',
+            'detail': 'Thêm vào sidebar để theo dõi liên tục',
+        })
+        steps.append({
+            'icon': '⏰',
+            'title': 'Đặt bookmark xem lại',
+            'detail': 'Mở "🔖 Bookmark hành động" để nhắc xem lại sau 1-3 ngày',
+        })
+        steps.append({
+            'icon': '📊',
+            'title': 'Theo dõi Score Trend',
+            'detail': 'Quan sát biểu đồ Score Trend 7 ngày — điểm có tăng không?',
+        })
+    else:
+        steps.append({
+            'icon': '🚫',
+            'title': f'BỎ QUA {ticker} hôm nay',
+            'detail': f'Điểm chỉ {scoring.get("total", 0)}/90 — chưa đủ điều kiện',
+        })
+        steps.append({
+            'icon': '🔍',
+            'title': 'Tìm mã khác',
+            'detail': 'Mở Tab 4 "RADAR" hoặc sidebar "Hôm nay xem mã nào"',
+        })
+        steps.append({
+            'icon': '☕',
+            'title': 'Hoặc nghỉ ngơi',
+            'detail': 'Không có cơ hội tốt = không vào lệnh. Bảo vệ vốn là ưu tiên',
+        })
+
+    return steps[:3]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-G3] Why this score? — Explainable AI
+# ──────────────────────────────────────────────────────────────────────────────
+def explain_score_breakdown(scoring: dict, last: pd.Series,
+                              bt: dict, ai_score) -> list:
+    """[G3] Giải thích từng nhóm điểm bằng tiếng Việt dễ hiểu."""
+    breakdown = []
+    rsi = float(last['rsi'])
+    price = float(last['close'])
+    ma20 = float(last['ma20'])
+    macd_up = last['macd'] > last['signal']
+
+    # AI
+    ai_pts = scoring.get('ai_pts', 0)
+    if ai_pts >= 20:
+        ai_msg = f"AI rất tin (≥70%) → +{ai_pts} điểm"
+    elif ai_pts >= 13:
+        ai_msg = f"AI nghiêng MUA (~60%) → +{ai_pts} điểm"
+    elif ai_pts >= 7:
+        ai_msg = f"AI trung lập (~50%) → +{ai_pts} điểm"
+    else:
+        ai_msg = f"AI không tin tưởng → chỉ {ai_pts} điểm"
+    breakdown.append({'group': '🤖 AI (0-25)', 'pts': ai_pts, 'max': 25, 'reason': ai_msg})
+
+    # Tech
+    tech_pts = scoring.get('tech_pts', 0)
+    tech_reasons = []
+    if price > ma20: tech_reasons.append("trên MA20")
+    if rsi < 68: tech_reasons.append(f"RSI {rsi:.0f} chưa quá mua")
+    if macd_up: tech_reasons.append("MACD bullish")
+    tech_msg = ", ".join(tech_reasons) if tech_reasons else "Yếu kỹ thuật"
+    breakdown.append({'group': '📊 Kỹ thuật (0-20)', 'pts': tech_pts, 'max': 20, 'reason': tech_msg})
+
+    # Flow
+    flow_pts = scoring.get('flow_pts', 0)
+    if flow_pts >= 14:
+        flow_msg = "Dòng tiền vào mạnh"
+    elif flow_pts >= 7:
+        flow_msg = "Dòng tiền trung bình"
+    else:
+        flow_msg = "Dòng tiền yếu/ra"
+    breakdown.append({'group': '🌊 Dòng tiền (0-20)', 'pts': flow_pts, 'max': 20, 'reason': flow_msg})
+
+    # Fin
+    fin_pts = scoring.get('fin_pts', 0)
+    if fin_pts >= 12:
+        fin_msg = "Tài chính tốt: tăng trưởng cao + P/E hợp lý"
+    elif fin_pts >= 6:
+        fin_msg = "Tài chính ổn"
+    else:
+        fin_msg = "Tài chính yếu hoặc không đủ data"
+    breakdown.append({'group': '🏢 Tài chính (0-15)', 'pts': fin_pts, 'max': 15, 'reason': fin_msg})
+
+    # Sector
+    sec_pts = scoring.get('sector_pts', 0)
+    if sec_pts >= 7:
+        sec_msg = "Ngành đang nóng"
+    else:
+        sec_msg = "Ngành bình thường/yếu"
+    breakdown.append({'group': '🏭 Ngành (0-10)', 'pts': sec_pts, 'max': 10, 'reason': sec_msg})
+
+    return breakdown
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-Qa] Quick Preview — Không cần "Tiến hành phân tích"
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600, max_entries=100)
+def quick_preview_ticker(ticker: str, date_key: str) -> dict:
+    """[Qa] Preview nhanh 1 mã chỉ vài giây.
+    Output: dict gọn dùng để hiển thị 1-2 dòng."""
+    try:
+        df = get_price(ticker, days=60)
+        if not valid(df) or len(df) < 30:
+            return {'error': 'Không đủ dữ liệu'}
+        df = calc_indicators(df)
+        last = df.iloc[-1]
+        price = float(last['close'])
+        rsi = float(last['rsi'])
+        vol = float(last['vol_strength'])
+        ret = float(last.get('return_1d', 0))
+        ma20 = float(last['ma20'])
+        macd_up = last['macd'] > last['signal']
+
+        # Tier nhanh
+        if vol >= 1.5 and price > ma20 and macd_up and 40 < rsi < 70:
+            tier = '🟢 MUA'
+        elif rsi >= 75:
+            tier = '🔴 QUÁ MUA'
+        elif price < ma20 * 0.95:
+            tier = '🔴 YẾU'
+        elif price > ma20 and macd_up:
+            tier = '🟡 THEO DÕI'
+        else:
+            tier = '⚪ TRUNG TÍNH'
+
+        return {
+            'ticker': ticker,
+            'price': price,
+            'rsi': rsi,
+            'vol': vol,
+            'ret_pct': ret * 100,
+            'macd_up': macd_up,
+            'above_ma20': price > ma20,
+            'tier': tier,
+        }
+    except Exception as e:
+        return {'error': str(e)[:50]}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-Qb] Bookmark hành động
+# ──────────────────────────────────────────────────────────────────────────────
+V24_BOOKMARKS_FILE = 'v24_bookmarks.json'
+
+def load_bookmarks() -> list:
+    """[Qb] Load bookmarks."""
+    try:
+        if not os.path.exists(V24_BOOKMARKS_FILE):
+            return []
+        with open(V24_BOOKMARKS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_bookmarks(bookmarks: list) -> bool:
+    try:
+        with open(V24_BOOKMARKS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bookmarks, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def is_bookmark_due(bookmark: dict) -> bool:
+    """[Qb] Check bookmark đã đến hạn xem lại chưa."""
+    try:
+        remind_at = bookmark.get('remind_at', '')
+        if not remind_at:
+            return False
+        remind_dt = datetime.strptime(remind_at, '%Y-%m-%d %H:%M')
+        # Tạo aware datetime
+        remind_dt = remind_dt.replace(tzinfo=TZ_VN)
+        return datetime.now(TZ_VN) >= remind_dt
+    except Exception:
+        return False
+
+
+# [V24 HUMAN HELPERS END]
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # [V24-F3] Persist Portfolio + Trades vào file local (không mất khi reload)
@@ -4484,6 +4828,59 @@ with st.sidebar:
                     st.write(f"🎯 TP1: {res['tp1']:,.0f} | TP2: {res['tp2']:,.0f} | TP3: {res['tp3']:,.0f}")
                     st.caption(f"Rủi ro tối đa: {res['dollar_risk']:,.0f}đ")
 
+        # [V24-Qb] BOOKMARK HÀNH ĐỘNG
+        with st.expander("🔖 Bookmark hành động", expanded=False):
+            st.caption("Lưu các mã cần xem lại sau với nhắc nhở.")
+            # Load bookmarks
+            if 'v24_bookmarks' not in st.session_state:
+                st.session_state['v24_bookmarks'] = load_bookmarks()
+            bookmarks = st.session_state['v24_bookmarks']
+
+            # Form thêm
+            with st.form(key="bm_form", clear_on_submit=True):
+                bm_c1, bm_c2 = st.columns(2)
+                bm_ticker = bm_c1.text_input("Mã", max_chars=4, key="bm_ticker").upper()
+                bm_hours = bm_c2.number_input("Sau bao lâu (giờ)?",
+                                                  min_value=1, max_value=168,
+                                                  value=24, step=1, key="bm_hours")
+                bm_note = st.text_input("Ghi chú", key="bm_note",
+                                          placeholder="VD: Đợi pullback về MA20")
+                if st.form_submit_button("🔖 Thêm bookmark"):
+                    if bm_ticker:
+                        remind_at = datetime.now(TZ_VN) + timedelta(hours=bm_hours)
+                        bookmarks.append({
+                            'ticker': bm_ticker,
+                            'note': bm_note,
+                            'created': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
+                            'remind_at': remind_at.strftime('%Y-%m-%d %H:%M'),
+                        })
+                        save_bookmarks(bookmarks)
+                        st.success(f"Đã đặt nhắc {bm_ticker} sau {bm_hours}h")
+
+            # Hiển thị bookmarks
+            if bookmarks:
+                # Sort: due trước
+                due_bms = [b for b in bookmarks if is_bookmark_due(b)]
+                pending_bms = [b for b in bookmarks if not is_bookmark_due(b)]
+
+                if due_bms:
+                    st.markdown("**🔔 Đến hạn xem lại:**")
+                    for i, b in enumerate(due_bms):
+                        bc1, bc2 = st.columns([4, 1])
+                        bc1.error(f"**{b['ticker']}** — {b.get('note', '')}")
+                        bc1.caption(f"Hẹn lúc: {b['remind_at']}")
+                        if bc2.button("✅", key=f"bm_done_{b['ticker']}_{b['created']}"):
+                            bookmarks.remove(b)
+                            save_bookmarks(bookmarks)
+                            st.rerun()
+
+                if pending_bms:
+                    with st.expander(f"⏰ Đang chờ ({len(pending_bms)})"):
+                        for b in pending_bms:
+                            st.caption(f"📌 **{b['ticker']}** — {b.get('note', '')} (hẹn: {b['remind_at']})")
+            else:
+                st.caption("Chưa có bookmark nào")
+
         with st.expander("🎯 Hôm nay xem mã nào? [S3]", expanded=False):
             st.caption("Gợi ý 3 mã đáng follow nhất hôm nay từ watchlist + pillars.")
             if st.button("🔍 Quét ngay", key="s3_btn"):
@@ -4643,6 +5040,12 @@ with st.sidebar:
                 tt_lesson = st.text_area("Bài học rút ra (tuỳ chọn)", height=60,
                                             key="tt_lesson",
                                             placeholder="VD: Lần sau không mua khi VN-Index dưới MA50")
+                # [V24-H2] MOOD TRACKER
+                tt_mood = st.select_slider(
+                    "😊 Cảm xúc khi trade?",
+                    options=['😡 Tức giận', '😟 Lo lắng', '😐 Bình thường', '🙂 Tự tin', '😎 Hưng phấn'],
+                    value='😐 Bình thường', key="tt_mood",
+                    help="Track mood để phân tích sau: bạn thắng/thua khi cảm xúc thế nào?")
                 if st.form_submit_button("➕ Ghi trade"):
                     if tt_ticker:
                         st.session_state['v24_trades'].append({
@@ -4652,6 +5055,7 @@ with st.sidebar:
                             'entry_reason': tt_entry_reason,
                             'exit_reason': tt_exit_reason,
                             'lesson': tt_lesson,
+                            'mood': tt_mood,
                         })
                         save_trades_to_file(st.session_state['v24_trades'])
                         st.success(f"Đã ghi {tt_ticker} {tt_pnl_pct:+.2f}%")
@@ -4686,7 +5090,9 @@ with st.sidebar:
                 with st.expander("5 trade gần"):
                     for t in trades[-5:][::-1]:
                         emoji = '🟢' if t['pnl_pct'] >= 0 else '🔴'
-                        st.write(f"{emoji} {t['ticker']} {t['pnl_pct']:+.2f}% ({t['date']})")
+                        mood = t.get('mood', '')
+                        mood_disp = f" | {mood}" if mood else ''
+                        st.write(f"{emoji} {t['ticker']} {t['pnl_pct']:+.2f}% ({t['date']}){mood_disp}")
                         if t.get('entry_reason'):
                             st.caption(f"   📥 Mua: {t['entry_reason']}")
                         if t.get('exit_reason'):
@@ -4709,6 +5115,28 @@ dropdown = st.sidebar.selectbox("Lựa chọn mã cổ phiếu:", tickers)
 st.sidebar.caption(f"📊 Tổng số mã đang theo dõi: {len(tickers)}")
 manual   = st.sidebar.text_input("Hoặc nhập trực tiếp (VD: FPT):").strip().upper()
 ticker   = manual if manual else dropdown
+
+# [V24-Qa] QUICK PREVIEW — Hiển thị tóm tắt nhanh không cần "Tiến hành phân tích"
+try:
+    date_key_qa = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+    qa_preview = quick_preview_ticker(ticker, date_key_qa)
+    if 'error' not in qa_preview:
+        with st.sidebar.container(border=True):
+            st.markdown(f"#### ⚡ Preview nhanh: **{ticker}**")
+            qpv_c1, qpv_c2 = st.columns(2)
+            qpv_c1.metric("Giá",
+                            f"{qa_preview['price']:,.0f}",
+                            delta=f"{qa_preview['ret_pct']:+.2f}%")
+            qpv_c2.metric("RSI", f"{qa_preview['rsi']:.0f}")
+            st.markdown(f"**{qa_preview['tier']}** | Vol {qa_preview['vol']:.1f}x")
+            sig_emoji = '✅' if qa_preview['macd_up'] else '❌'
+            ma_emoji = '✅' if qa_preview['above_ma20'] else '❌'
+            st.caption(f"MACD {sig_emoji} | MA20 {ma_emoji}")
+    else:
+        st.sidebar.caption(f"⚠️ Preview: {qa_preview['error']}")
+except Exception as _qa_err:
+    print(f"[Qa] {_qa_err}")
+
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
@@ -4829,6 +5257,22 @@ with tab1:
                             "🔮 What-if → 💼 Vị thế → 📌 Kết luận")
 
 
+            # ── [V24-G3] WHY THIS SCORE? ──
+            try:
+                with st.expander(f"🤔 Tại sao điểm tổng = {scoring['total']}/90? (Click để xem)"):
+                    breakdown = explain_score_breakdown(scoring, last, bt, ai_score)
+                    for b in breakdown:
+                        bc1, bc2 = st.columns([1, 3])
+                        bc1.markdown(f"**{b['group']}**: {b['pts']}/{b['max']}")
+                        bc2.caption(b['reason'])
+                    st.divider()
+                    if scoring['total'] >= SCORE_BUY_MIN:
+                        st.success(f"✅ Tổng {scoring['total']}/90 đã vượt ngưỡng MUA ({SCORE_BUY_MIN})")
+                    else:
+                        st.warning(f"⏳ Tổng {scoring['total']}/90 chưa đủ ngưỡng MUA (cần ≥{SCORE_BUY_MIN})")
+            except Exception as _g3_err:
+                print(f"[G3] {_g3_err}")
+
             # ── [V24-M1] SCORE TREND 7 NGÀY ──
             try:
                 _score_trend = calc_score_trend_7d(df, foreign_trend, weekly_trend,
@@ -4901,6 +5345,19 @@ with tab1:
             except Exception as _es_err:
                 print(f"[V24 exec summary] {_es_err}")
 
+            # ── [V24-G2] NEXT STEPS — 3 hành động cụ thể ──
+            try:
+                _es_for_g2 = st.session_state.get('_exec_summary', {'action': 'WAIT'})
+                _fomo_for_g2 = st.session_state.get('_v24_fomo', {'level': 'OK'})
+                next_steps = generate_next_steps(scoring, last, _fomo_for_g2,
+                                                   _es_for_g2, ticker)
+                with st.expander("👉 BƯỚC TIẾP THEO — Bạn nên làm gì?", expanded=True):
+                    for i, step in enumerate(next_steps, 1):
+                        st.markdown(f"**{step['icon']} {i}. {step['title']}**")
+                        st.caption(f"   {step['detail']}")
+            except Exception as _g2_err:
+                print(f"[G2] {_g2_err}")
+
             # ── [V24-M8] VOLATILITY REGIME ──
             try:
                 vol_regime = detect_volatility_regime(df, n_days=60)
@@ -4918,6 +5375,42 @@ with tab1:
                 vc3.metric("Percentile 60d", f"{vol_regime['percentile']:.0f}%")
             except Exception as _m8_err:
                 print(f"[V24-M8] {_m8_err}")
+
+            # ── [V24-H1] FOMO/PANIC DETECTOR ──
+            try:
+                fomo_info = detect_fomo_signals(last, df)
+                st.session_state['_v24_fomo'] = fomo_info
+                if fomo_info['level'] == 'FOMO_HIGH':
+                    st.error(f"### {fomo_info['message']}")
+                    with st.container(border=True):
+                        for f in fomo_info['flags']:
+                            st.write(f)
+                        st.markdown("---")
+                        st.markdown("**💭 Hãy tự hỏi:**")
+                        st.write("• Tại sao bạn muốn mua NGAY BÂY GIỜ?")
+                        st.write("• Bạn có FOMO không?")
+                        st.write("• Có mã nào khác đẹp hơn không?")
+                        st.write("• Đợi pullback có được không?")
+                elif fomo_info['level'] == 'FOMO_MID':
+                    st.warning(f"### {fomo_info['message']}")
+                    with st.expander("Chi tiết dấu hiệu FOMO", expanded=True):
+                        for f in fomo_info['flags']:
+                            st.write(f)
+                elif fomo_info['level'] == 'PANIC':
+                    st.error(f"### {fomo_info['message']}")
+                    with st.expander("Chi tiết dấu hiệu Panic", expanded=True):
+                        for f in fomo_info['flags']:
+                            st.write(f)
+                        st.markdown("**💭 Trước khi 'bắt dao rơi':**")
+                        st.write("• Đợi 1-2 phiên xác nhận đáy")
+                        st.write("• Vol có giảm dần không?")
+                        st.write("• Có hỗ trợ vững chắc không?")
+                elif fomo_info['level'] == 'WATCH':
+                    with st.expander("👁️ Có vài dấu hiệu cần lưu ý", expanded=False):
+                        for f in fomo_info['flags']:
+                            st.write(f)
+            except Exception as _h1_err:
+                print(f"[H1] {_h1_err}")
 
             # ── [V24 #4-B] CẢNH BÁO CHỐT LỜI cho mã đang xem ──
             try:
@@ -5888,14 +6381,40 @@ with tab1:
                 qa_entry = qa_c2.number_input("Giá vào", min_value=100.0, step=100.0,
                                                 value=float(last['close']),
                                                 key=f"qa_entry_{ticker}")
-                if qa_c3.button(f"➕ Thêm {ticker}", key=f"qa_add_{ticker}"):
+
+                # [V24-H3] PRE-TRADE CHECKLIST BUỘC
+                st.markdown("**📋 Tự kiểm trước khi vào lệnh:**")
+                ck1 = st.checkbox("✅ Tôi đã xác định SL rõ ràng", key=f"ck1_{ticker}")
+                ck2 = st.checkbox("✅ Size lệnh KHÔNG quá 20% vốn", key=f"ck2_{ticker}")
+                ck3 = st.checkbox("✅ Tôi KHÔNG đang FOMO (xem cảnh báo bên trên)",
+                                    key=f"ck3_{ticker}")
+                ck4 = st.checkbox("✅ Tôi có lý do CỤ THỂ để mua (không phải vì 'cảm thấy')",
+                                    key=f"ck4_{ticker}")
+                ck5 = st.checkbox("✅ Đã check chiến lược thoát (TP/SL)",
+                                    key=f"ck5_{ticker}")
+                all_checked = ck1 and ck2 and ck3 and ck4 and ck5
+
+                # Lý do mua (bắt buộc nếu đã tick hết)
+                qa_reason = ""
+                if all_checked:
+                    qa_reason = st.text_input("📝 Lý do mua (bắt buộc)",
+                                                 key=f"qa_reason_{ticker}",
+                                                 placeholder="VD: Chân sóng 7/12 + MACD bullish + RSI 48 hồi")
+
+                if qa_c3.button(f"➕ Thêm {ticker}",
+                                  key=f"qa_add_{ticker}",
+                                  disabled=not (all_checked and qa_reason)):
                     if 'v24_positions' not in st.session_state:
                         st.session_state['v24_positions'] = load_positions_from_file()
                     st.session_state['v24_positions'].append({
                         'ticker': ticker, 'shares': qa_shares, 'entry': qa_entry,
+                        'reason': qa_reason,
+                        'added_at': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
                     })
                     save_positions_to_file(st.session_state['v24_positions'])
-                    st.success(f"✅ Đã thêm {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ vào portfolio")
+                    st.success(f"✅ Đã thêm {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ + lý do")
+                if not all_checked:
+                    st.caption("⏳ Hãy tick đủ 5 ô và ghi lý do để mở nút Thêm")
 
             # ── [V24-R2] AUTO POSITION SIZING ──
             with st.expander(f"🤖 Auto Position Sizing cho {ticker} [R2]"):
