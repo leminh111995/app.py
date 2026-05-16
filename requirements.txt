@@ -1,28 +1,13 @@
-# ==============================================================================
-# Quant System V24.0 - Requirements
-# ==============================================================================
-
-# --- CORE ---
 streamlit>=1.28.0
-
-# ⚠️ QUAN TRỌNG: Pin vnstock về phiên bản cũ vì V23/V24 dùng API cũ
-# Vnstock đã deprecate API Vnstock().stock(...) từ 31/08/2025
-# Nếu muốn dùng vnstock mới nhất, phải sửa toàn bộ code (xem Cách 2)
 vnstock==3.2.6
-
+pytz>=2023.3
 pandas>=2.0.0
 numpy>=1.24.0
 plotly>=5.17.0
 xgboost>=2.0.0
 scikit-learn>=1.3.0
 nltk>=3.8.0
-
-# --- V24 BẮT BUỘC ---
 scipy>=1.10.0
-
-# --- V24 KHUYẾN NGHỊ ---
 reportlab>=4.0.0
 requests>=2.31.0
-
-# --- V24 TUỲ CHỌN ---
 shap>=0.42.0
