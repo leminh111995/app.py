@@ -4502,12 +4502,17 @@ V24_POSITIONS_FILE = 'v24_positions.json'
 V24_TRADES_FILE    = 'v24_trades.json'
 
 def load_positions_from_file() -> list:
-    """[F3] Load positions từ file."""
+    """[F3+X3] Load positions từ file với backward-compat (fill default fields)."""
     try:
         if not os.path.exists(V24_POSITIONS_FILE):
             return []
         with open(V24_POSITIONS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # [X3] Backward compat: fill default cho fields mới
+        for pos in data:
+            pos.setdefault('reason', '')
+            pos.setdefault('added_at', '')
+        return data
     except Exception as e:
         print(f"[F3 load_positions] {e}")
         return []
@@ -4525,12 +4530,19 @@ def save_positions_to_file(positions: list) -> bool:
 
 
 def load_trades_from_file() -> list:
-    """[F3] Load trades từ file."""
+    """[F3+X3] Load trades từ file với backward-compat."""
     try:
         if not os.path.exists(V24_TRADES_FILE):
             return []
         with open(V24_TRADES_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # [X3] Backward compat
+        for t in data:
+            t.setdefault('entry_reason', '')
+            t.setdefault('exit_reason', '')
+            t.setdefault('lesson', '')
+            t.setdefault('mood', '')
+        return data
     except Exception as e:
         print(f"[F3 load_trades] {e}")
         return []
@@ -4966,10 +4978,16 @@ with st.sidebar:
                                                   value=1000, key="pf_shares")
                 pf_entry = st.number_input("Giá vào", min_value=100.0, step=100.0,
                                               value=50000.0, key="pf_entry")
+                # [V24-X2] Thống nhất schema — thêm reason
+                pf_reason = st.text_input("Lý do mua (tuỳ chọn)",
+                                            key="pf_reason",
+                                            placeholder="VD: Chân sóng + MACD bullish")
                 if st.form_submit_button("➕ Thêm vị thế"):
                     if pf_ticker:
                         st.session_state['v24_positions'].append({
                             'ticker': pf_ticker, 'shares': pf_shares, 'entry': pf_entry,
+                            'reason': pf_reason,
+                            'added_at': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
                         })
                         save_positions_to_file(st.session_state['v24_positions'])
                         st.success(f"Đã thêm {pf_ticker}")
@@ -5167,7 +5185,7 @@ with tab1:
         st.session_state.pop('_v24_streak', None)
         st.session_state['_v24_last_analyzed_ticker'] = ticker
     with col_clear:
-        if st.button("🗑️ Xóa kết quả cũ"):
+        if st.button("🗑️ Xóa kết quả cũ", key="auto_btn_X_a_k_t_qu__c_1"):
             st.session_state.pop('tab1_done', None)
             st.session_state.pop('tab1_ticker', None)
             st.rerun()
@@ -5249,65 +5267,9 @@ with tab1:
             atr_val  = float(last.get('atr', last['close'] * 0.02))
             sl_info  = calc_trailing_stop(float(last['close']), atr_val)
 
-            # [V24-F6] Mục lục nhỏ ở đầu tab 1 — giúp navigate nhanh trên mobile
-            with st.container(border=True):
-                st.caption("📑 **Mục lục:** "
-                            "👆 Tóm tắt → 📈 Score Trend → 🌡️ Volatility → "
-                            "🚨 Cảnh báo → 📊 Chi tiết → 📋 Backtest → "
-                            "🔮 What-if → 💼 Vị thế → 📌 Kết luận")
-
-
-            # ── [V24-G3] WHY THIS SCORE? ──
-            try:
-                with st.expander(f"🤔 Tại sao điểm tổng = {scoring['total']}/90? (Click để xem)"):
-                    breakdown = explain_score_breakdown(scoring, last, bt, ai_score)
-                    for b in breakdown:
-                        bc1, bc2 = st.columns([1, 3])
-                        bc1.markdown(f"**{b['group']}**: {b['pts']}/{b['max']}")
-                        bc2.caption(b['reason'])
-                    st.divider()
-                    if scoring['total'] >= SCORE_BUY_MIN:
-                        st.success(f"✅ Tổng {scoring['total']}/90 đã vượt ngưỡng MUA ({SCORE_BUY_MIN})")
-                    else:
-                        st.warning(f"⏳ Tổng {scoring['total']}/90 chưa đủ ngưỡng MUA (cần ≥{SCORE_BUY_MIN})")
-            except Exception as _g3_err:
-                print(f"[G3] {_g3_err}")
-
-            # ── [V24-M1] SCORE TREND 7 NGÀY ──
-            try:
-                _score_trend = calc_score_trend_7d(df, foreign_trend, weekly_trend,
-                                                     sector_score=sector_score, n_days=7)
-                if _score_trend and len(_score_trend) >= 5:
-                    # Sparkline mini
-                    trend_scores = [s['score'] for s in _score_trend]
-                    trend_dates = [s.get('date', f"D-{s['days_ago']}") for s in _score_trend]
-                    fig_trend = go.Figure()
-                    fig_trend.add_trace(go.Scatter(
-                        x=trend_dates, y=trend_scores,
-                        mode='lines+markers+text',
-                        text=[f"{s}" for s in trend_scores],
-                        textposition='top center',
-                        line=dict(color='#1F3864', width=2),
-                        marker=dict(size=8),
-                        fill='tozeroy', fillcolor='rgba(31,56,100,0.1)',
-                    ))
-                    fig_trend.add_hline(y=SCORE_BUY_MIN, line_dash='dash',
-                                          line_color='green', annotation_text="Ngưỡng MUA")
-                    fig_trend.update_layout(
-                        height=200, margin=dict(l=30, r=30, t=40, b=30),
-                        title=f"📈 Xu hướng Điểm Tổng Hợp 7 phiên gần nhất — {ticker}",
-                        showlegend=False, yaxis=dict(range=[0, 90]),
-                        xaxis=dict(showgrid=False),
-                    )
-                    st.plotly_chart(fig_trend, use_container_width=True)
-
-                    delta_score = trend_scores[-1] - trend_scores[0]
-                    if delta_score >= 10:
-                        st.success(f"📈 Điểm tăng mạnh +{delta_score:.0f} điểm trong 7 phiên — Đang khoẻ lên")
-                    elif delta_score <= -10:
-                        st.warning(f"📉 Điểm giảm -{abs(delta_score):.0f} điểm trong 7 phiên — Đang suy yếu")
-            except Exception as _m1_err:
-                print(f"[V24-M1] {_m1_err}")
+            # ═══════════════════════════════════════════════════════════════
+            # [V24-X1] SECTION A: TÓM TẮT NHANH (đặt ĐẦU để user thấy ngay)
+            # ═══════════════════════════════════════════════════════════════
 
             # ── [V24 #1] EXECUTIVE SUMMARY 1 CÂU (đặt ĐẦU kết quả) ──
             try:
@@ -5345,6 +5307,7 @@ with tab1:
             except Exception as _es_err:
                 print(f"[V24 exec summary] {_es_err}")
 
+
             # ── [V24-G2] NEXT STEPS — 3 hành động cụ thể ──
             try:
                 _es_for_g2 = st.session_state.get('_exec_summary', {'action': 'WAIT'})
@@ -5358,23 +5321,6 @@ with tab1:
             except Exception as _g2_err:
                 print(f"[G2] {_g2_err}")
 
-            # ── [V24-M8] VOLATILITY REGIME ──
-            try:
-                vol_regime = detect_volatility_regime(df, n_days=60)
-                vc1, vc2, vc3 = st.columns([2, 1, 1])
-                with vc1:
-                    if vol_regime['level'] == 'HIGH':
-                        st.error(vol_regime['label'])
-                    elif vol_regime['level'] == 'ELEVATED':
-                        st.warning(vol_regime['label'])
-                    elif vol_regime['level'] == 'LOW':
-                        st.success(vol_regime['label'])
-                    else:
-                        st.info(vol_regime['label'])
-                vc2.metric("ATR / Giá", f"{vol_regime['current_atr_pct']:.2f}%")
-                vc3.metric("Percentile 60d", f"{vol_regime['percentile']:.0f}%")
-            except Exception as _m8_err:
-                print(f"[V24-M8] {_m8_err}")
 
             # ── [V24-H1] FOMO/PANIC DETECTOR ──
             try:
@@ -5412,12 +5358,100 @@ with tab1:
             except Exception as _h1_err:
                 print(f"[H1] {_h1_err}")
 
+
             # ── [V24 #4-B] CẢNH BÁO CHỐT LỜI cho mã đang xem ──
             try:
                 exit_alert = check_exit_signal_simple(last, df)
                 render_exit_alert_card(exit_alert, ticker)
             except Exception as _ex_err:
                 print(f"[V24 exit alert] {_ex_err}")
+
+
+            # ── [V24-M1] SCORE TREND 7 NGÀY ──
+            try:
+                _score_trend = calc_score_trend_7d(df, foreign_trend, weekly_trend,
+                                                     sector_score=sector_score, n_days=7)
+                if _score_trend and len(_score_trend) >= 5:
+                    # Sparkline mini
+                    trend_scores = [s['score'] for s in _score_trend]
+                    trend_dates = [s.get('date', f"D-{s['days_ago']}") for s in _score_trend]
+                    fig_trend = go.Figure()
+                    fig_trend.add_trace(go.Scatter(
+                        x=trend_dates, y=trend_scores,
+                        mode='lines+markers+text',
+                        text=[f"{s}" for s in trend_scores],
+                        textposition='top center',
+                        line=dict(color='#1F3864', width=2),
+                        marker=dict(size=8),
+                        fill='tozeroy', fillcolor='rgba(31,56,100,0.1)',
+                    ))
+                    fig_trend.add_hline(y=SCORE_BUY_MIN, line_dash='dash',
+                                          line_color='green', annotation_text="Ngưỡng MUA")
+                    fig_trend.update_layout(
+                        height=200, margin=dict(l=30, r=30, t=40, b=30),
+                        title=f"📈 Xu hướng Điểm Tổng Hợp 7 phiên gần nhất — {ticker}",
+                        showlegend=False, yaxis=dict(range=[0, 90]),
+                        xaxis=dict(showgrid=False),
+                    )
+                    st.plotly_chart(fig_trend, use_container_width=True)
+
+                    delta_score = trend_scores[-1] - trend_scores[0]
+                    if delta_score >= 10:
+                        st.success(f"📈 Điểm tăng mạnh +{delta_score:.0f} điểm trong 7 phiên — Đang khoẻ lên")
+                    elif delta_score <= -10:
+                        st.warning(f"📉 Điểm giảm -{abs(delta_score):.0f} điểm trong 7 phiên — Đang suy yếu")
+            except Exception as _m1_err:
+                print(f"[V24-M1] {_m1_err}")
+
+
+            # ── [V24-M8] VOLATILITY REGIME ──
+            try:
+                vol_regime = detect_volatility_regime(df, n_days=60)
+                vc1, vc2, vc3 = st.columns([2, 1, 1])
+                with vc1:
+                    if vol_regime['level'] == 'HIGH':
+                        st.error(vol_regime['label'])
+                    elif vol_regime['level'] == 'ELEVATED':
+                        st.warning(vol_regime['label'])
+                    elif vol_regime['level'] == 'LOW':
+                        st.success(vol_regime['label'])
+                    else:
+                        st.info(vol_regime['label'])
+                vc2.metric("ATR / Giá", f"{vol_regime['current_atr_pct']:.2f}%")
+                vc3.metric("Percentile 60d", f"{vol_regime['percentile']:.0f}%")
+            except Exception as _m8_err:
+                print(f"[V24-M8] {_m8_err}")
+
+
+            # ── [V24-G3] WHY THIS SCORE? ──
+            try:
+                with st.expander(f"🤔 Tại sao điểm tổng = {scoring['total']}/90? (Click để xem)"):
+                    breakdown = explain_score_breakdown(scoring, last, bt, ai_score)
+                    for b in breakdown:
+                        bc1, bc2 = st.columns([1, 3])
+                        bc1.markdown(f"**{b['group']}**: {b['pts']}/{b['max']}")
+                        bc2.caption(b['reason'])
+                    st.divider()
+                    if scoring['total'] >= SCORE_BUY_MIN:
+                        st.success(f"✅ Tổng {scoring['total']}/90 đã vượt ngưỡng MUA ({SCORE_BUY_MIN})")
+                    else:
+                        st.warning(f"⏳ Tổng {scoring['total']}/90 chưa đủ ngưỡng MUA (cần ≥{SCORE_BUY_MIN})")
+            except Exception as _g3_err:
+                print(f"[G3] {_g3_err}")
+
+
+            # ═══════════════════════════════════════════════════════════════
+            # SECTION B: PHÂN TÍCH CHI TIẾT (V23 charts, backtest, indicators)
+            # ═══════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
 
             st.markdown(
                 "> 🧠 **Nhà Phân Tích Ảo V24.0:** Tự động tổng hợp dữ liệu đa chiều — "
@@ -6349,6 +6383,15 @@ with tab1:
             else:
                 st.success("✅ Không có cặp nào tương quan quá cao — danh mục đa dạng tốt.")
 
+
+
+
+
+
+            # ═══════════════════════════════════════════════════════════════
+            # [V24-X1] SECTION C: HÀNH ĐỘNG (quản lý vị thế cho mã này)
+            # ═══════════════════════════════════════════════════════════════
+
             # ── [V24 #4-A] PORTFOLIO POSITION CHECK ──
             with st.expander(f"💼 Tôi đang giữ {ticker} — Kiểm tra Exit Signal"):
                 pc_c1, pc_c2, pc_c3 = st.columns(3)
@@ -6372,6 +6415,7 @@ with tab1:
                         render_exit_signal_card(ex_signal, pc_current, pc_entry, pc_shares)
                     except Exception as _pc_err:
                         st.warning(f"Không tính được exit signal: {_pc_err}")
+
 
             # ── [V24-Q5] QUICK ADD POSITION ──
             with st.expander(f"📥 Thêm {ticker} vào Portfolio (Quick Add)"):
@@ -6416,6 +6460,7 @@ with tab1:
                 if not all_checked:
                     st.caption("⏳ Hãy tick đủ 5 ô và ghi lý do để mở nút Thêm")
 
+
             # ── [V24-R2] AUTO POSITION SIZING ──
             with st.expander(f"🤖 Auto Position Sizing cho {ticker} [R2]"):
                 r2_c1, r2_c2 = st.columns(2)
@@ -6445,6 +6490,7 @@ with tab1:
                                 st.write(f"• {r}")
                     else:
                         st.warning("Không tính được — kiểm tra input")
+
 
             # ── [V24-M2] WHAT-IF SIMULATOR ──
             with st.expander("🔮 What-if: Mô phỏng giá/RSI thay đổi"):
@@ -6481,6 +6527,7 @@ with tab1:
                 except Exception as _m2_err:
                     st.warning(f"Không tính được: {_m2_err}")
 
+
             # ── [V24 #1] NHẮC LẠI EXECUTIVE SUMMARY CUỐI BÀI ──
             _es = st.session_state.get('_exec_summary')
             if _es:
@@ -6494,6 +6541,7 @@ with tab1:
                     <div style="font-size:17px; color:#222;">{_es['one_liner']}</div>
                 </div>
                 """, unsafe_allow_html=True)
+
 # TAB 2: TÀI CHÍNH & CANSLIM
 # ==============================================================================
 with tab2:
@@ -7015,7 +7063,7 @@ with tab4:
                    delta_color="normal" if 'cal_threshold_breakout' in st.session_state else "off")
         nc2.metric("Ngưỡng Bán Tháo",     f"{cur_du:.2f}x", delta_color="off")
         nc3.metric("Ngưỡng Bán Tháo Nặng",f"{cur_hd:.2f}x", delta_color="off")
-        if st.button("▶️ Chạy Hiệu Chỉnh Ngưỡng (50 mã mẫu)"):
+        if st.button("▶️ Chạy Hiệu Chỉnh Ngưỡng (50 mã mẫu)", key="auto_btn_Ch_y_Hi_u_Ch_nh_N_2"):
             sample_cal = list(dict.fromkeys(tickers))[:50]
             with st.spinner("Đang phân tích phân phối Vol lịch sử..."):
                 cal_result = calibrate_vol_thresholds(sample_cal, days=252)
@@ -7109,7 +7157,7 @@ with tab4:
     col_quick, col_full, col_fast = st.columns(3)
     run_quick = col_quick.button("⚡ Quét Nhanh (150 mã HOSE)")
     run_full  = col_full.button("🔭 Quét Toàn HOSE (~400 mã) — mất ~15 phút")
-    run_fast  = col_fast.button("🏃 Điểm Danh Siêu Nhanh (không AI) — ~3 phút")
+    run_fast  = col_fast.button("🏃 Điểm Danh Siêu Nhanh (không AI) — ~3 phút", key="auto_btn_i_m_Danh_Si_u_Nha_3")
     if run_fast:
         scan_list = list(dict.fromkeys(tickers))[:RADAR_MAX_FULL]
         st.caption(f"🏃 Điểm danh nhanh {len(scan_list)} mã (RSI + Vol + MA20, không AI)...")
@@ -7346,7 +7394,7 @@ with tab5:
         "hiệu suất trung bình 5 ngày của các mã đại diện trong mỗi ngành."
     )
     st.warning("⏱️ Quét ngành mất 2-3 phút. Chạy 1 lần/ngày là đủ.")
-    if st.button("🔭 QUÉT DÒNG TIỀN LUÂN CHUYỂN NGÀNH"):
+    if st.button("🔭 QUÉT DÒNG TIỀN LUÂN CHUYỂN NGÀNH", key="auto_btn_QU_T_D_NG_TI_N_LU_4"):
         with st.spinner("Đang quét hiệu suất toàn ngành..."):
             sector_result = analyze_sector_rotation(tickers)
         if sector_result:
@@ -7450,11 +7498,11 @@ with tab5:
 
 with tab6:
     st.subheader(f"📊 Phân Tích VN-Index & Tương Quan với {ticker}")
-    if st.button("🔄 Xóa Cache VNI (bấm nếu lần trước lỗi)"):
+    if st.button("🔄 Xóa Cache VNI (bấm nếu lần trước lỗi)", key="auto_btn_X_a_Cache_VNI__b_m_5"):
         get_vnindex_cached.clear()
         st.session_state.pop('vni_loaded', None)
         st.success("✅ Cache VNI đã xóa — bấm 'Tải Dữ Liệu' để tải lại.")
-    if st.button("🔄 Tải Dữ Liệu VN-Index & Phân Tích"):
+    if st.button("🔄 Tải Dữ Liệu VN-Index & Phân Tích", key="auto_btn_T_i_D__Li_u_VN_Ind_6"):
         with st.spinner("Đang tải dữ liệu..."):
             # Dùng E1VFVN30 (ETF bám VN30) — load nhanh như mọi mã thông thường
             df_vni_raw = get_price('E1VFVN30', days=400)
