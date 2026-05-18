@@ -99,9 +99,9 @@ RSI_OVERBOUGHT    = 70
 RSI_OVERSOLD      = 30
 RSI_HOT           = 68
 RSI_COLD          = 42
-RSI_WATCHLIST_MAX = 62
+RSI_WATCHLIST_MAX = 65
 # Volume
-VOL_BREAKOUT      = 1.3
+VOL_BREAKOUT      = 1.5
 VOL_ACC_MIN       = 0.8
 VOL_ACC_MAX       = 1.2
 VOL_SHARK         = 2.5
@@ -113,7 +113,7 @@ BB_SQUEEZE_TOL    = 1.2
 # Cạn Cung
 SUPPLY_RATIO      = 0.8
 # Giá so MA20
-PRICE_NEAR_MA20   = 0.95
+PRICE_NEAR_MA20   = 0.97
 # Phí giao dịch thực tế
 TRADE_FEE         = 0.0015
 SLIPPAGE          = 0.001
@@ -166,10 +166,10 @@ W52_NEAR_PCT      = 0.92        # trong vòng 8% đỉnh 52 tuần = gần đỉ
 # [V23] Divergence
 DIV_LOOKBACK      = 20          # số phiên nhìn lại để tìm phân kỳ
 # [V23] Chân Sóng (Wave Bottom) — tiêu chí mở rộng
-WAVE_RSI_MAX      = 52          # RSI dưới 52 = chưa quá mua
+WAVE_RSI_MAX      = 55          # [V24-HOSE] RSI ≤ 55: chân sóng thực tế HOSE (cũ: 52)
 WAVE_RSI_MIN      = 28          # RSI trên 28 = không quá bán thái quá
 WAVE_PRICE_MA50   = 0.88        # giá ít nhất 88% MA50
-WAVE_SCORE_MIN    = 4           # cần ≥ 4 điểm / 11 tiêu chí
+WAVE_SCORE_MIN    = 5           # [V24-HOSE] cần ≥ 5/11 (cũ: 4) — chặt hơn để chất lượng cao
 # Mã trụ thị trường
 PILLARS = ["FPT", "HPG", "VCB", "VIC", "VNM", "TCB", "SSI", "MWG", "VHM", "GAS"]
 # Fallback ~90 mã phổ biến HOSE
@@ -2294,7 +2294,7 @@ def calibrate_vol_thresholds(sample_tickers: list, days: int = 252) -> dict:
 def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, smart_flow: bool = False) -> str | None:
     """
     [V23] Phân loại 4 tầng:
-    🚀 Bùng Nổ | ⚖️ Danh Sách Chờ | 🌊 Chân Sóng (mới) | 👁️ Vùng Quan Sát
+    🚀 Bùng Nổ | 🎯 Sẵn Sàng Bùng Nổ | 🌱 Đang Tích Lũy Nền | 👁️ Vùng Quan Sát
     """
     last  = df.iloc[-1]
     vol   = last['vol_strength']
@@ -2330,7 +2330,7 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, s
         ai_ok
     )
     if base_ok and weapons >= 1 and weekly_trend in ('UP', 'NEUTRAL'):
-        return "⚖️ Danh Sách Chờ"
+        return "🎯 Sẵn Sàng Bùng Nổ"
     # TẦNG 3: Chân Sóng
     w52   = calc_52w_info(df)
     div   = detect_divergence(df)
@@ -2347,7 +2347,7 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, s
         price_not_hot = price <= ma20 * 1.05      # giá không được vượt MA20 quá 5% (đã bứt tốc rồi)
         adx_not_surge = last.get('adx', 0) < 35  # ADX < 35: chưa phải xu hướng bùng nổ
         if not_downtrend and rsi_in_range and price_not_hot and adx_not_surge:
-            return "🌊 Chân Sóng"
+            return "🌱 Đang Tích Lũy Nền"
     # TẦNG 4: Quan Sát — RSI phải < 65, không mua vào vùng overbought
     if rsi >= 65:
         # TẦNG 5: Đang Tăng Mạnh — theo dõi, không mua đuổi
@@ -2529,10 +2529,10 @@ def render_radar_summary_banner(breakouts, sell_dumps, watchlist, wave_bottom, w
               delta="⚠️ Cẩn thận mua đuổi" if breakouts else None, delta_color="off")
     c3.metric("🔴 Bán Tháo",       len(sell_dumps),
               delta="Tránh xa!" if sell_dumps else None, delta_color="off")
-    c4.metric("⚖️ Danh Sách Chờ",  len(watchlist),
+    c4.metric("🎯 Sẵn Sàng Bùng Nổ",  len(watchlist),
               delta="✅ Ưu tiên" if watchlist else None,
               delta_color="normal" if watchlist else "off")
-    c5.metric("🌊 Chân Sóng",      len(wave_bottom),
+    c5.metric("🌱 Tích Lũy Nền",      len(wave_bottom),
               delta="🎯 Cơ hội sớm" if wave_bottom else None,
               delta_color="normal" if wave_bottom else "off")
     c6.metric("👁️ Quan Sát",       len(watch_zone),  delta_color="off")
@@ -4167,8 +4167,8 @@ def detect_fomo_signals(last: pd.Series, df: pd.DataFrame) -> dict:
     ma20 = float(last['ma20'])
     upper_bb = float(last.get('upper_band', price * 1.05))
 
-    # FOMO CLASSIC: Tăng mạnh + Vol nổ + RSI cao
-    if ret > 0.04 and vol > 1.8:
+    # FOMO CLASSIC: Tăng mạnh + Vol nổ + RSI cao (ngưỡng HOSE: ret > 5%)
+    if ret > 0.05 and vol > 1.8:
         fomo_score += 4
         flags.append(f"🚨 Đang tăng +{ret*100:.1f}% với Vol {vol:.1f}x — FOMO classic")
     if rsi >= 75:
@@ -5750,7 +5750,7 @@ with tab1:
                 elif sig == 'BEAR': st.error(ichi_sig['label'])
                 else:               st.warning(ichi_sig['label'])
             with wave_c:
-                st.markdown("**🌊 Chân Sóng Score (V23)**")
+                st.markdown("**🌱 Tích Lũy Nền Score**")
                 st.progress(wave_info['score'] / 8)
                 st.caption(f"{wave_info['score']}/8 tiêu chí")
                 if wave_info['is_wave_bottom']:
@@ -7143,7 +7143,7 @@ with tab4:
                         st.metric("📊 RSI",        f"{q['rsi']}")
                     with qc3:
                         st.metric("📈 RS Rating",  f"{q['rs']:.0f}")
-                        st.metric("🌊 Chân Sóng",  f"{q['wave']}/11")
+                        st.metric("🌱 Tích Lũy",  f"{q['wave']}/11")
                     with qc4:
                         st.metric("🛡️ Stop Loss",  f"{q['sl']:,.0f}",
                                   delta=f"{q['sl_pct']:+.1f}%", delta_color="inverse")
@@ -7275,8 +7275,8 @@ with tab4:
                 }
                 if   "Bùng Nổ Mua" in label: breakouts.append(row)
                 elif "Bán Tháo"     in label: sell_dumps.append(row)
-                elif "Danh Sách"    in label: watchlist.append(row)
-                elif "Chân Sóng"    in label: wave_bottom.append(row)
+                elif "Sẵn Sàng"     in label: watchlist.append(row)
+                elif "Tích Lũy"     in label: wave_bottom.append(row)
                 elif "Quan Sát"     in label: watch_zone.append(row)
                 elif "Đang Tăng"    in label: running_strong.append(row)
             except Exception as e:
@@ -7320,7 +7320,7 @@ with tab4:
             st.success("✅ Không có mã bán tháo hôm nay.")
         st.divider()
         # ── TẦNG 2: DANH SÁCH CHỜ ──
-        st.write("### ⚖️ Tầng 2 — Danh Sách Chờ Chân Sóng")
+        st.write("### 🎯 Tầng 2 — Sẵn Sàng Bùng Nổ")
         st.caption("Nền đẹp + Weekly xác nhận. **Nhóm ưu tiên nhất để vào lệnh.**")
         if watchlist:
             if use_cards:
@@ -7332,14 +7332,14 @@ with tab4:
             st.info("Hôm nay chưa có mã đủ tiêu chuẩn.")
         st.divider()
         # ── TẦNG 3: CHÂN SÓNG ──
-        st.write("### 🌊 Tầng 3 — Chân Sóng (Bắt sóng sớm)")
+        st.write("### 🌱 Tầng 3 — Đang Tích Lũy Nền (Vào sớm)")
         st.caption("Đang tích lũy nền. Vào nhỏ 10–15% vốn, SL chặt theo ATR.")
         if wave_bottom:
             if use_cards:
                 for r in wave_bottom: render_radar_card(r, "blue")
             else:
                 render_radar_table(wave_bottom)
-            st.info(f"🌊 {len(wave_bottom)} mã vùng chân sóng. Chờ thêm 1–2 phiên xác nhận.")
+            st.info(f"🌱 {len(wave_bottom)} mã đang tích lũy nền. Chờ thêm 1–2 phiên xác nhận trước khi vào.")
         else:
             st.write("Không có mã chân sóng hôm nay.")
         st.divider()
@@ -7372,8 +7372,8 @@ with tab4:
 |------|---------|----------|
 | 🚀 Bùng Nổ Mua | Vol nổ + nến xanh | Chờ pullback, không mua đuổi |
 | 🔴 Bán Tháo | Vol nổ + nến đỏ | Tuyệt đối không mua |
-| ⚖️ Danh Sách Chờ | Nền đẹp, Weekly xác nhận | Ưu tiên vào lệnh |
-| 🌊 Chân Sóng | Đang tích lũy /11 tiêu chí | Vào nhỏ, SL chặt |
+| 🎯 Sẵn Sàng Bùng Nổ | Đã sẵn sàng — có thể nổ bất kỳ phiên nào | Ưu tiên vào lệnh |
+| 🌱 Đang Tích Lũy Nền | Đang tích lũy nền /12 tiêu chí | Vào sớm size nhỏ, SL chặt |
 | 👁️ Quan Sát | Tín hiệu sớm RSI < 65 | Theo dõi thêm |
 | 🔥 Đang Tăng Mạnh | RSI 65–80, đang chạy | Không mua đuổi |
 | Cột | Ý nghĩa | Ngưỡng tốt |
