@@ -2037,6 +2037,13 @@ def quick_pick_stocks(tickers_list: list, ai_min: float = 45.0,
             if not valid(df_q) or len(df_q) < 100:
                 continue
             df_q   = calc_indicators(df_q)
+            # [V24-LIQ] Skip mã thanh khoản thấp
+            try:
+                _liq_qp = calc_liquidity_tier(df_q)
+                if _liq_qp.get('tier') == 'LOW':
+                    continue
+            except Exception:
+                pass
             last_q = df_q.iloc[-1]
             rsi_q  = float(last_q['rsi'])
             price_q= float(last_q['close'])
@@ -4411,8 +4418,7 @@ def explain_score_breakdown(scoring: dict, last: pd.Series,
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600, max_entries=100)
 def quick_preview_ticker(ticker: str, date_key: str) -> dict:
-    """[Qa] Preview nhanh 1 mã chỉ vài giây.
-    Output: dict gọn dùng để hiển thị 1-2 dòng."""
+    """[Qa+LIQ] Preview nhanh 1 mã + check thanh khoản."""
     try:
         df = get_price(ticker, days=60)
         if not valid(df) or len(df) < 30:
@@ -4425,6 +4431,9 @@ def quick_preview_ticker(ticker: str, date_key: str) -> dict:
         ret = float(last.get('return_1d', 0))
         ma20 = float(last['ma20'])
         macd_up = last['macd'] > last['signal']
+
+        # [V24-LIQ] Thêm liquidity check
+        liq = calc_liquidity_tier(df)
 
         # Tier nhanh
         if vol >= 1.5 and price > ma20 and macd_up and 40 < rsi < 70:
@@ -4447,6 +4456,9 @@ def quick_preview_ticker(ticker: str, date_key: str) -> dict:
             'macd_up': macd_up,
             'above_ma20': price > ma20,
             'tier': tier,
+            'liq_tier': liq['tier'],
+            'liq_vol_avg': liq.get('vol_avg', 0),
+            'liq_turnover': liq.get('turnover_avg', 0),
         }
     except Exception as e:
         return {'error': str(e)[:50]}
@@ -4492,6 +4504,104 @@ def is_bookmark_due(bookmark: dict) -> bool:
 
 
 # [V24 HUMAN HELPERS END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V24-LIQ] BỘ LỌC THANH KHOẢN — Loại bỏ mã nhỏ/penny
+# ──────────────────────────────────────────────────────────────────────────────
+LIQ_PRICE_OK      = 13_000      # Đường 1: Giá ≥ 13K (mid-cap+)
+LIQ_VOL_BIG       = 1_000_000   # Đường 2: Vol khủng bù giá thấp
+LIQ_TURNOVER_BIG  = 15          # Đường 2: Turnover ≥ 15 tỷ
+LIQ_VOL_MIN       = 200_000     # Tối thiểu chấp nhận
+LIQ_TURNOVER_MIN  = 3           # Tối thiểu turnover (tỷ)
+LIQ_TRADING_DAYS  = 18          # ≥18/20 phiên có giao dịch
+
+
+def calc_liquidity_tier(df: pd.DataFrame) -> dict:
+    """[V24-LIQ] Đánh giá thanh khoản 1 mã.
+    Logic 2-tầng:
+      - Pass nếu giá ≥ 13K (đường 1: mid-cap+)
+      - Hoặc pass nếu vol ≥ 1M + turnover ≥ 15 tỷ (đường 2: penny thanh khoản cực cao)
+      - Còn lại = LOW (loại penny rủi ro)
+    Output dict: {tier, vol_avg, turnover_avg, price, flags, message}.
+    """
+    if not valid(df) or len(df) < 20:
+        return {'tier': 'UNKNOWN', 'vol_avg': 0, 'turnover_avg': 0,
+                'price': 0, 'flags': ['Không đủ dữ liệu'],
+                'message': '❓ Không đủ data để đánh giá'}
+
+    recent20 = df.tail(20)
+    vol_avg = float(recent20['volume'].mean())
+    price = float(df['close'].iloc[-1])
+    turnover_avg = float((recent20['close'] * recent20['volume']).mean() / 1e9)  # tỷ
+    trading_days = int((recent20['volume'] > 0).sum())
+
+    flags = []
+    flags.append(f"💰 Giá: {price:,.0f}đ")
+    flags.append(f"📊 Vol TB 20p: {vol_avg/1000:,.0f}K cp")
+    flags.append(f"💸 Turnover TB: {turnover_avg:.1f} tỷ/phiên")
+    flags.append(f"📅 Phiên có GD: {trading_days}/20")
+
+    # Phân loại
+    # LOW: giá < 13K VÀ (vol < 1M HOẶC turnover < 15 tỷ)
+    is_penny = price < LIQ_PRICE_OK and (vol_avg < LIQ_VOL_BIG or turnover_avg < LIQ_TURNOVER_BIG)
+    # Hoặc: vol/turnover/trading days quá thấp
+    is_illiquid = (vol_avg < LIQ_VOL_MIN or turnover_avg < LIQ_TURNOVER_MIN
+                    or trading_days < LIQ_TRADING_DAYS)
+
+    if is_penny or is_illiquid:
+        return {'tier': 'LOW', 'vol_avg': vol_avg, 'turnover_avg': turnover_avg,
+                'price': price, 'trading_days': trading_days,
+                'flags': flags,
+                'message': '🔴 THANH KHOẢN THẤP — Khuyến nghị TRÁNH'}
+
+    # HIGH: vol ≥ 1M VÀ turnover ≥ 10 tỷ
+    if vol_avg >= LIQ_VOL_BIG and turnover_avg >= 10:
+        return {'tier': 'HIGH', 'vol_avg': vol_avg, 'turnover_avg': turnover_avg,
+                'price': price, 'trading_days': trading_days,
+                'flags': flags,
+                'message': '🟢 THANH KHOẢN CAO — Mã trụ, dễ vào/ra'}
+
+    # Còn lại: MED
+    return {'tier': 'MED', 'vol_avg': vol_avg, 'turnover_avg': turnover_avg,
+            'price': price, 'trading_days': trading_days,
+            'flags': flags,
+            'message': '🟡 THANH KHOẢN OK — Mã trung bình'}
+
+
+def render_liquidity_warning(liq: dict, ticker: str) -> None:
+    """[V24-LIQ] Hiển thị banner cảnh báo trong Tab 1 nếu LIQ thấp."""
+    if liq['tier'] != 'LOW':
+        return
+    with st.container(border=True):
+        st.error(f"### 🚨 CẢNH BÁO THANH KHOẢN THẤP — {ticker}")
+        for f in liq['flags']:
+            st.write(f)
+        st.markdown("---")
+        st.markdown("**⚠️ Rủi ro khi mua mã thanh khoản thấp:**")
+        st.write("1. **Khó thoát** khi cần (kẹp hàng)")
+        st.write("2. **Spread mua-bán rộng** — mua đắt, bán rẻ")
+        st.write("3. **Dễ bị thao túng giá** (pump & dump)")
+        st.write("4. **Vol thường < size lệnh** → khớp từng phần, giá xấu")
+        st.markdown("**→ Khuyến nghị: TRÁNH mã này, tìm mã khác có thanh khoản tốt hơn.**")
+
+
+@st.cache_data(ttl=3600, max_entries=300)
+def is_liquidity_ok(ticker: str, date_key: str) -> bool:
+    """[V24-LIQ] Check nhanh: mã có thanh khoản OK không (cho radar/quickpick filter).
+    True = MED hoặc HIGH (ok để gợi ý)
+    False = LOW (loại).
+    Cache theo ngày."""
+    try:
+        df = get_price(ticker, days=30)
+        if not valid(df) or len(df) < 20:
+            return False
+        liq = calc_liquidity_tier(df)
+        return liq['tier'] in ('MED', 'HIGH')
+    except Exception:
+        return False
+
+# [V24-LIQ END]
+
 
 
 
@@ -4912,6 +5022,29 @@ with st.sidebar:
             elif s3_res:
                 st.info("Không có mã nào nổi bật hôm nay")
 
+        with st.expander("💧 Kiểm tra Thanh Khoản [V24-LIQ]", expanded=False):
+            st.caption("Check thanh khoản mã trước khi mua — tránh mã penny rủi ro.")
+            liq_chk_ticker = st.text_input("Nhập mã cần check",
+                                              max_chars=4,
+                                              key="liq_chk_ticker").upper()
+            if st.button("🔍 Kiểm tra", key="liq_chk_btn") and liq_chk_ticker:
+                try:
+                    df_chk = get_price(liq_chk_ticker, days=30)
+                    if not valid(df_chk):
+                        st.error(f"Không tải được dữ liệu {liq_chk_ticker}")
+                    else:
+                        liq_chk = calc_liquidity_tier(df_chk)
+                        if liq_chk['tier'] == 'HIGH':
+                            st.success(liq_chk['message'])
+                        elif liq_chk['tier'] == 'MED':
+                            st.info(liq_chk['message'])
+                        else:
+                            st.error(liq_chk['message'])
+                        for f in liq_chk['flags']:
+                            st.caption(f)
+                except Exception as e:
+                    st.error(f"Lỗi: {e}")
+
         with st.expander("☀️ Pre-market Checklist", expanded=False):
             st.caption("Quét nhanh watchlist mỗi sáng.")
             pm_wl_input = st.text_area(
@@ -5150,6 +5283,16 @@ try:
             sig_emoji = '✅' if qa_preview['macd_up'] else '❌'
             ma_emoji = '✅' if qa_preview['above_ma20'] else '❌'
             st.caption(f"MACD {sig_emoji} | MA20 {ma_emoji}")
+            # [V24-LIQ] Liquidity badge
+            liq_t = qa_preview.get('liq_tier', 'UNKNOWN')
+            liq_v = qa_preview.get('liq_vol_avg', 0) / 1000  # K
+            liq_tv = qa_preview.get('liq_turnover', 0)
+            if liq_t == 'LOW':
+                st.error(f"🔴 LIQ THẤP | Vol {liq_v:.0f}K | TO {liq_tv:.1f} tỷ — TRÁNH")
+            elif liq_t == 'HIGH':
+                st.success(f"🟢 LIQ CAO | Vol {liq_v:.0f}K | TO {liq_tv:.1f} tỷ")
+            elif liq_t == 'MED':
+                st.info(f"🟡 LIQ OK | Vol {liq_v:.0f}K | TO {liq_tv:.1f} tỷ")
     else:
         st.sidebar.caption(f"⚠️ Preview: {qa_preview['error']}")
 except Exception as _qa_err:
@@ -5271,6 +5414,15 @@ with tab1:
             # [V24-X1] SECTION A: TÓM TẮT NHANH (đặt ĐẦU để user thấy ngay)
             # ═══════════════════════════════════════════════════════════════
 
+            # [V24-LIQ] Banner cảnh báo thanh khoản TRƯỚC TIÊN
+            try:
+                _liq_check = calc_liquidity_tier(df)
+                st.session_state['_v24_liq'] = _liq_check
+                render_liquidity_warning(_liq_check, ticker)
+            except Exception as _liq_err:
+                print(f"[V24-LIQ] {_liq_err}")
+
+
             # ── [V24 #1] EXECUTIVE SUMMARY 1 CÂU (đặt ĐẦU kết quả) ──
             try:
                 regime_for_summary = st.session_state.get('market_regime', {
@@ -5280,12 +5432,17 @@ with tab1:
                     weekly_trend, kelly_pct, sl_info, regime_for_summary)
 
                 # [V24-T3] Downgrade thêm nếu backtest equity tệ
-                # Lưu ý: Exec Summary render TRƯỚC equity → lần đầu sẽ default 100
-                # Lần phân tích thứ 2 cùng mã sẽ có giá trị thực từ session
                 _eq_final = st.session_state.get('_v24_equity_final', None)
                 if _eq_final is not None and _eq_final < 90 and 'MUA' in exec_summary.get('action', ''):
                     exec_summary['one_liner'] += f" ⚠️ Backtest lỗ {100-_eq_final:.0f}% — cân nhắc kỹ"
                     exec_summary['badge_color'] = 'orange'
+
+                # [V24-LIQ] Downgrade nếu thanh khoản thấp
+                _liq_es = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
+                if _liq_es.get('tier') == 'LOW' and 'MUA' in exec_summary.get('action', ''):
+                    exec_summary['action'] = 'TRÁNH (LIQ THẤP)'
+                    exec_summary['one_liner'] += " 🔴 Thanh khoản thấp — KHÔNG khuyến nghị"
+                    exec_summary['badge_color'] = 'red'
 
                 # [V24-T5] Thêm câu AI tự nhiên
                 _ai_lang = ai_score_to_language(ai_score)
@@ -7273,7 +7430,18 @@ with tab4:
                     'Wave Bottom': bool(wave_s['is_wave_bottom']),
                     'Wave Score':  wave_s['score'],
                 }
-                if   "Bùng Nổ Mua" in label: breakouts.append(row)
+                # [V24-LIQ] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) thay vì Tầng 1/2/3
+                try:
+                    _liq_rd = calc_liquidity_tier(df_s)
+                    _is_low_liq = _liq_rd.get('tier') == 'LOW'
+                except Exception:
+                    _is_low_liq = False
+
+                if _is_low_liq:
+                    # Mã thanh khoản thấp → chỉ vào Quan sát
+                    row['_liq_warning'] = '🔴 LIQ thấp'
+                    watch_zone.append(row)
+                elif "Bùng Nổ Mua" in label: breakouts.append(row)
                 elif "Bán Tháo"     in label: sell_dumps.append(row)
                 elif "Sẵn Sàng"     in label: watchlist.append(row)
                 elif "Tích Lũy"     in label: wave_bottom.append(row)
