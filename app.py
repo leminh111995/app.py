@@ -2329,7 +2329,7 @@ def classify_stock(ticker: str, df: pd.DataFrame, ai_score, weekly_trend: str, s
     squeezed  = bb_now <= bb_min20 * BB_SQUEEZE_TOL
     supply_ex = df['can_cung'].tail(5).any()
     weapons   = sum([squeezed, supply_ex, smart_flow])
-    # TẦNG 2: Danh Sách Chờ — tiêu chí chặt, an toàn nhất
+    # TẦNG 2: Sẵn Sàng Bùng Nổ — tiêu chí chặt, an toàn nhất
     base_ok = (
         VOL_ACC_MIN <= vol <= VOL_ACC_MAX and
         price >= ma20 * PRICE_NEAR_MA20   and
@@ -4511,9 +4511,22 @@ def is_bookmark_due(bookmark: dict) -> bool:
 LIQ_PRICE_OK      = 13_000      # Đường 1: Giá ≥ 13K (mid-cap+)
 LIQ_VOL_BIG       = 1_000_000   # Đường 2: Vol khủng bù giá thấp
 LIQ_TURNOVER_BIG  = 15          # Đường 2: Turnover ≥ 15 tỷ
-LIQ_VOL_MIN       = 200_000     # Tối thiểu chấp nhận
+LIQ_VOL_MIN       = 150_000     # [F6] Tối thiểu chấp nhận (nới 200K→150K để tránh false alarm cho mã trung bình như SSB)
 LIQ_TURNOVER_MIN  = 3           # Tối thiểu turnover (tỷ)
 LIQ_TRADING_DAYS  = 18          # ≥18/20 phiên có giao dịch
+
+
+@st.cache_data(ttl=3600, max_entries=500, show_spinner=False)
+def calc_liquidity_tier_cached(ticker: str, date_key: str) -> dict:
+    """[V24-F1] Cache wrapper cho liquidity tier (theo ticker+date).
+    Dùng cho Radar (400 mã) để tránh tính lại mỗi reload."""
+    try:
+        df_c = get_price(ticker, days=30)
+        if not valid(df_c):
+            return {'tier': 'UNKNOWN', 'flags': ['Không tải được data'], 'message': 'N/A'}
+        return calc_liquidity_tier(df_c)
+    except Exception as e:
+        return {'tier': 'UNKNOWN', 'flags': [str(e)[:50]], 'message': 'Lỗi'}
 
 
 def calc_liquidity_tier(df: pd.DataFrame) -> dict:
@@ -5128,6 +5141,7 @@ with st.sidebar:
             positions = st.session_state.get('v24_positions', [])
             if positions:
                 total_value = total_cost = 0
+                liq_warnings = []  # [V24-F5] Collect LIQ warnings
                 for i, pos in enumerate(positions):
                     try:
                         df_p = get_price(pos['ticker'], days=30)
@@ -5138,6 +5152,14 @@ with st.sidebar:
                             total_value += pos['shares'] * cur_price
                             total_cost += pos['shares'] * pos['entry']
                             emoji = '🟢' if pnl >= 0 else '🔴'
+                            # [V24-F5] Check LIQ degradation
+                            try:
+                                _liq_pos = calc_liquidity_tier(df_p)
+                                if _liq_pos.get('tier') == 'LOW':
+                                    emoji = '⚠️'
+                                    liq_warnings.append(f"**{pos['ticker']}** LIQ giảm xuống LOW")
+                            except Exception:
+                                pass
                             pc1, pc2 = st.columns([3, 1])
                             pc1.markdown(f"{emoji} **{pos['ticker']}** ({pos['shares']:,}) "
                                           f"@{pos['entry']:,.0f}→{cur_price:,.0f} ({pnl_pct:+.1f}%)")
@@ -5147,6 +5169,10 @@ with st.sidebar:
                                 st.rerun()
                     except Exception:
                         pass
+                # [V24-F5] Hiện cảnh báo LIQ degradation
+                if liq_warnings:
+                    st.warning("⚠️ **Cảnh báo LIQ:** " + "; ".join(liq_warnings)
+                                + " → Cân nhắc thoát sớm để tránh kẹp hàng")
                 if total_cost > 0:
                     total_pnl = total_value - total_cost
                     total_pnl_pct = total_pnl / total_cost * 100
@@ -5414,11 +5440,16 @@ with tab1:
             # [V24-X1] SECTION A: TÓM TẮT NHANH (đặt ĐẦU để user thấy ngay)
             # ═══════════════════════════════════════════════════════════════
 
-            # [V24-LIQ] Banner cảnh báo thanh khoản TRƯỚC TIÊN
+            # [V24-LIQ+F4] Banner cảnh báo PRIORITY (LIQ là cảnh báo cấp 1, ưu tiên hiển thị riêng)
             try:
                 _liq_check = calc_liquidity_tier(df)
                 st.session_state['_v24_liq'] = _liq_check
-                render_liquidity_warning(_liq_check, ticker)
+                # LIQ_LOW là cảnh báo nghiêm trọng → hiển thị riêng, gắn cờ để bỏ qua FOMO/Exit detail dài
+                if _liq_check.get('tier') == 'LOW':
+                    render_liquidity_warning(_liq_check, ticker)
+                    st.session_state['_v24_critical_warning'] = True
+                else:
+                    st.session_state['_v24_critical_warning'] = False
             except Exception as _liq_err:
                 print(f"[V24-LIQ] {_liq_err}")
 
@@ -5479,21 +5510,28 @@ with tab1:
                 print(f"[G2] {_g2_err}")
 
 
-            # ── [V24-H1] FOMO/PANIC DETECTOR ──
+            # ── [V24-H1+F4] FOMO/PANIC DETECTOR (gom vào expander nếu đã có LIQ critical) ──
             try:
                 fomo_info = detect_fomo_signals(last, df)
                 st.session_state['_v24_fomo'] = fomo_info
+                _has_critical = st.session_state.get('_v24_critical_warning', False)
                 if fomo_info['level'] == 'FOMO_HIGH':
-                    st.error(f"### {fomo_info['message']}")
-                    with st.container(border=True):
-                        for f in fomo_info['flags']:
-                            st.write(f)
-                        st.markdown("---")
-                        st.markdown("**💭 Hãy tự hỏi:**")
-                        st.write("• Tại sao bạn muốn mua NGAY BÂY GIỜ?")
-                        st.write("• Bạn có FOMO không?")
-                        st.write("• Có mã nào khác đẹp hơn không?")
-                        st.write("• Đợi pullback có được không?")
+                    if _has_critical:
+                        # Đã có LIQ critical, gom FOMO vào expander để không overload
+                        with st.expander(f"🚨 Có thêm cảnh báo FOMO mạnh", expanded=False):
+                            for f in fomo_info['flags']:
+                                st.write(f)
+                    else:
+                        st.error(f"### {fomo_info['message']}")
+                        with st.container(border=True):
+                            for f in fomo_info['flags']:
+                                st.write(f)
+                            st.markdown("---")
+                            st.markdown("**💭 Hãy tự hỏi:**")
+                            st.write("• Tại sao bạn muốn mua NGAY BÂY GIỜ?")
+                            st.write("• Bạn có FOMO không?")
+                            st.write("• Có mã nào khác đẹp hơn không?")
+                            st.write("• Đợi pullback có được không?")
                 elif fomo_info['level'] == 'FOMO_MID':
                     st.warning(f"### {fomo_info['message']}")
                     with st.expander("Chi tiết dấu hiệu FOMO", expanded=True):
@@ -6583,6 +6621,12 @@ with tab1:
                                                 value=float(last['close']),
                                                 key=f"qa_entry_{ticker}")
 
+                # [V24-F3] Cảnh báo LIQ_LOW ngay trong Quick Add
+                _liq_q5 = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
+                if _liq_q5.get('tier') == 'LOW':
+                    st.error(f"🔴 **CẢNH BÁO:** {ticker} có thanh khoản thấp — KHÔNG khuyến nghị mua")
+                    st.caption(f"Vol TB: {_liq_q5.get('vol_avg', 0)/1000:.0f}K | Turnover: {_liq_q5.get('turnover_avg', 0):.1f} tỷ")
+
                 # [V24-H3] PRE-TRADE CHECKLIST BUỘC
                 st.markdown("**📋 Tự kiểm trước khi vào lệnh:**")
                 ck1 = st.checkbox("✅ Tôi đã xác định SL rõ ràng", key=f"ck1_{ticker}")
@@ -6593,7 +6637,12 @@ with tab1:
                                     key=f"ck4_{ticker}")
                 ck5 = st.checkbox("✅ Đã check chiến lược thoát (TP/SL)",
                                     key=f"ck5_{ticker}")
-                all_checked = ck1 and ck2 and ck3 and ck4 and ck5
+                # [V24-F3] Buộc tick thêm khi LIQ_LOW
+                ck_liq = True
+                if _liq_q5.get('tier') == 'LOW':
+                    ck_liq = st.checkbox(f"⚠️ Tôi BIẾT {ticker} có LIQ thấp & chấp nhận rủi ro kẹp hàng",
+                                            key=f"ck_liq_{ticker}")
+                all_checked = ck1 and ck2 and ck3 and ck4 and ck5 and ck_liq
 
                 # Lý do mua (bắt buộc nếu đã tick hết)
                 qa_reason = ""
@@ -7430,23 +7479,25 @@ with tab4:
                     'Wave Bottom': bool(wave_s['is_wave_bottom']),
                     'Wave Score':  wave_s['score'],
                 }
-                # [V24-LIQ] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) thay vì Tầng 1/2/3
+                # [V24-LIQ+F2] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) — không push 2 lần
                 try:
-                    _liq_rd = calc_liquidity_tier(df_s)
+                    _liq_rd = calc_liquidity_tier_cached(t, date_key)
                     _is_low_liq = _liq_rd.get('tier') == 'LOW'
                 except Exception:
                     _is_low_liq = False
 
                 if _is_low_liq:
-                    # Mã thanh khoản thấp → chỉ vào Quan sát
+                    # Mã LIQ_LOW chỉ vào watch_zone (Tầng 4) — không phụ thuộc label
                     row['_liq_warning'] = '🔴 LIQ thấp'
                     watch_zone.append(row)
-                elif "Bùng Nổ Mua" in label: breakouts.append(row)
-                elif "Bán Tháo"     in label: sell_dumps.append(row)
-                elif "Sẵn Sàng"     in label: watchlist.append(row)
-                elif "Tích Lũy"     in label: wave_bottom.append(row)
-                elif "Quan Sát"     in label: watch_zone.append(row)
-                elif "Đang Tăng"    in label: running_strong.append(row)
+                else:
+                    # Phân loại bình thường theo label
+                    if   "Bùng Nổ Mua" in label: breakouts.append(row)
+                    elif "Bán Tháo"     in label: sell_dumps.append(row)
+                    elif "Sẵn Sàng"     in label: watchlist.append(row)
+                    elif "Tích Lũy"     in label: wave_bottom.append(row)
+                    elif "Quan Sát"     in label: watch_zone.append(row)
+                    elif "Đang Tăng"    in label: running_strong.append(row)
             except Exception as e:
                 print(f"[WARN] Scan {t}: {e}")
             progress.progress((i + 1) / len(scan_list))
