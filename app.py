@@ -21,6 +21,19 @@
 #  CÁCH DÙNG: V23 base CHẠY Y NGUYÊN. Các V24 function chỉ thêm vào, gọi khi cần.
 # ==============================================================================
 # --- IMPORTS ---
+# ==============================================================================
+# Quant System V24 (FINAL)
+# ==============================================================================
+# Phiên bản: V24
+# Bao gồm: V23 core + V24 features (T-M, Q-S-R, H-G, LIQ, các fixes)
+# 
+# QUY TẮC VERSIONING:
+#   - File này là V24 (bản hoàn chỉnh hiện tại)
+#   - Mọi update tiếp theo sẽ tạo file mới: V25, V26, V27, ...
+#   - Mỗi version = 1 file riêng, không đè
+# ==============================================================================
+
+
 import streamlit as st
 from vnstock import Vnstock
 import pandas as pd
