@@ -1797,11 +1797,27 @@ def calc_open_trade(entry_price: float, shares: int,
 def calc_seasonality(df: pd.DataFrame) -> pd.DataFrame:
     """
     Tính lợi nhuận trung bình theo từng tháng dựa trên lịch sử 3-5 năm.
+    [V24-FIX] Robust với mọi data source — guard DatetimeIndex.
     """
     df2 = df.copy()
+    # [V24-FIX] Đảm bảo có DatetimeIndex trước khi resample
     if 'date' in df2.columns:
-        df2['date'] = pd.to_datetime(df2['date'])
+        df2['date'] = pd.to_datetime(df2['date'], errors='coerce')
+        df2 = df2.dropna(subset=['date'])
         df2 = df2.set_index('date')
+    elif 'time' in df2.columns:
+        df2['time'] = pd.to_datetime(df2['time'], errors='coerce')
+        df2 = df2.dropna(subset=['time'])
+        df2 = df2.set_index('time')
+    elif not isinstance(df2.index, pd.DatetimeIndex):
+        # Không có cách nào convert → trả empty
+        return pd.DataFrame(columns=['month', 'avg_ret', 'years', 'std', 'month_name'])
+    # Đảm bảo index là DatetimeIndex (nếu reset_index bị nullable)
+    if not isinstance(df2.index, pd.DatetimeIndex):
+        try:
+            df2.index = pd.to_datetime(df2.index, errors='coerce')
+        except Exception:
+            return pd.DataFrame(columns=['month', 'avg_ret', 'years', 'std', 'month_name'])
     df2['ret_month'] = df2['close'].resample('ME').last().pct_change() * 100
     df2 = df2.dropna(subset=['ret_month'])
     df2['month'] = df2.index.month
