@@ -22,15 +22,16 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
-# Quant System V24 (FINAL)
+# Quant System V25
 # ==============================================================================
-# Phiên bản: V24
-# Bao gồm: V23 core + V24 features (T-M, Q-S-R, H-G, LIQ, các fixes)
-# 
+# Phiên bản: V25
+# Bao gồm: V24 + Xoá 3 widget duplicate:
+#   1. Risk/Reward Calculator (đã có Auto Position Sizing R2 + SL Calc M3)
+#   2. Theo Dõi Lệnh Đang Mở (đã có Position Manager V24 ở sidebar)
+#   3. Equity Curve V23 (đã có T1/T2/T4 + M7 Trade Tracker)
+#
 # QUY TẮC VERSIONING:
-#   - File này là V24 (bản hoàn chỉnh hiện tại)
-#   - Mọi update tiếp theo sẽ tạo file mới: V25, V26, V27, ...
-#   - Mỗi version = 1 file riêng, không đè
+#   - Update tiếp theo: V26 (file mới, không đè)
 # ==============================================================================
 
 
@@ -5917,40 +5918,16 @@ with tab1:
                 st.session_state['_v24_equity_final'] = equity_final_pct
                 st.session_state['_v24_confidence'] = conf_info['stars']
                 st.session_state['_v24_streak'] = streak_info
-                fig_bt = make_subplots(rows=2, cols=1, shared_xaxes=False,
-                                       vertical_spacing=0.1, row_heights=[0.6, 0.4],
-                                       subplot_titles=["📈 Equity Curve (vốn tích lũy)",
-                                                        "🎯 Tín Hiệu Mua trên Biểu Đồ Giá"])
-                # Equity Curve
-                x_eq = list(range(1, len(equity_curve)+1))
-                fig_bt.add_trace(go.Scatter(
-                    x=x_eq, y=equity_curve,
-                    fill='tozeroy',
-                    fillcolor='rgba(0,200,100,0.15)',
-                    line=dict(color='green' if equity_curve[-1] >= 100 else 'red', width=2),
-                    name='Vốn tích lũy',
-                ), row=1, col=1)
-                fig_bt.add_hline(y=100, line_dash='dot', line_color='gray',
-                                  annotation_text="Vốn ban đầu", row=1, col=1)
-                # Đánh dấu lỗ
-                loss_x = [i+1 for i,p in enumerate(profits_list) if p < 0]
-                loss_y = [equity_curve[i] for i in loss_x if i < len(equity_curve)]
-                if loss_x:
-                    fig_bt.add_trace(go.Scatter(
-                        x=[i+1 for i,p in enumerate(profits_list) if p < 0],
-                        y=[equity_curve[i] for i,p in enumerate(profits_list) if p < 0],
-                        mode='markers', marker=dict(color='red', size=6, symbol='x'),
-                        name='Lệnh lỗ',
-                    ), row=1, col=1)
-                # Signal markers trên biểu đồ giá
+                # [V25] Đã xoá Equity Curve (V23) — dùng T1/T2/T4 ở Section A + M7 Equity thực ở sidebar
+                # Chỉ giữ Signal markers trên biểu đồ giá (vẫn hữu ích để xem entry points)
+                fig_bt = go.Figure()
                 chart_bt = df.tail(CHART_DAYS)
                 _x_chart_bt = get_date_col(chart_bt)
                 fig_bt.add_trace(go.Scatter(
                     x=_x_chart_bt, y=chart_bt['close'],
                     line=dict(color='gray', width=1.5), name='Giá đóng cửa',
-                ), row=2, col=1)
+                ))
                 if signals_data:
-                    # Chỉ lấy signals trong CHART_DAYS gần nhất
                     if _x_chart_bt is not None and hasattr(_x_chart_bt, 'astype'):
                         chart_dates = set(_x_chart_bt.astype(str).str[:10].tolist())
                     else:
@@ -5967,15 +5944,15 @@ with tab1:
                             marker=dict(color=color_m, size=12, symbol=symbol_m),
                             name=f"{sig['result']} {sig['pnl']*100:+.1f}%",
                             showlegend=False,
-                        ), row=2, col=1)
+                        ))
                 fig_bt.update_layout(
-                    height=600, template='plotly_white',
+                    title="🎯 Tín Hiệu Mua trên Biểu Đồ Giá",
+                    height=400, template='plotly_white',
                     margin=dict(l=20, r=20, t=50, b=20),
                     showlegend=True,
                     legend=dict(orientation='h', yanchor='bottom', y=1.02),
+                    yaxis_title="Giá",
                 )
-                fig_bt.update_yaxes(title_text="% Vốn", row=1, col=1)
-                fig_bt.update_yaxes(title_text="Giá",   row=2, col=1)
                 st.plotly_chart(fig_bt, use_container_width=True)
                 st.caption(
                     f"🟢 Tam giác xanh = lệnh thắng | 🔴 Tam giác đỏ = lệnh thua | 🟠 = hết kỳ hạn | "
@@ -6245,61 +6222,8 @@ with tab1:
             ef = {'success': st.success, 'warning': st.warning, 'error': st.error}
             ef.get(entry_info['entry_color'], st.info)(entry_info['entry_status'])
         st.divider()
-        # ── [#5] RISK/REWARD CALCULATOR ──
-        st.write("### 💰 Risk/Reward Calculator")
-        rr_c1, rr_c2, rr_c3 = st.columns(3)
-        current_price_val = float(last_s['close']) if last_s is not None else 0.0
-        capital_input = rr_c1.number_input("Vốn (VNĐ):", min_value=0, value=100_000_000,
-                                            step=10_000_000, format="%d")
-        entry_input   = rr_c2.number_input("Giá vào:", min_value=0.0,
-                                            value=float(current_price_val), step=100.0)
-        sl_input      = rr_c3.number_input("Giá SL:", min_value=0.0,
-                                            value=float(entry_info.get('sl', current_price_val*0.93)) if entry_info else current_price_val*0.93,
-                                            step=100.0)
-        rr_c4, rr_c5 = st.columns(2)
-        rr_ratio   = rr_c4.slider("R:R mục tiêu:", 1.0, 5.0, 2.0, 0.5)
-        risk_pct   = rr_c5.slider("% Vốn chấp nhận mất:", 0.5, 5.0, 2.0, 0.5)
-        if entry_input > 0 and sl_input > 0 and sl_input < entry_input:
-            rr   = calc_rr(entry_input, sl_input, rr_ratio)
-            pos  = calc_position_size(capital_input, risk_pct, entry_input, sl_input)
-            r1, r2, r3, r4, r5 = st.columns(5)
-            r1.metric("📦 Số CP",         f"{pos['shares']:,}")
-            r2.metric("💵 Giá trị lệnh",  f"{pos['total_value']/1e6:.1f}M",
-                      delta=f"{pos['capital_pct']:.1f}% vốn", delta_color="off")
-            r3.metric("🛡️ Rủi ro tối đa", f"{pos['risk_amount']/1e6:.1f}M",
-                      delta=f"-{risk_pct}% vốn", delta_color="inverse")
-            r4.metric(f"🎯 TP (R:R={rr_ratio})", f"{rr['tp_custom']:,.0f}",
-                      delta=f"+{rr['tp_pct_rr2']:.1f}% (R:R=2)", delta_color="normal")
-            r5.metric("🎯 TP (R:R=3)",    f"{rr['tp_rr3']:,.0f}",
-                      delta=f"+{rr['tp_pct_rr3']:.1f}%", delta_color="normal")
-        else:
-            st.caption("Nhập giá vào và giá SL hợp lệ (SL < giá vào) để tính.")
-        st.divider()
-        # ── [#2] TRADE JOURNAL ──
-        st.write("### 📒 Theo Dõi Lệnh Đang Mở")
-        tj1, tj2, tj3, tj4 = st.columns(4)
-        tj_entry  = tj1.number_input("Giá đã mua:", min_value=0.0, value=0.0, step=100.0, key="tj_entry")
-        tj_shares = tj2.number_input("Số CP:", min_value=0, value=0, step=100, key="tj_shares")
-        tj_sl     = tj3.number_input("SL đặt:", min_value=0.0, value=0.0, step=100.0, key="tj_sl")
-        tj_tp     = tj4.number_input("TP đặt:", min_value=0.0, value=0.0, step=100.0, key="tj_tp")
-        if tj_entry > 0 and tj_shares > 0 and tj_sl > 0 and tj_tp > 0:
-            cur_p = float(last_s['close']) if last_s is not None else tj_entry
-            tj    = calc_open_trade(tj_entry, tj_shares, tj_sl, tj_tp, cur_p)
-            jc1, jc2, jc3, jc4, jc5 = st.columns(5)
-            jc1.metric("Giá hiện tại",   f"{cur_p:,.0f}")
-            jc2.metric("P&L (VNĐ)",      f"{tj['pnl_total']:,.0f}",
-                       delta=f"{tj['pnl_pct']:+.2f}%",
-                       delta_color="normal" if tj['pnl_pct']>0 else "inverse")
-            jc3.metric("Cách SL",        f"{tj['dist_to_sl']:+.2f}%",
-                       delta_color="inverse" if tj['dist_to_sl'] < 1 else "off")
-            jc4.metric("Cách TP",        f"{tj['dist_to_tp']:+.2f}%",
-                       delta_color="normal" if tj['dist_to_tp'] > 0 else "off")
-            jc5.metric("R:R hiện tại",   f"{tj['rr_current']:.2f}x", delta_color="off")
-            jfn = {'success': st.success, 'warning': st.warning, 'error': st.error}
-            jfn.get(tj['status_color'], st.info)(tj['status'])
-        else:
-            st.caption("Nhập thông tin lệnh để theo dõi P&L real-time.")
-        st.divider()
+        # [V25] Đã xoá Risk/Reward Calculator (V23) — dùng Auto Position Sizing R2 + Stop-Loss Calc M3 thay thế
+        # [V25] Đã xoá Trade Journal Theo Dõi Lệnh Đang Mở (V23) — dùng Position Manager V24 ở sidebar
         # ── [#6] SEASONALITY ──
         st.write("### 📅 Phân Tích Mùa Vụ — Mã Này Thường Tăng/Giảm Tháng Nào?")
         if season_df is not None and len(season_df) > 0:
