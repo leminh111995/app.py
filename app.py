@@ -256,6 +256,9 @@ def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = [str(c[0]).lower() for c in df.columns]
     else:
         df.columns = [str(c).lower() for c in df.columns]
+    # [FIX] Vnstock 3.2.6 dùng 'time' thay vì 'date' → auto-rename để code cũ dùng được
+    if 'time' in df.columns and 'date' not in df.columns:
+        df = df.rename(columns={'time': 'date'})
     return df
 def valid(df) -> bool:
     return df is not None and not df.empty
@@ -7192,7 +7195,13 @@ with tab3:
         # OBV chart vs Price
         fig_obv = make_subplots(rows=2, cols=1, shared_xaxes=True,
                                 vertical_spacing=0.05, row_heights=[0.5, 0.5])
-        x_obv = df_obv2['date']
+        # [FIX] Vnstock 3.2.6 trả về cột 'time' (không phải 'date'); yfinance trả 'date'
+        if 'date' in df_obv2.columns:
+            x_obv = df_obv2['date']
+        elif 'time' in df_obv2.columns:
+            x_obv = df_obv2['time']
+        else:
+            x_obv = df_obv2.index
         fig_obv.add_trace(go.Scatter(
             x=x_obv, y=df_obv2['close'],
             line=dict(color='royalblue', width=2), name='Giá'
