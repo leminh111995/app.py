@@ -256,10 +256,38 @@ def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = [str(c[0]).lower() for c in df.columns]
     else:
         df.columns = [str(c).lower() for c in df.columns]
-    # [FIX] Vnstock 3.2.6 dùng 'time' thay vì 'date' → auto-rename để code cũ dùng được
-    if 'time' in df.columns and 'date' not in df.columns:
-        df = df.rename(columns={'time': 'date'})
+    # [FIX] Vnstock 3.2.6 dùng 'time' thay vì 'date' → auto-rename
+    # Hỗ trợ nhiều biến thể: time, Time, TIME, datetime, trading_date
+    rename_map = {}
+    if 'date' not in df.columns:
+        for alt in ['time', 'datetime', 'trading_date', 'tradingdate', 'tradedate']:
+            if alt in df.columns:
+                rename_map[alt] = 'date'
+                break
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    # Nếu index là DatetimeIndex và không có cột date → reset index thành cột date
+    if 'date' not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+        df = df.reset_index()
+        if 'index' in df.columns:
+            df = df.rename(columns={'index': 'date'})
     return df
+
+
+def get_date_col(df: pd.DataFrame):
+    """[FIX] Lấy series date an toàn từ DataFrame.
+    Thử nhiều tên: date → time → index."""
+    if df is None or df.empty:
+        return None
+    if 'date' in df.columns:
+        return df['date']
+    if 'time' in df.columns:
+        return df['time']
+    # Fallback: dùng index nếu là DatetimeIndex
+    if isinstance(df.index, pd.DatetimeIndex):
+        return df.index
+    # Cuối cùng: index mặc định (integer)
+    return df.index
 def valid(df) -> bool:
     return df is not None and not df.empty
 def to_billion(val) -> float:
@@ -5887,13 +5915,17 @@ with tab1:
                     ), row=1, col=1)
                 # Signal markers trên biểu đồ giá
                 chart_bt = df.tail(CHART_DAYS)
+                _x_chart_bt = get_date_col(chart_bt)
                 fig_bt.add_trace(go.Scatter(
-                    x=chart_bt['date'], y=chart_bt['close'],
+                    x=_x_chart_bt, y=chart_bt['close'],
                     line=dict(color='gray', width=1.5), name='Giá đóng cửa',
                 ), row=2, col=1)
                 if signals_data:
                     # Chỉ lấy signals trong CHART_DAYS gần nhất
-                    chart_dates = set(chart_bt['date'].astype(str).str[:10].tolist())
+                    if _x_chart_bt is not None and hasattr(_x_chart_bt, 'astype'):
+                        chart_dates = set(_x_chart_bt.astype(str).str[:10].tolist())
+                    else:
+                        chart_dates = set()
                     for sig in signals_data:
                         d = str(sig['date'])[:10]
                         if d not in chart_dates:
@@ -6025,7 +6057,7 @@ with tab1:
             # --- Master Chart ---
             st.write("### 📊 Biểu Đồ Kỹ Thuật Đa Lớp (VWAP + Ichimoku)")
             chart = df.tail(CHART_DAYS)
-            x     = chart['date']
+            x     = get_date_col(chart)
             fig   = make_subplots(rows=3, cols=1, shared_xaxes=True,
                                   vertical_spacing=0.03, row_heights=[0.60, 0.20, 0.20])
             fig.add_trace(go.Candlestick(
@@ -6982,7 +7014,11 @@ with tab3:
     # Tạo timeline chung từ price data (đảm bảo luôn có ngày)
     price_dates = []
     if valid(df_price_flow) and 'date' in df_price_flow.columns:
-        price_dates = [str(d)[:10] for d in df_price_flow['date'].tail(10).tolist()]
+        _dt_pf = get_date_col(df_price_flow)
+        if _dt_pf is not None:
+            price_dates = [str(d)[:10] for d in _dt_pf.tail(10).tolist()]
+        else:
+            price_dates = []
     # Hợp nhất ngày từ cả 3 nguồn
     all_dates_set = set(price_dates)
     all_dates_set.update([r['date'] for r in rows_for])
@@ -7002,7 +7038,11 @@ with tab3:
         # Nhỏ Lẻ ước tính = Tổng phiên - Ngoại gross - Tự Doanh gross
         retail_net = 0.0
         if valid(df_price_flow) and 'date' in df_price_flow.columns:
-            day_row = df_price_flow[df_price_flow['date'].astype(str).str[:10] == d]
+            _dt_pf2 = get_date_col(df_price_flow)
+            if _dt_pf2 is not None and hasattr(_dt_pf2, 'astype'):
+                day_row = df_price_flow[_dt_pf2.astype(str).str[:10] == d]
+            else:
+                day_row = pd.DataFrame()
             if not day_row.empty:
                 total_val  = to_billion(day_row.iloc[0]['close'] * day_row.iloc[0]['volume'])
                 inst_gross = (f_buy + f_sell + p_buy + p_sell)
@@ -7978,6 +8018,11 @@ with tab6:
                 columns={'close':'close_vni','return_1d':'ret_vni'})
             df_stk_r = df_stk[['date','close','return_1d']].copy().rename(
                 columns={'close':'close_stk','return_1d':'ret_stk'})
+            # [FIX] Đảm bảo cột date tồn tại
+            if 'date' not in df_vni_r.columns:
+                df_vni_r['date'] = get_date_col(df_vni_r)
+            if 'date' not in df_stk_r.columns:
+                df_stk_r['date'] = get_date_col(df_stk_r)
             df_vni_r['date'] = df_vni_r['date'].astype(str).str[:10]
             df_stk_r['date'] = df_stk_r['date'].astype(str).str[:10]
             df_merged = pd.merge(df_vni_r, df_stk_r, on='date').dropna().tail(63)
@@ -8087,7 +8132,7 @@ with tab6:
                 st.divider()
                 st.write("#### 📊 Biểu Đồ VN-Index (120 Phiên)")
                 chart_vni = df_vni.tail(120)
-                xv = chart_vni['date']
+                xv = get_date_col(chart_vni)
                 fig_vni = make_subplots(rows=2, cols=1, shared_xaxes=True,
                                         vertical_spacing=0.05, row_heights=[0.7, 0.3])
                 fig_vni.add_trace(go.Candlestick(
