@@ -2441,6 +2441,14 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
             st.caption(f"Thị giá: **{row['Thị Giá']}**")
             rs = row.get('RS Raw', 50)
             st.caption(_rs_badge(rs))
+            # [V24-W3] Cảnh báo mã yếu tương đối
+            if rs is not None and rs < 50:
+                st.warning(f"⚠️ YẾU TƯƠNG ĐỐI (RS={rs:.0f}<50) — KHÔNG khuyến nghị mua")
+            # [V24-W2] Hiện lý do bị đẩy xuống Quan Sát
+            if row.get('_liq_warning'):
+                st.caption(row['_liq_warning'])
+            if row.get('_rs_warning'):
+                st.caption(row['_rs_warning'])
         with c2:
             st.metric("🤖 AI T+3", f"{row['AI T+3 Raw']:.1f}%" if _is_valid_score(row['AI T+3 Raw']) else "N/A")
             st.caption(_ai_badge(row['AI T+3 Raw']))
@@ -5145,6 +5153,7 @@ with st.sidebar:
             if positions:
                 total_value = total_cost = 0
                 liq_warnings = []  # [V24-F5] Collect LIQ warnings
+                time_warnings = []  # [V24-E1] Time-based exit warnings
                 for i, pos in enumerate(positions):
                     try:
                         df_p = get_price(pos['ticker'], days=30)
@@ -5163,6 +5172,27 @@ with st.sidebar:
                                     liq_warnings.append(f"**{pos['ticker']}** LIQ giảm xuống LOW")
                             except Exception:
                                 pass
+                            # [V24-E1] Time-based exit cảnh báo
+                            try:
+                                added_str = pos.get('added_at', '')
+                                tier_at_buy = pos.get('tier_at_buy', '')
+                                if added_str:
+                                    added_dt = datetime.strptime(added_str, '%Y-%m-%d %H:%M').replace(tzinfo=TZ_VN)
+                                    days_held = (datetime.now(TZ_VN) - added_dt).days
+                                    # Tầng 3 (Tích Lũy): > 21 ngày mà chưa lời 5%
+                                    if 'Tích Lũy' in tier_at_buy and days_held > 21 and pnl_pct < 5:
+                                        emoji = '⏰'
+                                        time_warnings.append(
+                                            f"**{pos['ticker']}** giữ {days_held} ngày (Tầng 3) chưa break"
+                                        )
+                                    # Tầng 2 (Sẵn Sàng): > 14 ngày mà chưa lời 3%
+                                    elif 'Sẵn Sàng' in tier_at_buy and days_held > 14 and pnl_pct < 3:
+                                        emoji = '⏰'
+                                        time_warnings.append(
+                                            f"**{pos['ticker']}** giữ {days_held} ngày (Tầng 2) chưa xác nhận"
+                                        )
+                            except Exception:
+                                pass
                             pc1, pc2 = st.columns([3, 1])
                             pc1.markdown(f"{emoji} **{pos['ticker']}** ({pos['shares']:,}) "
                                           f"@{pos['entry']:,.0f}→{cur_price:,.0f} ({pnl_pct:+.1f}%)")
@@ -5176,6 +5206,10 @@ with st.sidebar:
                 if liq_warnings:
                     st.warning("⚠️ **Cảnh báo LIQ:** " + "; ".join(liq_warnings)
                                 + " → Cân nhắc thoát sớm để tránh kẹp hàng")
+                # [V24-E1] Hiện cảnh báo time-based
+                if time_warnings:
+                    st.warning("⏰ **Cảnh báo thời gian giữ:** " + "; ".join(time_warnings))
+                    st.caption("Quy tắc: Tầng 2 > 14 ngày chưa break, Tầng 3 > 21 ngày chưa break → đã đợi đủ lâu")
                 if total_cost > 0:
                     total_pnl = total_value - total_cost
                     total_pnl_pct = total_pnl / total_cost * 100
@@ -6659,10 +6693,15 @@ with tab1:
                                   disabled=not (all_checked and qa_reason)):
                     if 'v24_positions' not in st.session_state:
                         st.session_state['v24_positions'] = load_positions_from_file()
+                    # [V24-E1] Lưu thêm tier info để time-based exit
+                    _liq_save = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
+                    _label_save = label if 'label' in dir() else 'UNKNOWN'
                     st.session_state['v24_positions'].append({
                         'ticker': ticker, 'shares': qa_shares, 'entry': qa_entry,
                         'reason': qa_reason,
                         'added_at': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
+                        'tier_at_buy': _label_save,  # Tier lúc mua
+                        'liq_tier_at_buy': _liq_save.get('tier', 'UNKNOWN'),
                     })
                     save_positions_to_file(st.session_state['v24_positions'])
                     st.success(f"✅ Đã thêm {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ + lý do")
@@ -7249,6 +7288,14 @@ with tab3:
 # TAB 4: RADAR TRUY QUÉT
 with tab4:
     st.subheader("🔍 Máy Quét Định Lượng Robot Hunter V22.0 — Predator Leviathan")
+    # [V24-E2] Disclaimer rõ ràng
+    st.info(
+        "📌 **Lưu ý quan trọng:** App này **KHÔNG khuyến nghị mua/bán**. "
+        "Đây là phân tích kỹ thuật để hỗ trợ ra quyết định. "
+        "Mọi rủi ro và kết quả thuộc về bạn. "
+        "Tầng 1/2 = rủi ro thấp hơn; Tầng 3 = rủi ro cao, có thể đợi 2-4 tuần; "
+        "Tầng 4/5 = chỉ theo dõi, KHÔNG mua."
+    )
     st.write(
         "Tự động phân loại thành **3 tầng**: "
         "🚀 **BÙNG NỔ** | ⚖️ **DANH SÁCH CHỜ** | 👁️ **VÙNG QUAN SÁT**"
@@ -7324,6 +7371,12 @@ with tab4:
     st.divider()
     # ── [#1] QUICK PICK ──
     st.write("### 🎯 Quick Pick — Cho Tôi 3 Mã Tốt Nhất Hôm Nay")
+    # [V24-E2] Disclaimer
+    st.caption(
+        "⚠️ Đây là **xếp hạng phân tích kỹ thuật**, KHÔNG phải khuyến nghị mua. "
+        "Kiểm tra RS Rating ≥ 50, Tầng phù hợp, và cảnh báo trong card trước khi quyết định. "
+        "App không chịu trách nhiệm cho mọi quyết định giao dịch."
+    )
     qp_c1, qp_c2 = st.columns([1, 3])
     ai_min_qp = qp_c1.slider("AI T+3 tối thiểu (%):", 35, 65, 45, 5)
     qp_use_diversify = qp_c2.checkbox(
@@ -7495,9 +7548,17 @@ with tab4:
                 except Exception:
                     _is_low_liq = False
 
+                # [V24-W2] Filter RS Rating < 50 (yếu tương đối) ra khỏi Tầng 1/2/3
+                _rs_val = row.get('RS Raw', 50)
+                _is_weak_rs = (_rs_val is not None) and (_rs_val < 50)
+
                 if _is_low_liq:
                     # Mã LIQ_LOW chỉ vào watch_zone (Tầng 4) — không phụ thuộc label
                     row['_liq_warning'] = '🔴 LIQ thấp'
+                    watch_zone.append(row)
+                elif _is_weak_rs and ("Bùng Nổ Mua" in label or "Sẵn Sàng" in label or "Tích Lũy" in label):
+                    # [V24-W2] Mã yếu tương đối (RS < 50) đẩy xuống Quan Sát
+                    row['_rs_warning'] = f'⚠️ RS yếu ({_rs_val:.0f})'
                     watch_zone.append(row)
                 else:
                     # Phân loại bình thường theo label
@@ -7561,6 +7622,16 @@ with tab4:
         st.divider()
         # ── TẦNG 3: CHÂN SÓNG ──
         st.write("### 🌱 Tầng 3 — Đang Tích Lũy Nền (Vào sớm)")
+        # [V24-W1] Warning rõ về rủi ro Tầng 3
+        with st.container(border=True):
+            st.warning(
+                "⚠️ **TẦNG NÀY RỦI RO CAO** — Vào SỚM trước khi mã xác nhận break.\n\n"
+                "📌 **Quy tắc bắt buộc:**\n"
+                "• Size nhỏ: chỉ 10–15% vốn cho 1 mã\n"
+                "• SL CHẶT: -5% (không phải -7% như mã Tầng 2)\n"
+                "• Kiên nhẫn: có thể đợi **2–4 tuần** mới có kết quả\n"
+                "• Chỉ vào nếu RS Rating ≥ 50 (tránh mã yếu tương đối)"
+            )
         st.caption("Đang tích lũy nền. Vào nhỏ 10–15% vốn, SL chặt theo ATR.")
         if wave_bottom:
             if use_cards:
