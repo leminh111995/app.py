@@ -22,17 +22,16 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
-# Quant System V26
+# Quant System V27
 # ==============================================================================
-# Phiên bản: V26
-# Bao gồm: V25 + Xoá tiếp các phần backtest UI không cần:
-#   - Xoá Metrics 4+3 (Winrate, Sharpe, Max DD, Tín hiệu BT, ...)
-#   - Xoá Chart signal markers backtest
-#   - GIỮ T1 (cảnh báo equity âm), T2 (Win/Loss streak), T4 (Confidence ⭐)
-#   - Lý do: T1/T2/T4 hữu ích để ngăn mua mã có backtest âm
+# Phiên bản: V27
+# Bao gồm: V26 + Fix bug:
+#   - KeyError 'date' trong "Tương quan ACB vs VN-Index"
+#   - Helper ensure_date_col() đảm bảo cột date tồn tại trước khi dùng
+#   - Fix lỗi Thanh Khoản hiển thị 0.0 Tỷ (do thiếu cột date)
 #
 # QUY TẮC VERSIONING:
-#   - Update tiếp theo: V27 (file mới, không đè)
+#   - Update tiếp theo: V28 (file mới, không đè)
 # ==============================================================================
 
 
@@ -303,6 +302,27 @@ def get_date_col(df: pd.DataFrame):
         return df.index
     # Cuối cùng: index mặc định (integer)
     return df.index
+
+
+def ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
+    """[V27-FIX] Đảm bảo DataFrame có cột 'date' để truy cập an toàn.
+    Nếu cột 'date' không tồn tại, tự động tạo từ 'time' hoặc index.
+    Trả về DataFrame mới (không modify in-place)."""
+    if df is None or df.empty:
+        return df
+    if 'date' in df.columns:
+        return df
+    df2 = df.copy()
+    if 'time' in df2.columns:
+        df2['date'] = df2['time']
+    elif isinstance(df2.index, pd.DatetimeIndex):
+        df2 = df2.reset_index()
+        if 'index' in df2.columns:
+            df2 = df2.rename(columns={'index': 'date'})
+    else:
+        # Tạo date giả từ index (integer) — fallback cuối
+        df2['date'] = df2.index
+    return df2
 def valid(df) -> bool:
     return df is not None and not df.empty
 def to_billion(val) -> float:
@@ -2642,7 +2662,11 @@ def is_data_fresh(df, max_days_old: int = MAX_DATA_DAYS_OLD) -> bool:
     if not valid(df) or 'date' not in df.columns:
         return False
     try:
-        last_date = pd.to_datetime(df['date'].iloc[-1])
+        # [V27-FIX] Use get_date_col để tránh KeyError
+        _date_series = get_date_col(df)
+        if _date_series is None or len(_date_series) == 0:
+            return None
+        last_date = pd.to_datetime(_date_series.iloc[-1] if hasattr(_date_series, 'iloc') else _date_series[-1])
         days_old = (datetime.now() - last_date).days
         return days_old <= max_days_old
     except Exception:
@@ -7913,19 +7937,25 @@ with tab6:
         if not valid(df_stk):
             st.warning(f"⚠️ Không lấy được dữ liệu giá {ticker}.")
         else:
-            # Ghép 2 df theo ngày
-            df_vni_r = df_vni[['date','close','return_1d']].copy().rename(
-                columns={'close':'close_vni','return_1d':'ret_vni'})
-            df_stk_r = df_stk[['date','close','return_1d']].copy().rename(
-                columns={'close':'close_stk','return_1d':'ret_stk'})
-            # [FIX] Đảm bảo cột date tồn tại
-            if 'date' not in df_vni_r.columns:
-                df_vni_r['date'] = get_date_col(df_vni_r)
-            if 'date' not in df_stk_r.columns:
-                df_stk_r['date'] = get_date_col(df_stk_r)
-            df_vni_r['date'] = df_vni_r['date'].astype(str).str[:10]
-            df_stk_r['date'] = df_stk_r['date'].astype(str).str[:10]
-            df_merged = pd.merge(df_vni_r, df_stk_r, on='date').dropna().tail(63)
+            # [V27-FIX] Đảm bảo cột date tồn tại TRƯỚC khi truy cập columns
+            df_vni_safe = ensure_date_col(df_vni)
+            df_stk_safe = ensure_date_col(df_stk)
+            # Kiểm tra columns cần thiết
+            req_cols = ['date', 'close', 'return_1d']
+            missing_vni = [c for c in req_cols if c not in df_vni_safe.columns]
+            missing_stk = [c for c in req_cols if c not in df_stk_safe.columns]
+            if missing_vni or missing_stk:
+                st.warning(f"⚠️ Dữ liệu thiếu cột: VNI={missing_vni}, {ticker}={missing_stk}")
+                df_merged = pd.DataFrame()
+            else:
+                # Ghép 2 df theo ngày
+                df_vni_r = df_vni_safe[['date','close','return_1d']].copy().rename(
+                    columns={'close':'close_vni','return_1d':'ret_vni'})
+                df_stk_r = df_stk_safe[['date','close','return_1d']].copy().rename(
+                    columns={'close':'close_stk','return_1d':'ret_stk'})
+                df_vni_r['date'] = df_vni_r['date'].astype(str).str[:10]
+                df_stk_r['date'] = df_stk_r['date'].astype(str).str[:10]
+                df_merged = pd.merge(df_vni_r, df_stk_r, on='date').dropna().tail(63)
             if len(df_merged) < 20:
                 st.warning("⚠️ Không đủ dữ liệu chung để tính tương quan.")
             else:
