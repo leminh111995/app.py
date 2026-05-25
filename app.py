@@ -22,16 +22,17 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
-# Quant System V25
+# Quant System V26
 # ==============================================================================
-# Phiên bản: V25
-# Bao gồm: V24 + Xoá 3 widget duplicate:
-#   1. Risk/Reward Calculator (đã có Auto Position Sizing R2 + SL Calc M3)
-#   2. Theo Dõi Lệnh Đang Mở (đã có Position Manager V24 ở sidebar)
-#   3. Equity Curve V23 (đã có T1/T2/T4 + M7 Trade Tracker)
+# Phiên bản: V26
+# Bao gồm: V25 + Xoá tiếp các phần backtest UI không cần:
+#   - Xoá Metrics 4+3 (Winrate, Sharpe, Max DD, Tín hiệu BT, ...)
+#   - Xoá Chart signal markers backtest
+#   - GIỮ T1 (cảnh báo equity âm), T2 (Win/Loss streak), T4 (Confidence ⭐)
+#   - Lý do: T1/T2/T4 hữu ích để ngăn mua mã có backtest âm
 #
 # QUY TẮC VERSIONING:
-#   - Update tiếp theo: V26 (file mới, không đè)
+#   - Update tiếp theo: V27 (file mới, không đè)
 # ==============================================================================
 
 
@@ -5862,23 +5863,8 @@ with tab1:
             elif "💡" in sr['warning']: st.success(sr['warning'])
             else:                       st.warning(sr['warning'])
             st.divider()
-            # --- [NÂNG CẤP #14] Backtest đầy đủ ---
-            st.write("### 📋 Kết Quả Backtest Thực Tế (Đã trừ phí + slippage)")
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("Winrate",         f"{bt['winrate']}%")
-            b2.metric("TB lời / lệnh",   f"+{bt['avg_profit']:.2f}%")
-            b3.metric("TB lỗ / lệnh",    f"{bt['avg_loss']:.2f}%")
-            b4.metric("Kỳ Vọng / Lệnh",  f"{bt['expectancy']:+.2f}%",
-                      delta="Dương ✓" if bt['expectancy'] > 0 else "Âm ⚠️",
-                      delta_color="normal" if bt['expectancy'] > 0 else "inverse")
-            b5, b6, b7 = st.columns(3)
-            b5.metric("📈 Sharpe Ratio", f"{bt['sharpe']:.2f}",
-                      delta="Tốt (>1)" if bt['sharpe'] > 1 else ("OK (>0)" if bt['sharpe'] > 0 else "Âm ⚠️"),
-                      delta_color="normal" if bt['sharpe'] > 0 else "inverse")
-            b6.metric("📉 Max Drawdown", f"{bt['max_drawdown']:.2f}%",
-                      delta="Rủi ro cao" if bt['max_drawdown'] < -20 else "Chấp nhận được",
-                      delta_color="inverse" if bt['max_drawdown'] < -20 else "off")
-            b7.metric("📊 Tín hiệu BT",  f"{bt['signals']} lệnh")
+            # [V26] Đã xoá Metrics 4+3 (Winrate, Sharpe, DD, Tín hiệu BT) — không cần xem
+            # GIỮ T1/T2/T4 bên dưới để cảnh báo backtest âm
             # ── #1 EQUITY CURVE + #5 SIGNAL MARKERS ──
             profits_list  = bt.get('profits', [])
             signals_data  = bt.get('signals_data', [])
@@ -5918,46 +5904,7 @@ with tab1:
                 st.session_state['_v24_equity_final'] = equity_final_pct
                 st.session_state['_v24_confidence'] = conf_info['stars']
                 st.session_state['_v24_streak'] = streak_info
-                # [V25] Đã xoá Equity Curve (V23) — dùng T1/T2/T4 ở Section A + M7 Equity thực ở sidebar
-                # Chỉ giữ Signal markers trên biểu đồ giá (vẫn hữu ích để xem entry points)
-                fig_bt = go.Figure()
-                chart_bt = df.tail(CHART_DAYS)
-                _x_chart_bt = get_date_col(chart_bt)
-                fig_bt.add_trace(go.Scatter(
-                    x=_x_chart_bt, y=chart_bt['close'],
-                    line=dict(color='gray', width=1.5), name='Giá đóng cửa',
-                ))
-                if signals_data:
-                    if _x_chart_bt is not None and hasattr(_x_chart_bt, 'astype'):
-                        chart_dates = set(_x_chart_bt.astype(str).str[:10].tolist())
-                    else:
-                        chart_dates = set()
-                    for sig in signals_data:
-                        d = str(sig['date'])[:10]
-                        if d not in chart_dates:
-                            continue
-                        color_m = 'green' if sig['result']=='WIN' else ('red' if sig['result']=='LOSS' else 'orange')
-                        symbol_m= 'triangle-up' if sig['result']=='WIN' else 'triangle-down'
-                        fig_bt.add_trace(go.Scatter(
-                            x=[d], y=[sig['price']],
-                            mode='markers',
-                            marker=dict(color=color_m, size=12, symbol=symbol_m),
-                            name=f"{sig['result']} {sig['pnl']*100:+.1f}%",
-                            showlegend=False,
-                        ))
-                fig_bt.update_layout(
-                    title="🎯 Tín Hiệu Mua trên Biểu Đồ Giá",
-                    height=400, template='plotly_white',
-                    margin=dict(l=20, r=20, t=50, b=20),
-                    showlegend=True,
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                    yaxis_title="Giá",
-                )
-                st.plotly_chart(fig_bt, use_container_width=True)
-                st.caption(
-                    f"🟢 Tam giác xanh = lệnh thắng | 🔴 Tam giác đỏ = lệnh thua | 🟠 = hết kỳ hạn | "
-                    f"Phí: {ROUND_TRIP_COST*100:.2f}%/lệnh"
-                )
+                # [V26] Đã xoá Chart signal markers backtest — không cần xem
             st.divider()
             # --- Chỉ số kỹ thuật ---
             st.write("### 🎛️ Bảng Chỉ Số Kỹ Thuật")
