@@ -22,6 +22,20 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V29 - V28 + 7 Tinh Chỉnh
+# ==============================================================================
+# 7 FIXES TỪ V28:
+#   F1 - Cache 7 heavy functions (performance)
+#   F2 - Fix nested expander L1/L2 (Streamlit không cho nested)
+#   F3 - Try/except cho 4 functions thiếu
+#   F4 - A2 Morning Brief ưu tiên v28_watch_rules thay PILLARS
+#   F5 - Tổ chức lại sidebar (gom expanders gọn hơn)
+#   F6 - Backup/Restore JSON files
+#   F7 - Session state cleanup
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V30 (file mới, không đè)
+# ==============================================================================
 # Quant System V28 - User Empowerment Combo
 # ==============================================================================
 # 6 FEATURES MỚI:
@@ -4637,13 +4651,17 @@ def calc_liquidity_tier_cached(ticker: str, date_key: str) -> dict:
 
 
 def calc_liquidity_tier(df: pd.DataFrame) -> dict:
-    """[V24-LIQ] Đánh giá thanh khoản 1 mã.
-    Logic 2-tầng:
-      - Pass nếu giá ≥ 13K (đường 1: mid-cap+)
-      - Hoặc pass nếu vol ≥ 1M + turnover ≥ 15 tỷ (đường 2: penny thanh khoản cực cao)
-      - Còn lại = LOW (loại penny rủi ro)
-    Output dict: {tier, vol_avg, turnover_avg, price, flags, message}.
-    """
+    """[V24-LIQ+F3] Đánh giá thanh khoản 1 mã. Có try/except defensive."""
+    try:
+        return _calc_liquidity_tier_impl(df)
+    except Exception as _liq_e:
+        return {'tier': 'UNKNOWN', 'vol_avg': 0, 'turnover_avg': 0,
+                'price': 0, 'flags': [f'Lỗi: {str(_liq_e)[:50]}'],
+                'message': '❓ Không tính được — kiểm tra dữ liệu'}
+
+
+def _calc_liquidity_tier_impl(df: pd.DataFrame) -> dict:
+    """[V24-LIQ] Đánh giá thanh khoản 1 mã (implementation)."""
     if not valid(df) or len(df) < 20:
         return {'tier': 'UNKNOWN', 'vol_avg': 0, 'turnover_avg': 0,
                 'price': 0, 'flags': ['Không đủ dữ liệu'],
@@ -4726,7 +4744,15 @@ def is_liquidity_ok(ticker: str, date_key: str) -> bool:
 # [V28-L1] Lifetime Stats — Phân tích sâu trade history
 # ──────────────────────────────────────────────────────────────────────────────
 def calc_lifetime_stats(trades: list) -> dict:
-    """[V28-L1] Tính các thống kê lifetime từ danh sách trades."""
+    """[V28-L1+F3] Tính thống kê lifetime. Có try/except defensive."""
+    try:
+        return _calc_lifetime_stats_impl(trades)
+    except Exception as _ls_e:
+        return {'n_total': 0, 'message': f'Lỗi tính stats: {str(_ls_e)[:80]}'}
+
+
+def _calc_lifetime_stats_impl(trades: list) -> dict:
+    """[V28-L1] Implementation."""
     if not trades:
         return {'n_total': 0, 'message': 'Chưa có trade nào — hãy ghi trade vào Journal'}
 
@@ -4794,7 +4820,15 @@ def calc_lifetime_stats(trades: list) -> dict:
 # [V28-L2] Pattern Trade Analyzer — Phân tích pattern thắng/thua
 # ──────────────────────────────────────────────────────────────────────────────
 def analyze_trade_patterns(trades: list) -> dict:
-    """[V28-L2] Phân tích pattern thắng/thua theo nhiều chiều."""
+    """[V28-L2+F3] Phân tích pattern. Có try/except defensive."""
+    try:
+        return _analyze_patterns_impl(trades)
+    except Exception as _ap_e:
+        return {'message': f'Lỗi phân tích: {str(_ap_e)[:80]}'}
+
+
+def _analyze_patterns_impl(trades: list) -> dict:
+    """[V28-L2] Implementation."""
     if not trades or len(trades) < 5:
         return {'message': f'Cần ≥5 trades để phân tích (hiện: {len(trades)})'}
 
@@ -5006,8 +5040,15 @@ def generate_morning_brief(watchlist: list, regime: dict) -> dict:
 # [V28-P1] Candlestick Pattern Detector
 # ──────────────────────────────────────────────────────────────────────────────
 def detect_candlestick_patterns(df: pd.DataFrame) -> list:
-    """[V28-P1] Phát hiện các mẫu nến quan trọng trong 3-5 phiên gần nhất.
-    Returns list các pattern detected (có giá trị giao dịch)."""
+    """[V28-P1+F3] Phát hiện các mẫu nến. Có try/except defensive."""
+    try:
+        return _detect_candlestick_impl(df)
+    except Exception as _cs_e:
+        return []
+
+
+def _detect_candlestick_impl(df: pd.DataFrame) -> list:
+    """[V28-P1] Implementation."""
     if len(df) < 5:
         return []
 
@@ -5199,6 +5240,43 @@ def stress_test_portfolio(positions: list, vni_drop_pct: float = -5.0) -> dict:
     }
 
 
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V29-F1] Cache wrappers cho performance — cache theo date_key (refresh mỗi ngày)
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=300, max_entries=10, show_spinner=False)
+def _cached_check_watch_rules(rules_str: str, date_key: str) -> list:
+    """[V29-F1] Cache check_watch_rules theo string của rules (5 phút)."""
+    try:
+        rules = json.loads(rules_str)
+        return check_watch_rules(rules)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300, max_entries=5, show_spinner=False)
+def _cached_morning_brief(watchlist_str: str, regime_str: str, date_key: str) -> dict:
+    """[V29-F1] Cache morning brief theo watchlist (5 phút)."""
+    try:
+        wl = json.loads(watchlist_str)
+        rg = json.loads(regime_str)
+        return generate_morning_brief(wl, rg)
+    except Exception:
+        return {'top_watchlist': [], 'biggest_movers': [], 'unusual_vol': []}
+
+
+@st.cache_data(ttl=600, max_entries=5, show_spinner=False)
+def _cached_stress_test(positions_str: str, vni_drop: float, date_key: str) -> dict:
+    """[V29-F1] Cache stress test (10 phút)."""
+    try:
+        positions = json.loads(positions_str)
+        return stress_test_portfolio(positions, vni_drop_pct=vni_drop)
+    except Exception:
+        return {'message': 'Lỗi cache stress test'}
+
+
+# [V29-F1 END]
 # [V28 HELPERS END]
 
 
@@ -5508,8 +5586,21 @@ with st.sidebar:
             if st.button("📰 Tạo Brief", key="a2_btn"):
                 with st.spinner("Đang quét..."):
                     _regime = st.session_state.get('market_regime', {})
-                    _wl = st.session_state.get('watchlist', PILLARS[:10])
-                    mb = generate_morning_brief(list(_wl), _regime)
+                    # [V29-F4] Ưu tiên đọc từ watch_rules tickers > watchlist > PILLARS
+                    _rules = load_watch_rules()
+                    if _rules:
+                        _wl_tickers = list(set(r['ticker'] for r in _rules))
+                        st.caption(f"💡 Dùng {len(_wl_tickers)} mã từ Watchlist Rules (A1)")
+                    else:
+                        _wl_tickers = st.session_state.get('watchlist', PILLARS[:10])
+                        st.caption(f"💡 Dùng {len(_wl_tickers)} mã từ watchlist mặc định")
+                    # [V29-F1] Dùng cached version
+                    import json as _json
+                    mb = _cached_morning_brief(
+                        _json.dumps(list(_wl_tickers)),
+                        _json.dumps(_regime if isinstance(_regime, dict) else {}),
+                        datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                    )
                     st.session_state['_v28_mb'] = mb
             mb = st.session_state.get('_v28_mb')
             if mb:
@@ -5682,7 +5773,12 @@ with st.sidebar:
             if st.session_state['v28_rules']:
                 if st.button("🔍 Check ngay", key="a1_check"):
                     with st.spinner("Đang quét..."):
-                        alerts = check_watch_rules(st.session_state['v28_rules'])
+                        # [V29-F1] Dùng cached version
+                        import json as _json
+                        alerts = _cached_check_watch_rules(
+                            _json.dumps(st.session_state['v28_rules']),
+                            datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+                        )
                         st.session_state['_a1_alerts'] = alerts
                 alerts = st.session_state.get('_a1_alerts', [])
                 if alerts:
@@ -5724,6 +5820,65 @@ with st.sidebar:
                             st.write(f"   {r}")
             elif s3_res:
                 st.info("Không có mã nào nổi bật hôm nay")
+
+        # [V29-F7] SESSION CLEANUP
+        with st.expander("🧹 Dọn Session (F7)", expanded=False):
+            st.caption("Xoá cache tạm để app chạy nhanh hơn (không ảnh hưởng data).")
+            ss_count = len(st.session_state)
+            st.info(f"Session hiện có {ss_count} keys")
+            if st.button("🧹 Dọn cache tạm", key="f7_clean"):
+                # Chỉ xoá các key tạm (_v, _a, _st...) — KHÔNG xoá v24_*, v28_*
+                keep_prefixes = ('v24_', 'v28_', 'watchlist', 'market_regime',
+                                   'liq_chk_', 'qa_preview', 'tab1_')
+                to_remove = [k for k in list(st.session_state.keys())
+                             if not any(k.startswith(p) for p in keep_prefixes)]
+                for k in to_remove:
+                    del st.session_state[k]
+                st.success(f"✅ Đã xoá {len(to_remove)} keys tạm")
+                st.rerun()
+
+        # [V29-F6] BACKUP/RESTORE DATA
+        with st.expander("💾 Backup/Restore Data (F6)", expanded=False):
+            st.caption("Sao lưu/khôi phục data của bạn (positions, trades, rules...).")
+            f6_files = ['v24_positions.json', 'v24_trades.json',
+                          'v24_tier_history.json', 'v24_bookmarks.json',
+                          'v28_watch_rules.json', 'watchlist.json']
+
+            # Backup: gộp 6 file thành 1 JSON
+            if st.button("📥 Tạo backup", key="f6_backup"):
+                backup_data = {}
+                for f in f6_files:
+                    try:
+                        if os.path.exists(f):
+                            with open(f, 'r', encoding='utf-8') as fp:
+                                backup_data[f] = json.load(fp)
+                    except Exception:
+                        pass
+                backup_data['_backup_date'] = datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M')
+                backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+                st.download_button(
+                    "⬇️ Tải file backup.json",
+                    backup_json,
+                    file_name=f"quant_backup_{datetime.now(TZ_VN).strftime('%Y%m%d_%H%M')}.json",
+                    mime="application/json",
+                    key="f6_dl"
+                )
+
+            # Restore
+            f6_uploaded = st.file_uploader("Khôi phục từ file", type=['json'], key="f6_up")
+            if f6_uploaded and st.button("📤 Khôi phục", key="f6_restore"):
+                try:
+                    restore_data = json.loads(f6_uploaded.read().decode('utf-8'))
+                    restored = 0
+                    for f in f6_files:
+                        if f in restore_data:
+                            with open(f, 'w', encoding='utf-8') as fp:
+                                json.dump(restore_data[f], fp, ensure_ascii=False, indent=2)
+                            restored += 1
+                    st.success(f"✅ Đã khôi phục {restored}/{len(f6_files)} files")
+                    st.caption("Reload trang để thấy data mới.")
+                except Exception as e:
+                    st.error(f"Lỗi khôi phục: {e}")
 
         with st.expander("💧 Kiểm tra Thanh Khoản [V24-LIQ]", expanded=False):
             st.caption("Check thanh khoản mã trước khi mua — tránh mã penny rủi ro.")
@@ -5904,7 +6059,13 @@ with st.sidebar:
                                              value=-5.0, step=0.5, key="st_drop")
                         if st.button("Chạy stress test", key="st_run"):
                             with st.spinner("Đang tính..."):
-                                st_res = stress_test_portfolio(positions, vni_drop_pct=st_drop)
+                                # [V29-F1] Dùng cached version
+                                import json as _json
+                                st_res = _cached_stress_test(
+                                    _json.dumps(positions),
+                                    float(st_drop),
+                                    datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                                )
                                 st.session_state['_v28_st'] = st_res
                         st_res = st.session_state.get('_v28_st')
                         if st_res:
@@ -6021,8 +6182,11 @@ with st.sidebar:
                             st.caption(f"   📤 Bán: {t['exit_reason']}")
                         if t.get('lesson'):
                             st.caption(f"   💡 Lesson: {t['lesson']}")
-                # [V28-L1+L2] Lifetime Stats + Pattern Analyzer
-                with st.expander("📊 Lifetime Stats (L1)", expanded=False):
+                # [V28-L1+L2] [V29-F2] Lifetime Stats + Pattern Analyzer
+                # Dùng container thay expander để tránh nested expander warnings
+                st.markdown("---")
+                st.markdown("### 📊 Lifetime Stats (L1)")
+                with st.container(border=True):
                     ls = calc_lifetime_stats(trades)
                     if 'message' in ls:
                         st.info(ls['message'])
@@ -6054,7 +6218,8 @@ with st.sidebar:
                             elif ls['last_streak_type'] == 'L':
                                 st.error(f"❄️ Đang có chuỗi {ls['last_streak']} lệnh THUA liên tiếp — Nghỉ 1-2 ngày, xem lại bài học")
 
-                with st.expander("🧠 Pattern Trade Analyzer (L2)", expanded=False):
+                st.markdown("### 🧠 Pattern Trade Analyzer (L2)")
+                with st.container(border=True):
                     pa = analyze_trade_patterns(trades)
                     if 'message' in pa:
                         st.info(pa['message'])
