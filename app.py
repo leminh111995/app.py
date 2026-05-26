@@ -22,7 +22,20 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
-# Quant System V27
+# Quant System V28 - User Empowerment Combo
+# ==============================================================================
+# 6 FEATURES MỚI:
+#   L1 - Lifetime Stats Dashboard (phân tích sâu trade history)
+#   L2 - Pattern Trade Analyzer (tìm pattern thắng/thua của bạn)
+#   A1 - Watchlist Rules + Alerts (set rule tự động cảnh báo)
+#   A2 - Morning Brief (1 trang tổng hợp khi mở app sáng)
+#   P1 - Candlestick Pattern Detector (Hammer, Doji, Engulfing, ...)
+#   R4 - Stress Test Portfolio (giả lập VN-Index giảm X%)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V29 (file mới, không đè)
+# ==============================================================================
+# Quant System V27_OLD
 # ==============================================================================
 # Phiên bản: V27
 # Bao gồm: V26 + Fix bug:
@@ -4709,6 +4722,486 @@ def is_liquidity_ok(ticker: str, date_key: str) -> bool:
 
 # [V24-LIQ END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-L1] Lifetime Stats — Phân tích sâu trade history
+# ──────────────────────────────────────────────────────────────────────────────
+def calc_lifetime_stats(trades: list) -> dict:
+    """[V28-L1] Tính các thống kê lifetime từ danh sách trades."""
+    if not trades:
+        return {'n_total': 0, 'message': 'Chưa có trade nào — hãy ghi trade vào Journal'}
+
+    pnls = [t.get('pnl_pct', 0) for t in trades]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    n_total = len(pnls)
+    n_wins = len(wins)
+    n_losses = len(losses)
+    n_breakeven = n_total - n_wins - n_losses
+
+    winrate = n_wins / n_total * 100 if n_total > 0 else 0
+    avg_win = sum(wins) / n_wins if wins else 0
+    avg_loss = sum(losses) / n_losses if losses else 0
+    biggest_win = max(pnls) if pnls else 0
+    biggest_loss = min(pnls) if pnls else 0
+    expectancy = (winrate/100) * avg_win + ((100-winrate)/100) * avg_loss
+
+    # Profit factor
+    sum_wins = sum(wins) if wins else 0
+    sum_losses = abs(sum(losses)) if losses else 0
+    profit_factor = sum_wins / sum_losses if sum_losses > 0 else float('inf') if sum_wins > 0 else 0
+
+    # R-multiple trung bình (nếu avg_loss != 0)
+    avg_r = avg_win / abs(avg_loss) if avg_loss != 0 else 0
+
+    # Equity curve cumulative
+    equity = []
+    cum = 100
+    for p in pnls:
+        cum = cum * (1 + p/100)
+        equity.append(cum)
+
+    # Streak hiện tại
+    last_streak = 0
+    last_type = None
+    for p in reversed(pnls):
+        cur = 'W' if p > 0 else ('L' if p < 0 else 'B')
+        if last_type is None:
+            last_type = cur; last_streak = 1
+        elif cur == last_type:
+            last_streak += 1
+        else:
+            break
+
+    return {
+        'n_total': n_total, 'n_wins': n_wins, 'n_losses': n_losses,
+        'n_breakeven': n_breakeven,
+        'winrate': round(winrate, 1),
+        'avg_win': round(avg_win, 2),
+        'avg_loss': round(avg_loss, 2),
+        'biggest_win': round(biggest_win, 2),
+        'biggest_loss': round(biggest_loss, 2),
+        'expectancy': round(expectancy, 2),
+        'profit_factor': round(profit_factor, 2) if profit_factor != float('inf') else 999.0,
+        'avg_r': round(avg_r, 2),
+        'equity_curve': equity,
+        'equity_final': round(equity[-1], 1) if equity else 100,
+        'last_streak': last_streak,
+        'last_streak_type': last_type,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-L2] Pattern Trade Analyzer — Phân tích pattern thắng/thua
+# ──────────────────────────────────────────────────────────────────────────────
+def analyze_trade_patterns(trades: list) -> dict:
+    """[V28-L2] Phân tích pattern thắng/thua theo nhiều chiều."""
+    if not trades or len(trades) < 5:
+        return {'message': f'Cần ≥5 trades để phân tích (hiện: {len(trades)})'}
+
+    insights = []
+    # 1. Pattern theo mood
+    mood_stats = {}
+    for t in trades:
+        mood = t.get('mood', '')
+        if not mood: continue
+        if mood not in mood_stats:
+            mood_stats[mood] = {'n': 0, 'wins': 0, 'sum_pnl': 0}
+        mood_stats[mood]['n'] += 1
+        if t['pnl_pct'] > 0: mood_stats[mood]['wins'] += 1
+        mood_stats[mood]['sum_pnl'] += t['pnl_pct']
+
+    for mood, s in mood_stats.items():
+        if s['n'] < 3: continue
+        wr = s['wins'] / s['n'] * 100
+        avg = s['sum_pnl'] / s['n']
+        if wr >= 70:
+            insights.append(f"✅ Bạn THẮNG {wr:.0f}% khi mood {mood} ({s['n']} trades, TB +{avg:.1f}%)")
+        elif wr <= 30:
+            insights.append(f"⚠️ Bạn THUA {100-wr:.0f}% khi mood {mood} ({s['n']} trades, TB {avg:+.1f}%) — TRÁNH trade lúc này")
+
+    # 2. Pattern theo ticker (mã yêu thích thắng/thua)
+    ticker_stats = {}
+    for t in trades:
+        tk = t.get('ticker', '')
+        if not tk: continue
+        if tk not in ticker_stats:
+            ticker_stats[tk] = {'n': 0, 'wins': 0, 'sum_pnl': 0}
+        ticker_stats[tk]['n'] += 1
+        if t['pnl_pct'] > 0: ticker_stats[tk]['wins'] += 1
+        ticker_stats[tk]['sum_pnl'] += t['pnl_pct']
+
+    # Top winning ticker
+    top_tickers = sorted(ticker_stats.items(),
+                           key=lambda x: x[1]['sum_pnl'], reverse=True)
+    if top_tickers and top_tickers[0][1]['sum_pnl'] > 5:
+        tk, s = top_tickers[0]
+        insights.append(f"🏆 Mã thắng nhiều nhất: **{tk}** ({s['n']} trades, tổng +{s['sum_pnl']:.1f}%)")
+    # Worst ticker
+    if top_tickers and top_tickers[-1][1]['sum_pnl'] < -5:
+        tk, s = top_tickers[-1]
+        insights.append(f"💀 Mã thua nhiều nhất: **{tk}** ({s['n']} trades, tổng {s['sum_pnl']:.1f}%) — Tránh trade mã này")
+
+    # 3. Pattern theo entry_reason (keyword trong lý do mua)
+    reason_keywords = {
+        'macd': [], 'rsi': [], 'breakout': [], 'chân sóng': [], 'tích lũy': [],
+        'fomo': [], 'volume': [], 'support': [], 'pullback': [],
+    }
+    for t in trades:
+        reason = (t.get('entry_reason', '') or '').lower()
+        for kw in reason_keywords:
+            if kw in reason:
+                reason_keywords[kw].append(t['pnl_pct'])
+
+    for kw, pnls in reason_keywords.items():
+        if len(pnls) < 3: continue
+        wins = sum(1 for p in pnls if p > 0)
+        wr = wins / len(pnls) * 100
+        avg = sum(pnls) / len(pnls)
+        if wr >= 70:
+            insights.append(f"💡 Lý do '{kw}' THẮNG {wr:.0f}% ({len(pnls)} trades, TB +{avg:.1f}%) — Tiếp tục dùng!")
+        elif wr <= 30:
+            insights.append(f"⚠️ Lý do '{kw}' THUA {100-wr:.0f}% ({len(pnls)} trades, TB {avg:+.1f}%) — Cân nhắc bỏ")
+
+    return {'insights': insights, 'n_analyzed': len(trades),
+            'top_ticker': top_tickers[0] if top_tickers else None}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-A1] Watchlist Rules + Alerts
+# ──────────────────────────────────────────────────────────────────────────────
+V28_WATCH_RULES_FILE = 'v28_watch_rules.json'
+
+def load_watch_rules() -> list:
+    """[V28-A1] Load các rule watchlist."""
+    try:
+        if not os.path.exists(V28_WATCH_RULES_FILE):
+            return []
+        with open(V28_WATCH_RULES_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_watch_rules(rules: list) -> bool:
+    try:
+        with open(V28_WATCH_RULES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(rules, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def check_watch_rules(rules: list) -> list:
+    """[V28-A1] Kiểm tra các rule, return list các alert đang trigger.
+    Mỗi rule format: {'ticker': 'ACB', 'condition': 'rsi_below', 'value': 40}
+    Conditions:
+      - rsi_below, rsi_above
+      - price_below, price_above
+      - vol_above (x lần)
+      - break_ma20 (giá vượt MA20)
+    """
+    alerts = []
+    for rule in rules:
+        try:
+            ticker = rule['ticker']
+            cond = rule['condition']
+            value = rule['value']
+            df_r = get_price(ticker, days=30)
+            if not valid(df_r):
+                continue
+            df_r = calc_indicators(df_r)
+            last_r = df_r.iloc[-1]
+
+            triggered = False
+            msg = ""
+            if cond == 'rsi_below':
+                if float(last_r['rsi']) < value:
+                    triggered = True
+                    msg = f"RSI={float(last_r['rsi']):.1f} < {value}"
+            elif cond == 'rsi_above':
+                if float(last_r['rsi']) > value:
+                    triggered = True
+                    msg = f"RSI={float(last_r['rsi']):.1f} > {value}"
+            elif cond == 'price_below':
+                if float(last_r['close']) < value:
+                    triggered = True
+                    msg = f"Giá={float(last_r['close']):,.0f} < {value:,.0f}"
+            elif cond == 'price_above':
+                if float(last_r['close']) > value:
+                    triggered = True
+                    msg = f"Giá={float(last_r['close']):,.0f} > {value:,.0f}"
+            elif cond == 'vol_above':
+                if float(last_r['vol_strength']) > value:
+                    triggered = True
+                    msg = f"Vol={float(last_r['vol_strength']):.2f}x > {value}x"
+            elif cond == 'break_ma20':
+                if float(last_r['close']) > float(last_r['ma20']):
+                    triggered = True
+                    msg = f"Giá đã vượt MA20"
+
+            if triggered:
+                alerts.append({
+                    'ticker': ticker,
+                    'condition': cond,
+                    'value': value,
+                    'message': msg,
+                    'note': rule.get('note', ''),
+                })
+        except Exception:
+            continue
+    return alerts
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-A2] Morning Brief — Tổng hợp 1 trang
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_morning_brief(watchlist: list, regime: dict) -> dict:
+    """[V28-A2] Tổng hợp thông tin sáng cho user."""
+    result = {
+        'regime': regime,
+        'top_watchlist': [],
+        'biggest_movers': [],
+        'unusual_vol': [],
+    }
+    # Quét top mã trong watchlist
+    sample = list(watchlist)[:15] if watchlist else []
+    scored = []
+    movers = []
+    unusual = []
+    for t in sample:
+        try:
+            df_m = get_price(t, days=30)
+            if not valid(df_m): continue
+            df_m = calc_indicators(df_m)
+            last_m = df_m.iloc[-1]
+            price = float(last_m['close'])
+            rsi = float(last_m['rsi'])
+            vol = float(last_m['vol_strength'])
+            ret = float(last_m.get('return_1d', 0)) * 100
+
+            # Score nhanh
+            score = 0
+            if last_m['close'] > last_m['ma20']: score += 25
+            if 40 < rsi < 65: score += 20
+            if last_m['macd'] > last_m['signal']: score += 20
+            if 1.2 < vol < 2.5: score += 15
+            scored.append({'ticker': t, 'price': price, 'rsi': rsi,
+                            'vol': vol, 'ret_pct': ret, 'score': score})
+            # Movers (|ret| > 3%)
+            if abs(ret) > 3:
+                movers.append({'ticker': t, 'price': price, 'ret_pct': ret})
+            # Unusual vol
+            if vol > 2.0:
+                unusual.append({'ticker': t, 'vol': vol, 'ret_pct': ret})
+        except Exception:
+            continue
+
+    result['top_watchlist'] = sorted(scored, key=lambda x: x['score'], reverse=True)[:3]
+    result['biggest_movers'] = sorted(movers, key=lambda x: abs(x['ret_pct']), reverse=True)[:5]
+    result['unusual_vol'] = unusual
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-P1] Candlestick Pattern Detector
+# ──────────────────────────────────────────────────────────────────────────────
+def detect_candlestick_patterns(df: pd.DataFrame) -> list:
+    """[V28-P1] Phát hiện các mẫu nến quan trọng trong 3-5 phiên gần nhất.
+    Returns list các pattern detected (có giá trị giao dịch)."""
+    if len(df) < 5:
+        return []
+
+    patterns = []
+    # Lấy 5 nến gần nhất
+    recent = df.tail(5)
+    last = recent.iloc[-1]
+    prev = recent.iloc[-2]
+    prev2 = recent.iloc[-3]
+
+    # Helper
+    body = lambda r: abs(r['close'] - r['open'])
+    upper = lambda r: r['high'] - max(r['close'], r['open'])
+    lower = lambda r: min(r['close'], r['open']) - r['low']
+    is_bullish = lambda r: r['close'] > r['open']
+    is_bearish = lambda r: r['close'] < r['open']
+    full_range = lambda r: r['high'] - r['low']
+
+    last_body = body(last)
+    last_range = full_range(last)
+    last_upper = upper(last)
+    last_lower = lower(last)
+
+    # 1. HAMMER (đáy đảo chiều) — bullish
+    # - lower wick > 2 * body
+    # - upper wick < body * 0.3
+    # - bullish recent context (giá đã giảm)
+    if last_range > 0 and last_body > 0:
+        if (last_lower > 2 * last_body and
+            last_upper < last_body * 0.5 and
+            prev['close'] < prev2['close']):  # recent downtrend
+            patterns.append({
+                'name': '🔨 Hammer (Búa)',
+                'type': 'BULLISH',
+                'message': 'Tín hiệu ĐẢO CHIỀU TĂNG — phe mua đã chiếm ưu thế',
+            })
+
+    # 2. SHOOTING STAR (đỉnh đảo chiều) — bearish
+    # - upper wick > 2 * body
+    # - lower wick < body * 0.3
+    # - bullish recent context
+    if last_range > 0 and last_body > 0:
+        if (last_upper > 2 * last_body and
+            last_lower < last_body * 0.5 and
+            prev['close'] > prev2['close']):  # recent uptrend
+            patterns.append({
+                'name': '⭐ Shooting Star (Sao đổi ngôi)',
+                'type': 'BEARISH',
+                'message': 'Tín hiệu ĐẢO CHIỀU GIẢM — phe bán đang quay lại',
+            })
+
+    # 3. DOJI (lưỡng lự) — neutral
+    if last_range > 0 and last_body < last_range * 0.1:
+        patterns.append({
+            'name': '➕ Doji',
+            'type': 'NEUTRAL',
+            'message': 'Lưỡng lự — thị trường chưa quyết định, chờ tín hiệu xác nhận',
+        })
+
+    # 4. BULLISH ENGULFING — đảo chiều tăng mạnh
+    # Nến trước GIẢM, nến sau TĂNG và bao trùm nến trước
+    if is_bearish(prev) and is_bullish(last):
+        if (last['open'] <= prev['close'] and
+            last['close'] >= prev['open'] and
+            body(last) > body(prev) * 1.2):
+            patterns.append({
+                'name': '🟢 Bullish Engulfing (Nhấn chìm tăng)',
+                'type': 'BULLISH',
+                'message': 'Tín hiệu ĐẢO CHIỀU TĂNG MẠNH — phe mua áp đảo phe bán',
+            })
+
+    # 5. BEARISH ENGULFING — đảo chiều giảm mạnh
+    if is_bullish(prev) and is_bearish(last):
+        if (last['open'] >= prev['close'] and
+            last['close'] <= prev['open'] and
+            body(last) > body(prev) * 1.2):
+            patterns.append({
+                'name': '🔴 Bearish Engulfing (Nhấn chìm giảm)',
+                'type': 'BEARISH',
+                'message': 'Tín hiệu ĐẢO CHIỀU GIẢM MẠNH — phe bán áp đảo',
+            })
+
+    # 6. MORNING STAR (3 nến — đảo chiều đáy) — bullish
+    # Nến 1: giảm mạnh
+    # Nến 2: small body (doji-like)
+    # Nến 3: tăng mạnh
+    if (is_bearish(prev2) and body(prev2) > full_range(prev2) * 0.6 and
+        body(prev) < full_range(prev) * 0.4 and
+        is_bullish(last) and body(last) > full_range(last) * 0.6 and
+        last['close'] > (prev2['open'] + prev2['close']) / 2):
+        patterns.append({
+            'name': '🌟 Morning Star (Sao mai)',
+            'type': 'BULLISH',
+            'message': 'Mẫu 3 nến đảo chiều TĂNG mạnh từ đáy',
+        })
+
+    # 7. EVENING STAR (3 nến — đảo chiều đỉnh) — bearish
+    if (is_bullish(prev2) and body(prev2) > full_range(prev2) * 0.6 and
+        body(prev) < full_range(prev) * 0.4 and
+        is_bearish(last) and body(last) > full_range(last) * 0.6 and
+        last['close'] < (prev2['open'] + prev2['close']) / 2):
+        patterns.append({
+            'name': '🌆 Evening Star (Sao hôm)',
+            'type': 'BEARISH',
+            'message': 'Mẫu 3 nến đảo chiều GIẢM mạnh từ đỉnh',
+        })
+
+    return patterns
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V28-R4] Stress Test Portfolio
+# ──────────────────────────────────────────────────────────────────────────────
+def stress_test_portfolio(positions: list, vni_drop_pct: float = -5.0) -> dict:
+    """[V28-R4] Mô phỏng danh mục nếu VN-Index giảm X%.
+    Dùng beta của từng mã để tính dự kiến lỗ."""
+    if not positions:
+        return {'message': 'Chưa có vị thế nào để stress test'}
+
+    total_value = 0
+    total_expected_loss = 0
+    detail_rows = []
+
+    for pos in positions:
+        try:
+            df_p = get_price(pos['ticker'], days=90)
+            if not valid(df_p):
+                continue
+            df_p = calc_indicators(df_p)
+            cur_price = float(df_p['close'].iloc[-1])
+            shares = pos['shares']
+            value = cur_price * shares
+
+            # Tính beta đơn giản từ VN-Index
+            try:
+                df_vni_st = get_vnindex_cached()
+                if valid(df_vni_st) and len(df_vni_st) >= 60:
+                    df_p_safe = ensure_date_col(df_p)
+                    df_vni_safe = ensure_date_col(df_vni_st)
+                    if 'return_1d' in df_p_safe.columns and 'return_1d' in df_vni_safe.columns:
+                        df_p_safe['date'] = df_p_safe['date'].astype(str).str[:10]
+                        df_vni_safe['date'] = df_vni_safe['date'].astype(str).str[:10]
+                        merged = pd.merge(
+                            df_p_safe[['date','return_1d']].rename(columns={'return_1d':'r_p'}),
+                            df_vni_safe[['date','return_1d']].rename(columns={'return_1d':'r_v'}),
+                            on='date').dropna().tail(63)
+                        if len(merged) >= 20:
+                            cov = np.cov(merged['r_p'], merged['r_v'])
+                            beta = cov[0,1] / (cov[1,1] + 1e-9)
+                        else:
+                            beta = 1.0
+                    else:
+                        beta = 1.0
+                else:
+                    beta = 1.0
+            except Exception:
+                beta = 1.0
+
+            # Expected loss = beta * vni_drop * value
+            expected_pct = beta * vni_drop_pct
+            expected_loss = value * (expected_pct / 100)
+
+            total_value += value
+            total_expected_loss += expected_loss
+
+            detail_rows.append({
+                'ticker': pos['ticker'],
+                'shares': shares,
+                'cur_price': cur_price,
+                'value': value,
+                'beta': round(beta, 2),
+                'expected_loss_pct': round(expected_pct, 2),
+                'expected_loss_amount': round(expected_loss, 0),
+            })
+        except Exception:
+            continue
+
+    if total_value == 0:
+        return {'message': 'Không tính được — kiểm tra dữ liệu vị thế'}
+
+    overall_pct = total_expected_loss / total_value * 100
+
+    return {
+        'vni_drop_pct': vni_drop_pct,
+        'total_value': round(total_value, 0),
+        'total_expected_loss': round(total_expected_loss, 0),
+        'overall_pct': round(overall_pct, 2),
+        'detail': detail_rows,
+    }
+
+
+# [V28 HELPERS END]
+
+
 
 
 
@@ -5009,6 +5502,49 @@ with st.sidebar:
         else:
             st.caption("Đang quét...")
 
+        # [V28-A2] MORNING BRIEF — Tổng hợp 1 trang
+        with st.expander("🌅 Morning Brief (A2)", expanded=False):
+            st.caption("Tổng hợp thông tin sáng — Mở khi vào app")
+            if st.button("📰 Tạo Brief", key="a2_btn"):
+                with st.spinner("Đang quét..."):
+                    _regime = st.session_state.get('market_regime', {})
+                    _wl = st.session_state.get('watchlist', PILLARS[:10])
+                    mb = generate_morning_brief(list(_wl), _regime)
+                    st.session_state['_v28_mb'] = mb
+            mb = st.session_state.get('_v28_mb')
+            if mb:
+                # Market regime
+                rg = mb.get('regime', {})
+                rg_code = rg.get('regime', 'UNKNOWN')
+                if rg_code == 'BEAR':
+                    st.error("🔴 BEAR — Đứng ngoài")
+                elif rg_code == 'STRONG_BULL':
+                    st.success("🟢 BULL — Mua tích cực")
+                elif rg_code in ('CAUTIOUS_BULL', 'MIXED'):
+                    st.warning(f"🟠 {rg_code}")
+                else:
+                    st.info(f"❓ {rg_code}")
+
+                # Top watchlist
+                if mb.get('top_watchlist'):
+                    st.markdown("**🏆 Top 3 watchlist:**")
+                    for m in mb['top_watchlist']:
+                        st.write(f"• **{m['ticker']}** — {m['score']}/80 "
+                                  f"(RSI {m['rsi']:.0f}, {m['ret_pct']:+.1f}%)")
+
+                # Biggest movers
+                if mb.get('biggest_movers'):
+                    st.markdown("**📊 Biến động lớn:**")
+                    for m in mb['biggest_movers'][:3]:
+                        arrow = '🟢↑' if m['ret_pct'] > 0 else '🔴↓'
+                        st.write(f"• **{m['ticker']}** {arrow} {m['ret_pct']:+.2f}%")
+
+                # Unusual vol
+                if mb.get('unusual_vol'):
+                    st.markdown("**⚡ Vol bất thường:**")
+                    for m in mb['unusual_vol'][:3]:
+                        st.write(f"• **{m['ticker']}** Vol {m['vol']:.1f}x ({m['ret_pct']:+.1f}%)")
+
         # [S1] SMART ALERT — Tier changes
         with st.expander("🔔 Smart Alerts (S1)", expanded=False):
             if st.button("🔄 Check changes", key="s1_btn"):
@@ -5109,6 +5645,66 @@ with st.sidebar:
                             st.caption(f"📌 **{b['ticker']}** — {b.get('note', '')} (hẹn: {b['remind_at']})")
             else:
                 st.caption("Chưa có bookmark nào")
+
+        # [V28-A1] WATCHLIST RULES + ALERTS
+        with st.expander("🔔 Watchlist Rules & Alerts (A1)", expanded=False):
+            st.caption("Set rule để app tự cảnh báo khi điều kiện đạt.")
+            if 'v28_rules' not in st.session_state:
+                st.session_state['v28_rules'] = load_watch_rules()
+
+            # Form thêm rule
+            with st.form(key="a1_form", clear_on_submit=True):
+                a1_t = st.text_input("Mã", max_chars=4, key="a1_t").upper()
+                a1_cond = st.selectbox("Điều kiện", [
+                    ('rsi_below', 'RSI dưới...'),
+                    ('rsi_above', 'RSI trên...'),
+                    ('price_below', 'Giá dưới...'),
+                    ('price_above', 'Giá trên...'),
+                    ('vol_above', 'Vol strength trên (x lần)...'),
+                    ('break_ma20', 'Vượt MA20'),
+                ], format_func=lambda x: x[1], key="a1_cond")
+                a1_val = st.number_input("Giá trị (bỏ qua nếu Vượt MA20)",
+                                            value=50.0, key="a1_val")
+                a1_note = st.text_input("Ghi chú", key="a1_note",
+                                          placeholder="VD: Đợi vào lệnh")
+                if st.form_submit_button("➕ Thêm rule"):
+                    if a1_t:
+                        st.session_state['v28_rules'].append({
+                            'ticker': a1_t,
+                            'condition': a1_cond[0],
+                            'value': a1_val,
+                            'note': a1_note,
+                        })
+                        save_watch_rules(st.session_state['v28_rules'])
+                        st.success(f"Đã thêm rule cho {a1_t}")
+
+            # Check alerts
+            if st.session_state['v28_rules']:
+                if st.button("🔍 Check ngay", key="a1_check"):
+                    with st.spinner("Đang quét..."):
+                        alerts = check_watch_rules(st.session_state['v28_rules'])
+                        st.session_state['_a1_alerts'] = alerts
+                alerts = st.session_state.get('_a1_alerts', [])
+                if alerts:
+                    st.markdown(f"**🚨 {len(alerts)} alert đang trigger:**")
+                    for a in alerts:
+                        st.error(f"**{a['ticker']}** — {a['message']}")
+                        if a.get('note'):
+                            st.caption(f"   📝 {a['note']}")
+                else:
+                    st.caption("Chưa quét hoặc không có alert nào")
+
+                # List rules
+                with st.expander(f"Quản lý {len(st.session_state['v28_rules'])} rules"):
+                    for i, r in enumerate(st.session_state['v28_rules']):
+                        rc1, rc2 = st.columns([4, 1])
+                        rc1.write(f"• **{r['ticker']}**: {r['condition']} {r['value']} ({r.get('note','')})")
+                        if rc2.button("❌", key=f"a1_del_{i}"):
+                            st.session_state['v28_rules'].pop(i)
+                            save_watch_rules(st.session_state['v28_rules'])
+                            st.rerun()
+            else:
+                st.info("Chưa có rule nào")
 
         with st.expander("🎯 Hôm nay xem mã nào? [S3]", expanded=False):
             st.caption("Gợi ý 3 mã đáng follow nhất hôm nay từ watchlist + pillars.")
@@ -5300,6 +5896,35 @@ with st.sidebar:
                     st.metric(f"{emoji} Tổng P&L", f"{total_pnl:+,.0f} đ",
                                 delta=f"{total_pnl_pct:+.2f}%")
 
+                    # [V28-R4] STRESS TEST PORTFOLIO
+                    with st.expander("🔥 Stress Test (R4)", expanded=False):
+                        st.caption("Mô phỏng danh mục nếu VN-Index giảm.")
+                        st_drop = st.slider("VN-Index giảm bao nhiêu (%)",
+                                             min_value=-15.0, max_value=-1.0,
+                                             value=-5.0, step=0.5, key="st_drop")
+                        if st.button("Chạy stress test", key="st_run"):
+                            with st.spinner("Đang tính..."):
+                                st_res = stress_test_portfolio(positions, vni_drop_pct=st_drop)
+                                st.session_state['_v28_st'] = st_res
+                        st_res = st.session_state.get('_v28_st')
+                        if st_res:
+                            if 'message' in st_res:
+                                st.info(st_res['message'])
+                            else:
+                                st.markdown(f"**Nếu VN-Index giảm {st_res['vni_drop_pct']:.1f}%:**")
+                                st_c1, st_c2 = st.columns(2)
+                                st_c1.metric("Tổng giá trị DM",
+                                              f"{st_res['total_value']/1e6:.1f}M")
+                                st_c2.metric("Dự kiến lỗ",
+                                              f"{st_res['total_expected_loss']/1e6:.1f}M",
+                                              delta=f"{st_res['overall_pct']:.2f}%",
+                                              delta_color="inverse")
+                                st.markdown("**Chi tiết:**")
+                                for d in st_res.get('detail', []):
+                                    st.write(f"• **{d['ticker']}** (β={d['beta']}) → "
+                                              f"lỗ {d['expected_loss_amount']/1e6:.2f}M "
+                                              f"({d['expected_loss_pct']:.1f}%)")
+
                     # [S2] Position Risk Heatmap
                     with st.expander("🌡️ Risk Heatmap", expanded=False):
                         for pos in positions:
@@ -5396,6 +6021,51 @@ with st.sidebar:
                             st.caption(f"   📤 Bán: {t['exit_reason']}")
                         if t.get('lesson'):
                             st.caption(f"   💡 Lesson: {t['lesson']}")
+                # [V28-L1+L2] Lifetime Stats + Pattern Analyzer
+                with st.expander("📊 Lifetime Stats (L1)", expanded=False):
+                    ls = calc_lifetime_stats(trades)
+                    if 'message' in ls:
+                        st.info(ls['message'])
+                    else:
+                        ls_c1, ls_c2, ls_c3 = st.columns(3)
+                        ls_c1.metric("Tổng trade", ls['n_total'])
+                        ls_c2.metric("Winrate", f"{ls['winrate']}%")
+                        ls_c3.metric("Equity", f"{ls['equity_final']}%",
+                                       delta=f"{ls['equity_final']-100:+.1f}%")
+                        ls_c4, ls_c5, ls_c6 = st.columns(3)
+                        ls_c4.metric("TB lời", f"+{ls['avg_win']}%")
+                        ls_c5.metric("TB lỗ", f"{ls['avg_loss']}%")
+                        ls_c6.metric("Expectancy",
+                                       f"{ls['expectancy']:+.2f}%",
+                                       delta="Dương ✓" if ls['expectancy']>0 else "Âm ⚠️",
+                                       delta_color="normal" if ls['expectancy']>0 else "inverse")
+                        ls_c7, ls_c8, ls_c9 = st.columns(3)
+                        ls_c7.metric("Profit Factor", f"{ls['profit_factor']}",
+                                       help="≥1.5 là tốt")
+                        ls_c8.metric("R-multiple TB", f"{ls['avg_r']}",
+                                       help="≥2.0 là tốt — lời gấp 2 lần lỗ")
+                        ls_c9.metric("Lệnh lớn nhất",
+                                       f"+{ls['biggest_win']}%",
+                                       help=f"Lệnh thua tệ nhất: {ls['biggest_loss']}%")
+                        # Streak hiện tại
+                        if ls['last_streak'] >= 3:
+                            if ls['last_streak_type'] == 'W':
+                                st.success(f"🔥 Đang có chuỗi {ls['last_streak']} lệnh THẮNG liên tiếp — Cẩn thận tăng size")
+                            elif ls['last_streak_type'] == 'L':
+                                st.error(f"❄️ Đang có chuỗi {ls['last_streak']} lệnh THUA liên tiếp — Nghỉ 1-2 ngày, xem lại bài học")
+
+                with st.expander("🧠 Pattern Trade Analyzer (L2)", expanded=False):
+                    pa = analyze_trade_patterns(trades)
+                    if 'message' in pa:
+                        st.info(pa['message'])
+                    else:
+                        st.caption(f"Đã phân tích {pa['n_analyzed']} trades")
+                        if pa.get('insights'):
+                            for ins in pa['insights']:
+                                st.markdown(f"• {ins}")
+                        else:
+                            st.info("Chưa có pattern rõ ràng — cần thêm trades")
+
                 if st.button("🗑️ Xoá tất cả", key="tt_clear"):
                     st.session_state['v24_trades'] = []
                     save_trades_to_file([])
@@ -5737,6 +6407,22 @@ with tab1:
             except Exception as _m8_err:
                 print(f"[V24-M8] {_m8_err}")
 
+
+            # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
+            try:
+                patterns_detected = detect_candlestick_patterns(df)
+                if patterns_detected:
+                    with st.container(border=True):
+                        st.markdown("##### 🕯️ Mẫu nến phát hiện (3-5 phiên gần nhất)")
+                        for p in patterns_detected:
+                            if p['type'] == 'BULLISH':
+                                st.success(f"**{p['name']}** — {p['message']}")
+                            elif p['type'] == 'BEARISH':
+                                st.error(f"**{p['name']}** — {p['message']}")
+                            else:
+                                st.info(f"**{p['name']}** — {p['message']}")
+            except Exception as _p1_err:
+                print(f"[V28-P1] {_p1_err}")
 
             # ── [V24-G3] WHY THIS SCORE? ──
             try:
