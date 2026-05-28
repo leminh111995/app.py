@@ -22,6 +22,18 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V31 - Fix Smart Money Scanner
+# ==============================================================================
+# BUG FIX:
+#   - Bug logic đếm consecutive buy: ngày net ≈ 0 không break mà skip
+#   - Bug threshold: chỉ break khi net < -0.1 tỷ (rõ rệt bán)
+#   - Thêm debug widget: kiểm tra 1 mã cụ thể (ACB, VCB...)
+#   - Hiển thị NET TỪNG NGÀY rõ ràng để user verify
+#   - Lưu all_results để user xem mã đã quét nhưng không đạt
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V32
+# ==============================================================================
 # Quant System V30 - Smart Money Scanner (Tab Cá Mập)
 # ==============================================================================
 # TÍNH NĂNG MỚI:
@@ -5296,76 +5308,78 @@ def _cached_stress_test(positions_str: str, vni_drop: float, date_key: str) -> d
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def scan_smart_money(tickers_str: str, min_days: int, source_filter: str,
                        date_key: str) -> dict:
-    """[V30] Quét danh sách mã, tìm các mã đang được smart money mua liên tục.
+    """[V30+V31-FIX] Quét danh sách mã, tìm các mã đang được smart money mua liên tục.
 
-    Args:
-        tickers_str: JSON list các mã cần quét
-        min_days: Số ngày liên tiếp tối thiểu (3-10)
-        source_filter: 'foreign' | 'prop' | 'both' | 'all'
-                       - foreign: chỉ khối ngoại
-                       - prop: chỉ tự doanh
-                       - both: cả 2 cùng mua (signal mạnh nhất)
-                       - all: hiển thị tất cả mã pass filter
-        date_key: ngày để cache
-
-    Returns:
-        dict với 4 nhóm: combo_buy, foreign_only, prop_only, errors
+    BUG FIX V31:
+    - Lấy đủ data (20 ngày thay vì min_days*2)
+    - Bỏ qua ngày net = 0 (không break)
+    - Trả thêm `all_results` để user debug
+    - Sửa logic break: chỉ break khi gặp ngày bán RÕ RỆT (net < -threshold)
     """
     try:
         tickers = json.loads(tickers_str)
     except Exception:
         return {'combo_buy': [], 'foreign_only': [], 'prop_only': [], 'errors': []}
 
-    combo_buy = []      # Cả foreign + prop cùng mua liên tục
-    foreign_only = []   # Chỉ foreign
-    prop_only = []      # Chỉ prop
+    combo_buy = []
+    foreign_only = []
+    prop_only = []
+    all_results = []   # [V31] LƯU TẤT CẢ để user xem mã không đạt
     errors = []
 
     for t in tickers:
         try:
-            # Lấy data foreign + prop
-            df_f = get_foreign(t, days=15)
-            df_p = get_proprietary(t, days=15)
+            # [V31] Lấy 20 ngày (đủ buffer cho min_days = 10)
+            df_f = get_foreign(t, days=20)
+            df_p = get_proprietary(t, days=20)
 
             # Phân tích foreign
             f_consec = 0
             f_total = 0.0
+            f_net_list = []  # [V31] Track net values cho debug
             if valid(df_f):
-                df_f_tail = df_f.tail(min_days * 2).copy()
-                # Tính net từng ngày
+                df_f_tail = df_f.tail(15).copy()
                 net_vals_f = []
                 for _, row in df_f_tail.iterrows():
                     buy = to_billion(row.get('buyval', 0))
                     sell = to_billion(row.get('sellval', 0))
                     net = to_billion(row.get('netval', buy - sell))
                     net_vals_f.append(net)
-                # Đếm consecutive buy từ ngày gần nhất ngược về
+                f_net_list = net_vals_f[-min_days:] if len(net_vals_f) >= min_days else net_vals_f
+                # [V31] Đếm consec: chỉ break khi net < 0 RÕ RỆT (≤ -0.1 tỷ)
+                # Ngày net ≈ 0 (giữa -0.1 và +0.1 tỷ) sẽ bỏ qua (skip)
                 for v in reversed(net_vals_f):
-                    if v > 0:
+                    if v > 0.1:           # Mua rõ rệt
                         f_consec += 1
                         f_total += v
-                    else:
+                    elif v < -0.1:        # Bán rõ rệt → break
                         break
+                    else:                  # Net ≈ 0 → skip không count, không break
+                        continue
 
             # Phân tích prop
             p_consec = 0
             p_total = 0.0
+            p_net_list = []
             if valid(df_p):
-                df_p_tail = df_p.tail(min_days * 2).copy()
+                df_p_tail = df_p.tail(15).copy()
                 net_vals_p = []
                 for _, row in df_p_tail.iterrows():
                     buy = to_billion(row.get('buyval', 0))
                     sell = to_billion(row.get('sellval', 0))
                     net = to_billion(row.get('netval', buy - sell))
                     net_vals_p.append(net)
+                p_net_list = net_vals_p[-min_days:] if len(net_vals_p) >= min_days else net_vals_p
                 for v in reversed(net_vals_p):
-                    if v > 0:
+                    if v > 0.1:
                         p_consec += 1
                         p_total += v
-                    else:
+                    elif v < -0.1:
                         break
+                    else:
+                        continue
 
-            # Lấy giá hiện tại + biến động
+            # Lấy giá
             df_price = get_price(t, days=10)
             cur_price = 0.0
             ret_5d = 0.0
@@ -5375,18 +5389,16 @@ def scan_smart_money(tickers_str: str, min_days: int, source_filter: str,
                 if len(df_price) >= 6:
                     price_5d_ago = float(df_price['close'].iloc[-6])
                     ret_5d = (cur_price - price_5d_ago) / price_5d_ago * 100
-                # Filter LIQ
                 try:
                     liq = calc_liquidity_tier(df_price)
                     liq_tier = liq.get('tier', 'UNKNOWN')
                 except Exception:
                     pass
 
-            # Skip LIQ thấp (penny)
+            # Skip LIQ thấp
             if liq_tier == 'LOW':
                 continue
 
-            # Score Smart Money: foreign×1 + prop×1.5
             sm_score = f_consec + p_consec * 1.5
 
             row_data = {
@@ -5395,13 +5407,17 @@ def scan_smart_money(tickers_str: str, min_days: int, source_filter: str,
                 'ret_5d': round(ret_5d, 2),
                 'f_consec': f_consec,
                 'f_total': round(f_total, 1),
+                'f_net_list': [round(v, 2) for v in f_net_list],  # [V31] debug
                 'p_consec': p_consec,
                 'p_total': round(p_total, 1),
+                'p_net_list': [round(v, 2) for v in p_net_list],
                 'liq_tier': liq_tier,
                 'sm_score': round(sm_score, 1),
             }
 
-            # Phân nhóm
+            # [V31] LƯU TẤT CẢ
+            all_results.append(row_data)
+
             is_foreign_ok = f_consec >= min_days
             is_prop_ok = p_consec >= min_days
 
@@ -5415,15 +5431,16 @@ def scan_smart_money(tickers_str: str, min_days: int, source_filter: str,
             errors.append({'ticker': t, 'error': str(e)[:80]})
             continue
 
-    # Sort theo Score giảm dần
     combo_buy.sort(key=lambda x: x['sm_score'], reverse=True)
     foreign_only.sort(key=lambda x: x['sm_score'], reverse=True)
     prop_only.sort(key=lambda x: x['sm_score'], reverse=True)
+    all_results.sort(key=lambda x: x['sm_score'], reverse=True)
 
     return {
         'combo_buy': combo_buy,
         'foreign_only': foreign_only,
         'prop_only': prop_only,
+        'all_results': all_results,   # [V31] Toàn bộ để debug
         'errors': errors,
         'n_scanned': len(tickers),
         'scan_date': date_key,
@@ -8809,6 +8826,41 @@ with tab_shark:
             with st.expander(f"⚠️ {len(sm_result['errors'])} mã không quét được"):
                 for e in sm_result['errors'][:20]:
                     st.caption(f"• {e['ticker']}: {e['error']}")
+
+        # [V31 DEBUG] Hiển thị toàn bộ mã đã quét — user verify
+        if sm_result.get('all_results'):
+            with st.expander(f"🔬 DEBUG: Xem chi tiết net từng ngày của {len(sm_result['all_results'])} mã đã quét"):
+                st.caption(
+                    "Hiển thị NET TỪNG NGÀY của khối ngoại / tự doanh. "
+                    "Số dương = mua, âm = bán. App đếm 'liên tục mua' từ ngày MỚI NHẤT ngược về, "
+                    "break khi gặp ngày bán rõ rệt (net < -0.1 tỷ)."
+                )
+                debug_ticker_filter = st.text_input(
+                    "Lọc mã (vd: ACB):",
+                    max_chars=10,
+                    key="sm_debug_ticker"
+                ).upper().strip()
+                shown = 0
+                for r in sm_result['all_results']:
+                    if debug_ticker_filter and debug_ticker_filter not in r['ticker']:
+                        continue
+                    shown += 1
+                    if shown > 30:  # Giới hạn 30 mã để không lag
+                        st.caption(f"... (giới hạn 30 mã, lọc thêm để xem các mã khác)")
+                        break
+                    with st.container(border=True):
+                        dc1, dc2 = st.columns([1, 4])
+                        dc1.markdown(f"**{r['ticker']}**")
+                        dc1.caption(f"Score: {r['sm_score']}")
+                        # Foreign details
+                        f_str = " → ".join([f"{v:+.2f}" for v in r['f_net_list']])
+                        dc2.markdown(f"🌍 **Khối ngoại** (consec={r['f_consec']}): `{f_str}` tỷ")
+                        # Prop details
+                        p_str = " → ".join([f"{v:+.2f}" for v in r['p_net_list']])
+                        dc2.markdown(f"🏦 **Tự doanh** (consec={r['p_consec']}): `{p_str}` tỷ")
+                if shown == 0 and debug_ticker_filter:
+                    st.warning(f"Không tìm thấy mã '{debug_ticker_filter}' trong kết quả quét. "
+                                f"Có thể mã không thuộc universe đã chọn, hoặc bị filter LIQ_LOW.")
 
         st.caption(f"Cache 10 phút | Quét lúc: {sm_result.get('scan_date', '')}")
 
