@@ -22,6 +22,18 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V30 - Smart Money Scanner (Tab Cá Mập)
+# ==============================================================================
+# TÍNH NĂNG MỚI:
+#   - Tab mới "🐳 Cá Mập" quét toàn HOSE
+#   - Tìm mã được khối ngoại / tự doanh / cả 2 mua liên tục N ngày
+#   - Score Smart Money (tự doanh trọng số cao hơn)
+#   - Sort, Highlight, Auto add to watchlist
+#   - Cache 10 phút để tránh quét lại
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V31 (file mới, không đè)
+# ==============================================================================
 # Quant System V29 - V28 + 7 Tinh Chỉnh
 # ==============================================================================
 # 7 FIXES TỪ V28:
@@ -5277,6 +5289,199 @@ def _cached_stress_test(positions_str: str, vni_drop: float, date_key: str) -> d
 
 
 # [V29-F1 END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V30] SMART MONEY SCANNER — Rà mã được tự doanh/khối ngoại mua liên tục
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def scan_smart_money(tickers_str: str, min_days: int, source_filter: str,
+                       date_key: str) -> dict:
+    """[V30] Quét danh sách mã, tìm các mã đang được smart money mua liên tục.
+
+    Args:
+        tickers_str: JSON list các mã cần quét
+        min_days: Số ngày liên tiếp tối thiểu (3-10)
+        source_filter: 'foreign' | 'prop' | 'both' | 'all'
+                       - foreign: chỉ khối ngoại
+                       - prop: chỉ tự doanh
+                       - both: cả 2 cùng mua (signal mạnh nhất)
+                       - all: hiển thị tất cả mã pass filter
+        date_key: ngày để cache
+
+    Returns:
+        dict với 4 nhóm: combo_buy, foreign_only, prop_only, errors
+    """
+    try:
+        tickers = json.loads(tickers_str)
+    except Exception:
+        return {'combo_buy': [], 'foreign_only': [], 'prop_only': [], 'errors': []}
+
+    combo_buy = []      # Cả foreign + prop cùng mua liên tục
+    foreign_only = []   # Chỉ foreign
+    prop_only = []      # Chỉ prop
+    errors = []
+
+    for t in tickers:
+        try:
+            # Lấy data foreign + prop
+            df_f = get_foreign(t, days=15)
+            df_p = get_proprietary(t, days=15)
+
+            # Phân tích foreign
+            f_consec = 0
+            f_total = 0.0
+            if valid(df_f):
+                df_f_tail = df_f.tail(min_days * 2).copy()
+                # Tính net từng ngày
+                net_vals_f = []
+                for _, row in df_f_tail.iterrows():
+                    buy = to_billion(row.get('buyval', 0))
+                    sell = to_billion(row.get('sellval', 0))
+                    net = to_billion(row.get('netval', buy - sell))
+                    net_vals_f.append(net)
+                # Đếm consecutive buy từ ngày gần nhất ngược về
+                for v in reversed(net_vals_f):
+                    if v > 0:
+                        f_consec += 1
+                        f_total += v
+                    else:
+                        break
+
+            # Phân tích prop
+            p_consec = 0
+            p_total = 0.0
+            if valid(df_p):
+                df_p_tail = df_p.tail(min_days * 2).copy()
+                net_vals_p = []
+                for _, row in df_p_tail.iterrows():
+                    buy = to_billion(row.get('buyval', 0))
+                    sell = to_billion(row.get('sellval', 0))
+                    net = to_billion(row.get('netval', buy - sell))
+                    net_vals_p.append(net)
+                for v in reversed(net_vals_p):
+                    if v > 0:
+                        p_consec += 1
+                        p_total += v
+                    else:
+                        break
+
+            # Lấy giá hiện tại + biến động
+            df_price = get_price(t, days=10)
+            cur_price = 0.0
+            ret_5d = 0.0
+            liq_tier = 'UNKNOWN'
+            if valid(df_price):
+                cur_price = float(df_price['close'].iloc[-1])
+                if len(df_price) >= 6:
+                    price_5d_ago = float(df_price['close'].iloc[-6])
+                    ret_5d = (cur_price - price_5d_ago) / price_5d_ago * 100
+                # Filter LIQ
+                try:
+                    liq = calc_liquidity_tier(df_price)
+                    liq_tier = liq.get('tier', 'UNKNOWN')
+                except Exception:
+                    pass
+
+            # Skip LIQ thấp (penny)
+            if liq_tier == 'LOW':
+                continue
+
+            # Score Smart Money: foreign×1 + prop×1.5
+            sm_score = f_consec + p_consec * 1.5
+
+            row_data = {
+                'ticker': t,
+                'price': cur_price,
+                'ret_5d': round(ret_5d, 2),
+                'f_consec': f_consec,
+                'f_total': round(f_total, 1),
+                'p_consec': p_consec,
+                'p_total': round(p_total, 1),
+                'liq_tier': liq_tier,
+                'sm_score': round(sm_score, 1),
+            }
+
+            # Phân nhóm
+            is_foreign_ok = f_consec >= min_days
+            is_prop_ok = p_consec >= min_days
+
+            if is_foreign_ok and is_prop_ok:
+                combo_buy.append(row_data)
+            elif is_foreign_ok:
+                foreign_only.append(row_data)
+            elif is_prop_ok:
+                prop_only.append(row_data)
+        except Exception as e:
+            errors.append({'ticker': t, 'error': str(e)[:80]})
+            continue
+
+    # Sort theo Score giảm dần
+    combo_buy.sort(key=lambda x: x['sm_score'], reverse=True)
+    foreign_only.sort(key=lambda x: x['sm_score'], reverse=True)
+    prop_only.sort(key=lambda x: x['sm_score'], reverse=True)
+
+    return {
+        'combo_buy': combo_buy,
+        'foreign_only': foreign_only,
+        'prop_only': prop_only,
+        'errors': errors,
+        'n_scanned': len(tickers),
+        'scan_date': date_key,
+    }
+
+
+def render_smart_money_card(row: dict, highlight: bool = False) -> None:
+    """[V30] Render 1 card mã smart money."""
+    border = True
+    with st.container(border=border):
+        c1, c2, c3, c4 = st.columns([1.5, 2, 2, 1.5])
+        # Cột 1: Ticker + giá
+        with c1:
+            if highlight:
+                st.markdown(f"### 💎 `{row['ticker']}`")
+            else:
+                st.markdown(f"### `{row['ticker']}`")
+            st.caption(f"Giá: **{row['price']:,.0f}**")
+            ret = row['ret_5d']
+            arrow = '🟢↑' if ret > 0 else '🔴↓' if ret < 0 else '➡️'
+            st.caption(f"{arrow} 5 ngày: {ret:+.2f}%")
+        # Cột 2: Foreign
+        with c2:
+            if row['f_consec'] > 0:
+                st.metric("🌍 Khối ngoại",
+                            f"{row['f_consec']} ngày",
+                            delta=f"+{row['f_total']:.1f} tỷ" if row['f_total'] > 0 else f"{row['f_total']:.1f} tỷ")
+            else:
+                st.caption("🌍 Khối ngoại: KHÔNG mua liên tục")
+        # Cột 3: Prop
+        with c3:
+            if row['p_consec'] > 0:
+                st.metric("🏦 Tự doanh",
+                            f"{row['p_consec']} ngày",
+                            delta=f"+{row['p_total']:.1f} tỷ" if row['p_total'] > 0 else f"{row['p_total']:.1f} tỷ")
+            else:
+                st.caption("🏦 Tự doanh: KHÔNG mua liên tục")
+        # Cột 4: Score + Action
+        with c4:
+            st.metric("📊 SM Score", f"{row['sm_score']}")
+            # Auto add watchlist button
+            if st.button("➕ Watchlist", key=f"sm_add_{row['ticker']}"):
+                if 'watchlist' not in st.session_state:
+                    st.session_state['watchlist'] = list(PILLARS[:10])
+                if row['ticker'] not in st.session_state['watchlist']:
+                    st.session_state['watchlist'].append(row['ticker'])
+                    try:
+                        with open('watchlist.json', 'w') as f:
+                            json.dump(list(st.session_state['watchlist']), f)
+                    except Exception:
+                        pass
+                    st.success(f"✅ Đã thêm {row['ticker']}")
+                else:
+                    st.info(f"{row['ticker']} đã có trong watchlist")
+
+
+# [V30 SMART MONEY END]
+
 # [V28 HELPERS END]
 
 
@@ -6282,11 +6487,12 @@ except Exception as _qa_err:
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
+tab1, tab2, tab3, tab4, tab_shark, tab5, tab6, tab7, tab_compare = st.tabs([
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
     "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU",
+    "🐳 CÁ MẬP — SMART MONEY",
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
     "📊 VN-INDEX & TƯƠNG QUAN",
     "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
@@ -8498,6 +8704,117 @@ with tab4:
 | Vol | Khối lượng / TB 10 phiên | 0.8–1.2x tích lũy |
 | ADX | Sức mạnh xu hướng | > 25 đáng tin |
             """)
+# ==============================================================================
+# [V30] TAB CÁ MẬP — SMART MONEY SCANNER
+# ==============================================================================
+with tab_shark:
+    st.subheader("🐳 Cá Mập — Smart Money Scanner")
+    st.info(
+        "📌 Quét toàn HOSE để tìm các mã đang được **Khối ngoại** hoặc **Tự doanh** "
+        "(hoặc cả 2) mua **liên tục N ngày**. Đây là dấu hiệu smart money đang gom hàng. "
+        "**Lưu ý:** App không khuyến nghị mua. Mã smart money mua không có nghĩa chắc chắn tăng."
+    )
+
+    # ── BỘ ĐIỀU KHIỂN ──
+    with st.container(border=True):
+        sm_c1, sm_c2, sm_c3 = st.columns([2, 2, 1])
+
+        sm_universe = sm_c1.radio(
+            "🎯 Phạm vi quét:",
+            ['Toàn HOSE (~400 mã, chậm 3-5 phút)',
+             'PILLARS top 30 (nhanh)',
+             'Watchlist của tôi (nhanh nhất)'],
+            index=0,
+            key="sm_universe"
+        )
+
+        sm_filter = sm_c2.radio(
+            "🔎 Loại smart money:",
+            ['💎 Cả 2 cùng mua (mạnh nhất)',
+             '🌍 Khối ngoại',
+             '🏦 Tự doanh',
+             '📊 Hiển thị tất cả'],
+            index=3,  # Tất cả mặc định
+            key="sm_filter_mode"
+        )
+
+        sm_days = sm_c3.slider(
+            "📅 Ngày liên tiếp:",
+            min_value=3, max_value=10, value=5, step=1,
+            key="sm_days"
+        )
+
+    # ── NÚT QUÉT ──
+    sm_btn_c1, sm_btn_c2 = st.columns([1, 4])
+    if sm_btn_c1.button("🔍 Quét ngay", type="primary", key="sm_scan_btn"):
+        # Xác định universe
+        if 'Toàn HOSE' in sm_universe:
+            # Dùng biến `tickers` đã load từ load_hose_tickers()
+            try:
+                universe = list(tickers)
+            except Exception:
+                universe = list(PILLARS)
+        elif 'PILLARS' in sm_universe:
+            universe = list(PILLARS[:30])
+        else:  # Watchlist
+            universe = st.session_state.get('watchlist', PILLARS[:10])
+            universe = list(universe) if universe else list(PILLARS[:10])
+
+        with st.spinner(f"Đang quét {len(universe)} mã... (Có thể mất 1-5 phút lần đầu)"):
+            sm_result = scan_smart_money(
+                json.dumps(universe),
+                int(sm_days),
+                'all',
+                datetime.now(TZ_VN).strftime('%Y-%m-%d')
+            )
+            st.session_state['_v30_sm_result'] = sm_result
+            st.session_state['_v30_sm_filter'] = sm_filter
+
+    # ── KẾT QUẢ ──
+    sm_result = st.session_state.get('_v30_sm_result')
+    if sm_result:
+        n_combo = len(sm_result['combo_buy'])
+        n_foreign = len(sm_result['foreign_only'])
+        n_prop = len(sm_result['prop_only'])
+        n_total = n_combo + n_foreign + n_prop
+        sm_filter_now = st.session_state.get('_v30_sm_filter', '📊 Hiển thị tất cả')
+
+        st.markdown(f"### 📊 Kết quả: Tìm thấy **{n_total}** mã (quét {sm_result['n_scanned']} mã)")
+
+        if n_total == 0:
+            st.warning(f"Không có mã nào pass tiêu chí ≥{sm_days} ngày liên tiếp. Thử giảm số ngày hoặc đổi phạm vi.")
+
+        # Tab CẢ 2 — luôn show nếu filter là combo hoặc all
+        if ('Cả 2' in sm_filter_now or 'tất cả' in sm_filter_now) and n_combo > 0:
+            st.markdown(f"#### 💎 CẢ 2 CÙNG MUA — Smart Money mạnh nhất ({n_combo} mã)")
+            st.caption("Cả khối ngoại VÀ tự doanh đều mua liên tục — Tín hiệu cao nhất.")
+            for r in sm_result['combo_buy']:
+                render_smart_money_card(r, highlight=True)
+
+        # Khối ngoại
+        if ('Khối ngoại' in sm_filter_now or 'tất cả' in sm_filter_now) and n_foreign > 0:
+            st.markdown(f"#### 🌍 KHỐI NGOẠI MUA ({n_foreign} mã)")
+            for r in sm_result['foreign_only']:
+                render_smart_money_card(r)
+
+        # Tự doanh
+        if ('Tự doanh' in sm_filter_now or 'tất cả' in sm_filter_now) and n_prop > 0:
+            st.markdown(f"#### 🏦 TỰ DOANH MUA ({n_prop} mã)")
+            st.caption("Tự doanh = đội tự doanh CTCK, thường có insight nội bộ.")
+            for r in sm_result['prop_only']:
+                render_smart_money_card(r)
+
+        # Errors nếu có
+        if sm_result.get('errors'):
+            with st.expander(f"⚠️ {len(sm_result['errors'])} mã không quét được"):
+                for e in sm_result['errors'][:20]:
+                    st.caption(f"• {e['ticker']}: {e['error']}")
+
+        st.caption(f"Cache 10 phút | Quét lúc: {sm_result.get('scan_date', '')}")
+
+    else:
+        sm_btn_c2.caption("👆 Nhấn 'Quét ngay' để bắt đầu (kết quả cache 10 phút).")
+
 # ==============================================================================
 # TAB 5: SECTOR ROTATION
 # ==============================================================================
