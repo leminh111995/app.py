@@ -22,6 +22,17 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V32 - FireAnt API cho Smart Money
+# ==============================================================================
+# THAY ĐỔI CHÍNH:
+#   - get_foreign() và get_proprietary() V23 luôn trả None
+#   - V32: Implement FireAnt API (restv2.fireant.vn) để lấy data thật
+#   - Cache 30 phút mỗi mã để tránh spam API
+#   - Nếu FireAnt fail → fallback graceful (báo lỗi rõ ràng)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V33
+# ==============================================================================
 # Quant System V31 - Fix Smart Money Scanner
 # ==============================================================================
 # BUG FIX:
@@ -465,14 +476,111 @@ def get_vnindex_cached() -> pd.DataFrame:
         'close':  close_p.values,
         'volume': df_basket.sum(axis=1).values,
     }).reset_index(drop=True)
-def _normalize_flow_df(df): return None   # stub — API không khả dụng
+def _normalize_flow_df(df): return None   # stub legacy
 def fetch_all_flows(ticker: str, days: int = FOREIGN_DAYS) -> dict:
-    """API dòng tiền không khả dụng với Vnstock hiện tại."""
-    return {'foreign': None, 'proprietary': None, 'source': 'none'}
+    """[V32] Wrapper — thử FireAnt API."""
+    return {
+        'foreign': get_foreign(ticker, days),
+        'proprietary': get_proprietary(ticker, days),
+        'source': 'fireant',
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V32] FIREANT API — Lấy data foreign trading thật
+# ──────────────────────────────────────────────────────────────────────────────
+import requests as _requests
+
+FIREANT_BASE = "https://restv2.fireant.vn"
+FIREANT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json',
+    'Referer': 'https://fireant.vn/',
+}
+
+
+@st.cache_data(ttl=1800, max_entries=200, show_spinner=False)
+def _fireant_foreign(ticker: str, days: int = 20) -> pd.DataFrame | None:
+    """[V32] Gọi FireAnt API lấy foreign buy/sell.
+    URL: /symbols/{ticker}/foreign-buy-sells?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+    Trả về DataFrame với cột: date, buyval, sellval, netval (đơn vị: VND)."""
+    try:
+        end_date = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+        start_date = (datetime.now(TZ_VN) - timedelta(days=days + 10)).strftime('%Y-%m-%d')
+        url = f"{FIREANT_BASE}/symbols/{ticker}/foreign-buy-sells"
+        params = {'startDate': start_date, 'endDate': end_date}
+        r = _requests.get(url, params=params, headers=FIREANT_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        rows = []
+        for item in data:
+            try:
+                rows.append({
+                    'date': item.get('date', '')[:10],
+                    'buyval': float(item.get('buyValue', 0) or 0),
+                    'sellval': float(item.get('sellValue', 0) or 0),
+                    'netval': float(item.get('buyValue', 0) or 0) - float(item.get('sellValue', 0) or 0),
+                    'buyvol': float(item.get('buyVolume', 0) or 0),
+                    'sellvol': float(item.get('sellVolume', 0) or 0),
+                })
+            except Exception:
+                continue
+        if not rows:
+            return None
+        df = pd.DataFrame(rows).sort_values('date').reset_index(drop=True)
+        return df
+    except Exception as e:
+        return None
+
+
+@st.cache_data(ttl=1800, max_entries=200, show_spinner=False)
+def _fireant_proprietary(ticker: str, days: int = 20) -> pd.DataFrame | None:
+    """[V32] Gọi FireAnt API lấy proprietary (tự doanh).
+    URL: /symbols/{ticker}/proprietary-trading?startDate=...&endDate=...
+    """
+    try:
+        end_date = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+        start_date = (datetime.now(TZ_VN) - timedelta(days=days + 10)).strftime('%Y-%m-%d')
+        url = f"{FIREANT_BASE}/symbols/{ticker}/proprietary-trading"
+        params = {'startDate': start_date, 'endDate': end_date}
+        r = _requests.get(url, params=params, headers=FIREANT_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        rows = []
+        for item in data:
+            try:
+                rows.append({
+                    'date': item.get('date', '')[:10],
+                    'buyval': float(item.get('buyValue', 0) or 0),
+                    'sellval': float(item.get('sellValue', 0) or 0),
+                    'netval': float(item.get('buyValue', 0) or 0) - float(item.get('sellValue', 0) or 0),
+                    'buyvol': float(item.get('buyVolume', 0) or 0),
+                    'sellvol': float(item.get('sellVolume', 0) or 0),
+                })
+            except Exception:
+                continue
+        if not rows:
+            return None
+        df = pd.DataFrame(rows).sort_values('date').reset_index(drop=True)
+        return df
+    except Exception:
+        return None
+
+
 def get_foreign(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    return None
+    """[V32] Lấy data khối ngoại từ FireAnt API."""
+    return _fireant_foreign(ticker, days)
+
+
 def get_proprietary(ticker: str, days: int = FOREIGN_DAYS) -> pd.DataFrame | None:
-    return None
+    """[V32] Lấy data tự doanh từ FireAnt API."""
+    return _fireant_proprietary(ticker, days)
 # ==============================================================================
 # 3. CHỈ BÁO KỸ THUẬT (có thêm ATR, ADX, OBV — NÂNG CẤP #10 #11)
 # ==============================================================================
@@ -8731,6 +8839,24 @@ with tab_shark:
         "(hoặc cả 2) mua **liên tục N ngày**. Đây là dấu hiệu smart money đang gom hàng. "
         "**Lưu ý:** App không khuyến nghị mua. Mã smart money mua không có nghĩa chắc chắn tăng."
     )
+
+    # [V32] Health check FireAnt API
+    with st.expander("🔧 Kiểm tra kết nối API (FireAnt)", expanded=False):
+        if st.button("🩺 Test API ngay", key="sm_health"):
+            with st.spinner("Đang test..."):
+                test_df = get_foreign('ACB', days=5)
+                if test_df is not None and not test_df.empty:
+                    st.success(f"✅ FireAnt API hoạt động! Lấy được {len(test_df)} dòng data cho ACB")
+                    st.dataframe(test_df.tail(5))
+                else:
+                    st.error(
+                        "❌ FireAnt API KHÔNG khả dụng (lỗi 403 hoặc data rỗng).\\n\\n"
+                        "**Nguyên nhân có thể:**\\n"
+                        "• FireAnt chặn IP của Streamlit Cloud\\n"
+                        "• API endpoint đã đổi\\n"
+                        "• Mạng tạm thời lỗi\\n\\n"
+                        "**Giải pháp:** Báo Claude để rollback về V29 (không có tab Cá Mập)."
+                    )
 
     # ── BỘ ĐIỀU KHIỂN ──
     with st.container(border=True):
