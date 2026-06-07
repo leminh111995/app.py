@@ -22,6 +22,16 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V35 - Fix V34 dùng E1VFVN30 (vnstock VN-Index 403)
+# ==============================================================================
+# BUG FIX:
+#   - V34 dùng get_vnindex_cached() → 403 Forbidden
+#   - V35: Các function V34 nhận df_vni làm tham số (lấy từ session)
+#   - Đồng nhất với Tab 6 hiện tại (đã dùng E1VFVN30 thành công)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V36
+# ==============================================================================
 # Quant System V34 - VN-Index Decision Helper (Combo B)
 # ==============================================================================
 # 6 TÍNH NĂNG MỚI vào Tab 6:
@@ -5301,18 +5311,20 @@ def _cached_stress_test(positions_str: str, vni_drop: float, date_key: str) -> d
 # [V34] VN-INDEX DECISION HELPER — Combo B (6 tính năng)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=900, max_entries=5, show_spinner=False)
-def calc_vni_decision_score(date_key: str) -> dict:
-    """[V34-D1+D2] Tính điểm tổng và checklist 10 dấu hiệu của VN-Index.
-    Trả về verdict + score + 10 checks + lý do.
-    Cache 15 phút."""
+def calc_vni_decision_score(df_vni_input: pd.DataFrame = None) -> dict:
+    """[V34-D1+D2 / V35-FIX] Tính điểm tổng và checklist 10 dấu hiệu của VN-Index.
+    Nhận df_vni làm tham số (từ session, đã load E1VFVN30) để tránh 403.
+    Fallback: get_vnindex_cached() nếu input None."""
     try:
-        df_vni = get_vnindex_cached()
+        if df_vni_input is not None and valid(df_vni_input):
+            df_vni = df_vni_input
+        else:
+            df_vni = get_vnindex_cached()
         if not valid(df_vni) or len(df_vni) < 60:
             return {'verdict': 'UNKNOWN', 'score': 0, 'checks': [],
                     'message': 'Không đủ data VN-Index'}
 
-        df_v = calc_indicators(df_vni.copy())
+        df_v = calc_indicators(df_vni.copy()) if 'rsi' not in df_vni.columns else df_vni.copy()
         last = df_v.iloc[-1]
         price = float(last['close'])
 
@@ -5538,18 +5550,18 @@ def calc_market_breadth_dashboard(tickers_str: str, date_key: str) -> dict:
         return {'message': f'Lỗi: {str(e)[:80]}'}
 
 
-@st.cache_data(ttl=900, max_entries=5, show_spinner=False)
-def calc_fear_greed_index(date_key: str) -> dict:
-    """[V34-B4] Fear & Greed Index proxy cho VN-Index.
-    Tính từ: RSI + Volatility + Breadth (nếu có).
-    Thang: 0-100, 0-25 Extreme Fear, 25-45 Fear, 45-55 Neutral,
-    55-75 Greed, 75-100 Extreme Greed."""
+def calc_fear_greed_index(df_vni_input: pd.DataFrame = None) -> dict:
+    """[V34-B4 / V35-FIX] Fear & Greed Index proxy.
+    Nhận df_vni từ session (E1VFVN30) để tránh 403."""
     try:
-        df_vni = get_vnindex_cached()
+        if df_vni_input is not None and valid(df_vni_input):
+            df_vni = df_vni_input
+        else:
+            df_vni = get_vnindex_cached()
         if not valid(df_vni) or len(df_vni) < 50:
             return {'index': 50, 'label': '❓ Không tính được', 'color': 'gray'}
 
-        df_v = calc_indicators(df_vni.copy())
+        df_v = calc_indicators(df_vni.copy()) if 'rsi' not in df_vni.columns else df_vni.copy()
         last = df_v.iloc[-1]
 
         # Thành phần 1: RSI (0-100, càng cao càng GREED)
@@ -5625,15 +5637,18 @@ def calc_fear_greed_index(date_key: str) -> dict:
         return {'index': 50, 'label': f'❓ Lỗi: {str(e)[:50]}', 'color': 'gray'}
 
 
-def calc_vni_support_resistance() -> dict:
-    """[V34-B5] Tìm mức kháng cự / hỗ trợ gần nhất của VN-Index.
-    Dùng pivot points đơn giản (đỉnh/đáy 20 phiên + BB)."""
+def calc_vni_support_resistance(df_vni_input: pd.DataFrame = None) -> dict:
+    """[V34-B5 / V35-FIX] Tìm mức kháng cự / hỗ trợ gần nhất.
+    Nhận df_vni từ session (E1VFVN30)."""
     try:
-        df_vni = get_vnindex_cached()
+        if df_vni_input is not None and valid(df_vni_input):
+            df_vni = df_vni_input
+        else:
+            df_vni = get_vnindex_cached()
         if not valid(df_vni) or len(df_vni) < 30:
             return {'message': 'Không đủ data'}
 
-        df_v = calc_indicators(df_vni.copy())
+        df_v = calc_indicators(df_vni.copy()) if 'rsi' not in df_vni.columns else df_vni.copy()
         last = df_v.iloc[-1]
         cur_price = float(last['close'])
 
@@ -5694,16 +5709,18 @@ def calc_vni_support_resistance() -> dict:
         return {'message': f'Lỗi: {str(e)[:80]}'}
 
 
-def detect_vni_divergence() -> dict:
-    """[V34-C1] Phát hiện phân kỳ giữa giá VN-Index và RSI.
-    - Bearish divergence: giá tạo đỉnh cao hơn, RSI tạo đỉnh thấp hơn → đảo chiều giảm
-    - Bullish divergence: giá tạo đáy thấp hơn, RSI tạo đáy cao hơn → đảo chiều tăng."""
+def detect_vni_divergence(df_vni_input: pd.DataFrame = None) -> dict:
+    """[V34-C1 / V35-FIX] Phát hiện phân kỳ giá-RSI.
+    Nhận df_vni từ session (E1VFVN30)."""
     try:
-        df_vni = get_vnindex_cached()
+        if df_vni_input is not None and valid(df_vni_input):
+            df_vni = df_vni_input
+        else:
+            df_vni = get_vnindex_cached()
         if not valid(df_vni) or len(df_vni) < 30:
             return {'divergence': None, 'message': 'Không đủ data'}
 
-        df_v = calc_indicators(df_vni.copy())
+        df_v = calc_indicators(df_vni.copy()) if 'rsi' not in df_vni.columns else df_vni.copy()
         recent = df_v.tail(30).copy().reset_index(drop=True)
 
         prices = recent['close'].values
@@ -9128,7 +9145,7 @@ with tab6:
         # ── D1+D2: Verdict Box + Checklist ──
         try:
             _date_key = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
-            v34_decision = calc_vni_decision_score(_date_key)
+            v34_decision = calc_vni_decision_score(df_vni)
 
             if v34_decision.get('score') is not None:
                 # Big verdict box
@@ -9160,7 +9177,7 @@ with tab6:
 
         # ── B4: Fear & Greed Index ──
         try:
-            fgi = calc_fear_greed_index(_date_key)
+            fgi = calc_fear_greed_index(df_vni)
             with st.container(border=True):
                 fg_c1, fg_c2 = st.columns([1, 2])
                 with fg_c1:
@@ -9232,7 +9249,7 @@ with tab6:
 
         # ── B5: Kháng cự / Hỗ trợ VN-Index ──
         try:
-            sr = calc_vni_support_resistance()
+            sr = calc_vni_support_resistance(df_vni)
             with st.container(border=True):
                 st.markdown("### 🎯 Kháng cự / Hỗ trợ VN-Index")
                 if 'message' in sr:
@@ -9264,7 +9281,7 @@ with tab6:
 
         # ── C1: Cảnh báo phân kỳ VN-Index ──
         try:
-            div = detect_vni_divergence()
+            div = detect_vni_divergence(df_vni)
             with st.container(border=True):
                 st.markdown("### 🔀 Cảnh báo Phân Kỳ VN-Index")
                 if div.get('divergence') == 'BEARISH':
