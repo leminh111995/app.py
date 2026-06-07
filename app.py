@@ -22,6 +22,19 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V34 - VN-Index Decision Helper (Combo B)
+# ==============================================================================
+# 6 TÍNH NĂNG MỚI vào Tab 6:
+#   D1 - Verdict Box (🟢 NÊN MUA / 🟡 THẬN TRỌNG / 🔴 ĐỨNG NGOÀI)
+#   D2 - Checklist 10 dấu hiệu (có trọng số → ra điểm tổng)
+#   B1 - Market Breadth Dashboard (A/D ratio + % mã trên MA20)
+#   B4 - Fear & Greed Index proxy (RSI + Vol + Breadth)
+#   B5 - Kháng cự / Hỗ trợ VN-Index gần nhất
+#   C1 - Cảnh báo phân kỳ VN-Index (RSI vs Price)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V35
+# ==============================================================================
 # Quant System V33 - Rollback về V29 (bỏ Smart Money Scanner)
 # ==============================================================================
 # LÝ DO ROLLBACK:
@@ -5283,6 +5296,460 @@ def _cached_stress_test(positions_str: str, vni_drop: float, date_key: str) -> d
 
 
 # [V29-F1 END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V34] VN-INDEX DECISION HELPER — Combo B (6 tính năng)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=900, max_entries=5, show_spinner=False)
+def calc_vni_decision_score(date_key: str) -> dict:
+    """[V34-D1+D2] Tính điểm tổng và checklist 10 dấu hiệu của VN-Index.
+    Trả về verdict + score + 10 checks + lý do.
+    Cache 15 phút."""
+    try:
+        df_vni = get_vnindex_cached()
+        if not valid(df_vni) or len(df_vni) < 60:
+            return {'verdict': 'UNKNOWN', 'score': 0, 'checks': [],
+                    'message': 'Không đủ data VN-Index'}
+
+        df_v = calc_indicators(df_vni.copy())
+        last = df_v.iloc[-1]
+        price = float(last['close'])
+
+        checks = []
+        score = 0
+        max_score = 0
+
+        # 1. Trên MA20 — trọng số 10
+        ma20 = float(last['ma20'])
+        ok = price > ma20
+        pct_vs_ma = (price - ma20) / ma20 * 100
+        checks.append({
+            'name': f"VNI trên MA20 ({pct_vs_ma:+.2f}%)",
+            'pass': ok, 'weight': 10
+        })
+        if ok: score += 10
+        max_score += 10
+
+        # 2. Trên MA50 — trọng số 10
+        if 'ma50' in df_v.columns:
+            ma50 = float(last['ma50'])
+            ok = price > ma50
+            pct = (price - ma50) / ma50 * 100
+            checks.append({
+                'name': f"VNI trên MA50 ({pct:+.2f}%)",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+
+        # 3. MA20 > MA50 — trọng số 10
+        if 'ma50' in df_v.columns:
+            ok = float(last['ma20']) > float(last['ma50'])
+            checks.append({
+                'name': "MA20 > MA50 (xu hướng tăng)",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+
+        # 4. RSI VNI trong vùng tốt 40-65 — trọng số 10
+        rsi = float(last['rsi'])
+        if rsi >= 70:
+            ok = False
+            note = f"RSI={rsi:.0f} (quá mua, rủi ro)"
+        elif rsi <= 30:
+            ok = False
+            note = f"RSI={rsi:.0f} (quá bán, panic)"
+        elif 40 <= rsi <= 65:
+            ok = True
+            note = f"RSI={rsi:.0f} (vùng khoẻ)"
+        else:
+            ok = True  # half-credit cho 30-40 hoặc 65-70
+            note = f"RSI={rsi:.0f} (trung tính)"
+        checks.append({
+            'name': note, 'pass': ok, 'weight': 10
+        })
+        if ok: score += 10
+        max_score += 10
+
+        # 5. MACD cắt tăng — trọng số 10
+        if 'macd' in df_v.columns and 'signal' in df_v.columns:
+            macd_v = float(last['macd'])
+            sig_v = float(last['signal'])
+            ok = macd_v > sig_v
+            checks.append({
+                'name': f"MACD VNI {'>' if ok else '<'} Signal",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+
+        # 6. Volume tăng — trọng số 5
+        if 'vol_strength' in df_v.columns:
+            vol = float(last['vol_strength'])
+            ok = vol > 1.0
+            checks.append({
+                'name': f"Vol thị trường {vol:.2f}x ({'tăng' if ok else 'yếu'})",
+                'pass': ok, 'weight': 5
+            })
+            if ok: score += 5
+            max_score += 5
+
+        # 7. Return 5 ngày dương — trọng số 10
+        if len(df_v) >= 6:
+            ret_5d = (price - float(df_v['close'].iloc[-6])) / float(df_v['close'].iloc[-6]) * 100
+            ok = ret_5d > 0
+            checks.append({
+                'name': f"VNI 5 ngày: {ret_5d:+.2f}% ({'dương' if ok else 'âm'})",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+
+        # 8. Return 20 ngày dương — trọng số 10
+        if len(df_v) >= 21:
+            ret_20d = (price - float(df_v['close'].iloc[-21])) / float(df_v['close'].iloc[-21]) * 100
+            ok = ret_20d > 0
+            checks.append({
+                'name': f"VNI 20 ngày: {ret_20d:+.2f}% ({'dương' if ok else 'âm'})",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+
+        # 9. Không phải biến động cực đoan (volatility regime) — trọng số 10
+        try:
+            vol_reg = detect_volatility_regime(df_v)
+            ok = vol_reg.get('regime') not in ('EXTREME', 'HIGH_PANIC')
+            checks.append({
+                'name': f"Volatility: {vol_reg.get('regime', 'N/A')} ({'ổn' if ok else 'cao'})",
+                'pass': ok, 'weight': 10
+            })
+            if ok: score += 10
+            max_score += 10
+        except Exception:
+            pass
+
+        # 10. Bollinger Bands — VNI không chạm BB Upper (quá mua) — trọng số 5
+        if 'bb_upper' in df_v.columns:
+            bb_up = float(last['bb_upper'])
+            ok = price < bb_up * 0.98  # cách BB Upper ít nhất 2%
+            checks.append({
+                'name': f"VNI cách BB Upper ({((bb_up-price)/price*100):+.2f}%) — {'ổn' if ok else 'gần đỉnh BB'}",
+                'pass': ok, 'weight': 5
+            })
+            if ok: score += 5
+            max_score += 5
+
+        # Normalize về thang 100
+        score_norm = int(score / max_score * 100) if max_score > 0 else 0
+
+        # Verdict
+        if score_norm >= 70:
+            verdict = '🟢 NÊN MUA'
+            verdict_msg = 'Thị trường thuận lợi — Có thể tăng size lệnh'
+            color = 'green'
+        elif score_norm >= 50:
+            verdict = '🟡 THẬN TRỌNG'
+            verdict_msg = 'Tín hiệu trộn — Mua được nhưng size nhỏ + SL chặt'
+            color = 'orange'
+        elif score_norm >= 30:
+            verdict = '🟠 RỦI RO CAO'
+            verdict_msg = 'Nhiều dấu hiệu xấu — Chỉ vào với rủi ro thấp, ưu tiên mã leader'
+            color = 'orange'
+        else:
+            verdict = '🔴 ĐỨNG NGOÀI'
+            verdict_msg = 'Thị trường yếu — Nên đứng ngoài, chờ tín hiệu rõ ràng'
+            color = 'red'
+
+        return {
+            'verdict': verdict,
+            'verdict_msg': verdict_msg,
+            'color': color,
+            'score': score_norm,
+            'score_raw': score,
+            'max_score': max_score,
+            'checks': checks,
+            'n_passed': sum(1 for c in checks if c['pass']),
+            'n_total': len(checks),
+        }
+    except Exception as e:
+        return {'verdict': 'ERROR', 'score': 0, 'checks': [],
+                'message': f'Lỗi tính score: {str(e)[:80]}'}
+
+
+@st.cache_data(ttl=900, max_entries=5, show_spinner=False)
+def calc_market_breadth_dashboard(tickers_str: str, date_key: str) -> dict:
+    """[V34-B1] Market Breadth: A/D ratio + % mã trên MA20/MA50.
+    Đo "sức rộng" của thị trường."""
+    try:
+        tickers_list = json.loads(tickers_str)
+        # Lấy mẫu ngẫu nhiên 50 mã (đủ thống kê, không quá chậm)
+        sample = tickers_list[:50] if len(tickers_list) > 50 else tickers_list
+
+        up_count = 0
+        down_count = 0
+        flat_count = 0
+        above_ma20 = 0
+        above_ma50 = 0
+        total = 0
+
+        for t in sample:
+            try:
+                df_m = get_price(t, days=60)
+                if not valid(df_m) or len(df_m) < 50:
+                    continue
+                df_m = calc_indicators(df_m)
+                last_m = df_m.iloc[-1]
+                ret = float(last_m.get('return_1d', 0))
+
+                if ret > 0.001:
+                    up_count += 1
+                elif ret < -0.001:
+                    down_count += 1
+                else:
+                    flat_count += 1
+
+                price = float(last_m['close'])
+                if price > float(last_m['ma20']):
+                    above_ma20 += 1
+                if 'ma50' in df_m.columns and price > float(last_m['ma50']):
+                    above_ma50 += 1
+                total += 1
+            except Exception:
+                continue
+
+        if total == 0:
+            return {'message': 'Không quét được mã nào'}
+
+        ad_ratio = up_count / max(down_count, 1)
+
+        return {
+            'up_count': up_count,
+            'down_count': down_count,
+            'flat_count': flat_count,
+            'total': total,
+            'ad_ratio': round(ad_ratio, 2),
+            'pct_above_ma20': round(above_ma20 / total * 100, 1),
+            'pct_above_ma50': round(above_ma50 / total * 100, 1),
+        }
+    except Exception as e:
+        return {'message': f'Lỗi: {str(e)[:80]}'}
+
+
+@st.cache_data(ttl=900, max_entries=5, show_spinner=False)
+def calc_fear_greed_index(date_key: str) -> dict:
+    """[V34-B4] Fear & Greed Index proxy cho VN-Index.
+    Tính từ: RSI + Volatility + Breadth (nếu có).
+    Thang: 0-100, 0-25 Extreme Fear, 25-45 Fear, 45-55 Neutral,
+    55-75 Greed, 75-100 Extreme Greed."""
+    try:
+        df_vni = get_vnindex_cached()
+        if not valid(df_vni) or len(df_vni) < 50:
+            return {'index': 50, 'label': '❓ Không tính được', 'color': 'gray'}
+
+        df_v = calc_indicators(df_vni.copy())
+        last = df_v.iloc[-1]
+
+        # Thành phần 1: RSI (0-100, càng cao càng GREED)
+        rsi = float(last['rsi'])
+        rsi_score = rsi  # Đã ở thang 0-100
+
+        # Thành phần 2: Volatility (ngược: vol cao = FEAR)
+        # Tính std return 20 phiên
+        if 'return_1d' in df_v.columns and len(df_v) >= 20:
+            vol_20 = float(df_v['return_1d'].tail(20).std()) * 100
+            # vol cao = fear (đảo: 100 - vol*10, capped)
+            vol_score = max(0, min(100, 100 - vol_20 * 8))
+        else:
+            vol_score = 50
+
+        # Thành phần 3: Momentum (return 20 ngày)
+        if len(df_v) >= 21:
+            ret_20 = (float(last['close']) - float(df_v['close'].iloc[-21])) / float(df_v['close'].iloc[-21]) * 100
+            # Map ret_20 từ -10% → 0, +10% → 100
+            mom_score = max(0, min(100, 50 + ret_20 * 5))
+        else:
+            mom_score = 50
+
+        # Thành phần 4: BB position (price vs upper/lower)
+        bb_score = 50
+        if 'bb_upper' in df_v.columns and 'bb_lower' in df_v.columns:
+            bb_up = float(last['bb_upper'])
+            bb_lo = float(last['bb_lower'])
+            price = float(last['close'])
+            if bb_up > bb_lo:
+                # Map: BB lower = 0 (fear), BB upper = 100 (greed)
+                bb_score = max(0, min(100, (price - bb_lo) / (bb_up - bb_lo) * 100))
+
+        # Tổng hợp (trọng số)
+        index = (rsi_score * 0.3 + vol_score * 0.2 + mom_score * 0.3 + bb_score * 0.2)
+        index = int(index)
+
+        # Label
+        if index >= 75:
+            label = '🤑 EXTREME GREED (Quá tham lam)'
+            color = 'red'
+            advice = '⚠️ Cẩn thận đỉnh — Cân nhắc chốt lời'
+        elif index >= 55:
+            label = '😊 GREED (Tham lam)'
+            color = 'orange'
+            advice = 'Thị trường hưng phấn — Mua chọn lọc, không FOMO'
+        elif index >= 45:
+            label = '😐 NEUTRAL (Trung tính)'
+            color = 'yellow'
+            advice = 'Thị trường cân bằng — Chờ tín hiệu rõ'
+        elif index >= 25:
+            label = '😰 FEAR (Sợ hãi)'
+            color = 'blue'
+            advice = 'Tâm lý yếu — Có thể là cơ hội cho người dũng cảm'
+        else:
+            label = '😨 EXTREME FEAR (Quá sợ hãi)'
+            color = 'green'
+            advice = '💎 Cơ hội đáy — Mua dần khi mọi người hoảng loạn'
+
+        return {
+            'index': index,
+            'label': label,
+            'color': color,
+            'advice': advice,
+            'components': {
+                'rsi': round(rsi_score, 1),
+                'volatility': round(vol_score, 1),
+                'momentum': round(mom_score, 1),
+                'bb_position': round(bb_score, 1),
+            }
+        }
+    except Exception as e:
+        return {'index': 50, 'label': f'❓ Lỗi: {str(e)[:50]}', 'color': 'gray'}
+
+
+def calc_vni_support_resistance() -> dict:
+    """[V34-B5] Tìm mức kháng cự / hỗ trợ gần nhất của VN-Index.
+    Dùng pivot points đơn giản (đỉnh/đáy 20 phiên + BB)."""
+    try:
+        df_vni = get_vnindex_cached()
+        if not valid(df_vni) or len(df_vni) < 30:
+            return {'message': 'Không đủ data'}
+
+        df_v = calc_indicators(df_vni.copy())
+        last = df_v.iloc[-1]
+        cur_price = float(last['close'])
+
+        # Tìm pivot trong 60 phiên gần nhất
+        recent = df_v.tail(60).copy()
+        highs = recent['high'].values
+        lows = recent['low'].values
+
+        # Tìm các đỉnh local (cao hơn 2 bên trong 3 phiên)
+        resistances = []
+        supports = []
+        for i in range(3, len(highs) - 3):
+            # Local high
+            if highs[i] > highs[i-1] and highs[i] > highs[i+1] \
+                and highs[i] > highs[i-2] and highs[i] > highs[i+2]:
+                if highs[i] > cur_price:
+                    resistances.append(float(highs[i]))
+            # Local low
+            if lows[i] < lows[i-1] and lows[i] < lows[i+1] \
+                and lows[i] < lows[i-2] and lows[i] < lows[i+2]:
+                if lows[i] < cur_price:
+                    supports.append(float(lows[i]))
+
+        # Lấy gần nhất
+        nearest_res = min(resistances) if resistances else None
+        nearest_sup = max(supports) if supports else None
+
+        # Thêm Bollinger Bands làm cản
+        bb_upper = float(last.get('bb_upper', 0))
+        bb_lower = float(last.get('bb_lower', 0))
+
+        result = {
+            'cur_price': cur_price,
+            'nearest_resistance': nearest_res,
+            'nearest_support': nearest_sup,
+            'bb_upper': bb_upper,
+            'bb_lower': bb_lower,
+        }
+
+        # Tính khoảng cách %
+        if nearest_res:
+            result['dist_to_resistance'] = round((nearest_res - cur_price) / cur_price * 100, 2)
+        if nearest_sup:
+            result['dist_to_support'] = round((cur_price - nearest_sup) / cur_price * 100, 2)
+
+        # Cảnh báo
+        warnings = []
+        if nearest_res and result.get('dist_to_resistance', 999) < 2:
+            warnings.append(f"⚠️ VNI cách kháng cự {nearest_res:,.0f} chỉ {result['dist_to_resistance']:.1f}% — sắp đụng cản")
+        if nearest_sup and result.get('dist_to_support', 999) < 2:
+            warnings.append(f"⚠️ VNI cách hỗ trợ {nearest_sup:,.0f} chỉ {result['dist_to_support']:.1f}% — nguy hiểm")
+        if bb_upper > 0 and cur_price > bb_upper * 0.99:
+            warnings.append(f"⚠️ VNI chạm/vượt BB Upper {bb_upper:,.0f} — quá mua kỹ thuật")
+        result['warnings'] = warnings
+
+        return result
+    except Exception as e:
+        return {'message': f'Lỗi: {str(e)[:80]}'}
+
+
+def detect_vni_divergence() -> dict:
+    """[V34-C1] Phát hiện phân kỳ giữa giá VN-Index và RSI.
+    - Bearish divergence: giá tạo đỉnh cao hơn, RSI tạo đỉnh thấp hơn → đảo chiều giảm
+    - Bullish divergence: giá tạo đáy thấp hơn, RSI tạo đáy cao hơn → đảo chiều tăng."""
+    try:
+        df_vni = get_vnindex_cached()
+        if not valid(df_vni) or len(df_vni) < 30:
+            return {'divergence': None, 'message': 'Không đủ data'}
+
+        df_v = calc_indicators(df_vni.copy())
+        recent = df_v.tail(30).copy().reset_index(drop=True)
+
+        prices = recent['close'].values
+        rsis = recent['rsi'].values
+
+        # Tìm 2 đỉnh cao nhất (price)
+        # Tìm 2 đáy thấp nhất (price)
+        n = len(prices)
+
+        # Lấy top 2 đỉnh
+        top_indices = sorted(range(n), key=lambda i: prices[i], reverse=True)[:5]
+        top_indices = [i for i in top_indices if 3 < i < n-3][:2]
+        # Lấy top 2 đáy
+        bot_indices = sorted(range(n), key=lambda i: prices[i])[:5]
+        bot_indices = [i for i in bot_indices if 3 < i < n-3][:2]
+
+        divergence = None
+        message = "Không phát hiện phân kỳ rõ rệt trong 30 phiên gần nhất"
+
+        if len(top_indices) >= 2:
+            top_indices.sort()  # theo thời gian
+            i1, i2 = top_indices[0], top_indices[1]
+            # Bearish: price tăng, RSI giảm
+            if prices[i2] > prices[i1] and rsis[i2] < rsis[i1] - 2:
+                divergence = 'BEARISH'
+                message = (f"🔴 PHÂN KỲ GIẢM (Bearish): Giá VNI tạo đỉnh cao hơn "
+                            f"({prices[i1]:,.0f}→{prices[i2]:,.0f}) nhưng RSI tạo đỉnh thấp hơn "
+                            f"({rsis[i1]:.0f}→{rsis[i2]:.0f}) → Cảnh báo đảo chiều GIẢM")
+
+        if not divergence and len(bot_indices) >= 2:
+            bot_indices.sort()
+            i1, i2 = bot_indices[0], bot_indices[1]
+            # Bullish: price giảm, RSI tăng
+            if prices[i2] < prices[i1] and rsis[i2] > rsis[i1] + 2:
+                divergence = 'BULLISH'
+                message = (f"🟢 PHÂN KỲ TĂNG (Bullish): Giá VNI tạo đáy thấp hơn "
+                            f"({prices[i1]:,.0f}→{prices[i2]:,.0f}) nhưng RSI tạo đáy cao hơn "
+                            f"({rsis[i1]:.0f}→{rsis[i2]:.0f}) → Tín hiệu đảo chiều TĂNG")
+
+        return {'divergence': divergence, 'message': message}
+    except Exception as e:
+        return {'divergence': None, 'message': f'Lỗi: {str(e)[:80]}'}
+
+
+# [V34 HELPERS END]
+
 # [V28 HELPERS END]
 
 
@@ -8650,6 +9117,169 @@ with tab6:
             st.info(f"ℹ️ Dữ liệu tương quan đang hiển thị cho **{loaded_ticker}**. Bấm 'Tải Dữ Liệu' để cập nhật cho {ticker}.")
         if df_stk is not None:
             df_stk = calc_indicators(df_stk) if 'rsi' not in df_stk.columns else df_stk
+
+        # ═══════════════════════════════════════════════════════════════
+        # [V34] VN-INDEX DECISION HELPER — Combo B (D1+D2+B1+B4+B5+C1)
+        # ═══════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("## 🚦 NÊN MUA / ĐỨNG NGOÀI?")
+        st.caption("⚠️ Đây là REFERENCE, không phải khuyến nghị. Bạn tự chịu trách nhiệm quyết định.")
+
+        # ── D1+D2: Verdict Box + Checklist ──
+        try:
+            _date_key = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+            v34_decision = calc_vni_decision_score(_date_key)
+
+            if v34_decision.get('score') is not None:
+                # Big verdict box
+                with st.container(border=True):
+                    vc1, vc2 = st.columns([2, 3])
+                    with vc1:
+                        if v34_decision['color'] == 'green':
+                            st.success(f"# {v34_decision['verdict']}")
+                        elif v34_decision['color'] == 'orange':
+                            st.warning(f"# {v34_decision['verdict']}")
+                        else:
+                            st.error(f"# {v34_decision['verdict']}")
+                        st.metric("Điểm tổng", f"{v34_decision['score']}/100")
+                        st.caption(f"Đạt {v34_decision['n_passed']}/{v34_decision['n_total']} tiêu chí")
+                    with vc2:
+                        st.markdown(f"### 💡 Lý do")
+                        st.info(v34_decision['verdict_msg'])
+
+                # D2: Checklist 10 dấu hiệu
+                with st.expander("📋 Chi tiết 10 dấu hiệu (D2)", expanded=False):
+                    st.caption("Mỗi dấu hiệu có trọng số khác nhau, ✅ pass = cộng điểm, ❌ fail = 0 điểm")
+                    for c in v34_decision['checks']:
+                        emoji = '✅' if c['pass'] else '❌'
+                        st.markdown(f"{emoji} **{c['name']}** _(trọng số: {c['weight']})_")
+            else:
+                st.info(v34_decision.get('message', 'Không tính được verdict'))
+        except Exception as _d1_err:
+            st.warning(f"Lỗi D1: {_d1_err}")
+
+        # ── B4: Fear & Greed Index ──
+        try:
+            fgi = calc_fear_greed_index(_date_key)
+            with st.container(border=True):
+                fg_c1, fg_c2 = st.columns([1, 2])
+                with fg_c1:
+                    st.markdown("### 😰 Fear & Greed")
+                    st.metric("Index", f"{fgi['index']}/100")
+                    if fgi['color'] == 'green':
+                        st.success(fgi['label'])
+                    elif fgi['color'] == 'blue':
+                        st.info(fgi['label'])
+                    elif fgi['color'] == 'yellow':
+                        st.warning(fgi['label'])
+                    elif fgi['color'] == 'orange':
+                        st.warning(fgi['label'])
+                    elif fgi['color'] == 'red':
+                        st.error(fgi['label'])
+                with fg_c2:
+                    st.markdown("### 💡 Lời khuyên")
+                    st.info(fgi.get('advice', ''))
+                    # Components
+                    comp = fgi.get('components', {})
+                    if comp:
+                        with st.expander("🔬 4 thành phần"):
+                            st.write(f"• **RSI** (30%): {comp.get('rsi', 0)}")
+                            st.write(f"• **Volatility** (20%): {comp.get('volatility', 0)}")
+                            st.write(f"• **Momentum** (30%): {comp.get('momentum', 0)}")
+                            st.write(f"• **BB Position** (20%): {comp.get('bb_position', 0)}")
+        except Exception as _fg_err:
+            st.warning(f"Lỗi F&G: {_fg_err}")
+
+        # ── B1: Market Breadth Dashboard ──
+        try:
+            with st.container(border=True):
+                st.markdown("### 📊 Market Breadth — Sức rộng thị trường")
+                if st.button("🔍 Quét Breadth", key="v34_breadth_btn"):
+                    with st.spinner("Đang quét 50 mã đại diện..."):
+                        _bd_tickers = list(PILLARS) + ['ACB', 'BID', 'CTG', 'STB', 'TPB',
+                                                          'NVL', 'PDR', 'KDH', 'DXG', 'KBC',
+                                                          'GVR', 'PLX', 'POW', 'MSN', 'SAB']
+                        bd = calc_market_breadth_dashboard(
+                            json.dumps(_bd_tickers),
+                            _date_key
+                        )
+                        st.session_state['_v34_bd'] = bd
+
+                bd = st.session_state.get('_v34_bd')
+                if bd and 'total' in bd:
+                    bd_c1, bd_c2, bd_c3 = st.columns(3)
+                    bd_c1.metric("🟢 Tăng / 🔴 Giảm",
+                                  f"{bd['up_count']}/{bd['down_count']}",
+                                  delta=f"A/D = {bd['ad_ratio']}")
+                    bd_c2.metric("📈 Trên MA20",
+                                  f"{bd['pct_above_ma20']}%",
+                                  delta="Mạnh" if bd['pct_above_ma20'] > 60 else ("Yếu" if bd['pct_above_ma20'] < 40 else "Trung bình"))
+                    bd_c3.metric("📈 Trên MA50",
+                                  f"{bd['pct_above_ma50']}%",
+                                  delta="Mạnh" if bd['pct_above_ma50'] > 60 else ("Yếu" if bd['pct_above_ma50'] < 40 else "Trung bình"))
+                    if bd['ad_ratio'] >= 1.5:
+                        st.success(f"💪 A/D = {bd['ad_ratio']} > 1.5 → Thị trường có sức rộng tăng tốt")
+                    elif bd['ad_ratio'] <= 0.7:
+                        st.error(f"⚠️ A/D = {bd['ad_ratio']} < 0.7 → Phần lớn mã đang giảm")
+                    else:
+                        st.info(f"A/D = {bd['ad_ratio']} → Thị trường cân bằng")
+                elif bd:
+                    st.info(bd.get('message', ''))
+                else:
+                    st.caption("Nhấn 'Quét Breadth' để xem")
+        except Exception as _bd_err:
+            st.warning(f"Lỗi Breadth: {_bd_err}")
+
+        # ── B5: Kháng cự / Hỗ trợ VN-Index ──
+        try:
+            sr = calc_vni_support_resistance()
+            with st.container(border=True):
+                st.markdown("### 🎯 Kháng cự / Hỗ trợ VN-Index")
+                if 'message' in sr:
+                    st.info(sr['message'])
+                else:
+                    sr_c1, sr_c2, sr_c3 = st.columns(3)
+                    sr_c1.metric("Giá hiện tại", f"{sr['cur_price']:,.0f}")
+                    if sr.get('nearest_resistance'):
+                        sr_c2.metric("🔴 Kháng cự gần nhất",
+                                       f"{sr['nearest_resistance']:,.0f}",
+                                       delta=f"+{sr.get('dist_to_resistance', 0):.2f}%",
+                                       delta_color="off")
+                    if sr.get('nearest_support'):
+                        sr_c3.metric("🟢 Hỗ trợ gần nhất",
+                                       f"{sr['nearest_support']:,.0f}",
+                                       delta=f"-{sr.get('dist_to_support', 0):.2f}%",
+                                       delta_color="off")
+                    # BB
+                    if sr.get('bb_upper'):
+                        st.caption(f"📊 BB Upper: {sr['bb_upper']:,.0f} | BB Lower: {sr.get('bb_lower', 0):,.0f}")
+                    # Warnings
+                    if sr.get('warnings'):
+                        for w in sr['warnings']:
+                            st.warning(w)
+                    else:
+                        st.success("✅ Không có cảnh báo kháng cự/hỗ trợ gần")
+        except Exception as _sr_err:
+            st.warning(f"Lỗi S/R: {_sr_err}")
+
+        # ── C1: Cảnh báo phân kỳ VN-Index ──
+        try:
+            div = detect_vni_divergence()
+            with st.container(border=True):
+                st.markdown("### 🔀 Cảnh báo Phân Kỳ VN-Index")
+                if div.get('divergence') == 'BEARISH':
+                    st.error(div['message'])
+                elif div.get('divergence') == 'BULLISH':
+                    st.success(div['message'])
+                else:
+                    st.info(div.get('message', 'Không phát hiện phân kỳ'))
+        except Exception as _div_err:
+            st.warning(f"Lỗi phân kỳ: {_div_err}")
+
+        st.markdown("---")
+        st.caption("⚠️ **Disclaimer:** Các chỉ báo trên là phân tích kỹ thuật REFERENCE, KHÔNG phải khuyến nghị mua/bán. Quyết định và rủi ro thuộc về bạn.")
+        # [V34 END]
+
         # ── PHẦN 1: SNAPSHOT VNI ──
         st.write("### 1️⃣ Snapshot VN-Index Hôm Nay")
         price_vni  = last_v['close']
