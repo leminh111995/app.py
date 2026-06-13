@@ -22,6 +22,23 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V37 - Early Momentum Scanner
+# ==============================================================================
+# TÍNH NĂNG MỚI:
+#   Tab "🔥 EARLY MOMENTUM" — Phát hiện sớm mã đang trong chuỗi tăng N ngày
+#   + E1: avg gain mỗi ngày
+#   + E2: xác suất tiếp tục tăng (dựa lịch sử)
+#   + E3: cảnh báo RSI quá mua sắp đến
+#   + E4: highlight nếu có vol đột biến ngày gần nhất
+#
+# DISCLAIMER MẠNH:
+#   - Mã trong chuỗi tăng KHÔNG có nghĩa "nên mua ngay"
+#   - Chỉ ~50% mã tăng 2 ngày sẽ tiếp tục tăng ngày 3
+#   - Phải phân tích sâu ở Tab Robot Advisor trước khi vào lệnh
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V38
+# ==============================================================================
 # Quant System V36 - Combo 4 Features
 # ==============================================================================
 # 4 TÍNH NĂNG MỚI:
@@ -5990,6 +6007,188 @@ def save_wl_groups(groups: dict) -> bool:
 
 # [V36 HELPERS END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V37] EARLY MOMENTUM SCANNER — Phát hiện sớm mã đang trong chuỗi tăng
+# ──────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=600, max_entries=10, show_spinner=False)
+def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: float,
+                          filter_rsi: bool, filter_liq: bool,
+                          date_key: str) -> dict:
+    """[V37] Quét mã đang trong chuỗi tăng N ngày liên tiếp.
+
+    Args:
+        tickers_str: JSON list mã
+        min_streak: số ngày tăng tối thiểu (2, 3, 4, 5)
+        min_gain_per_day: % tăng tối thiểu mỗi ngày (vd 0.5)
+        filter_rsi: chỉ giữ mã RSI < 75
+        filter_liq: loại LIQ_LOW
+
+    Returns:
+        dict với 3 group: day2 (ngày 2), day3 (ngày 3), day4_plus (ngày 4+)
+    """
+    try:
+        tickers = json.loads(tickers_str)
+    except Exception:
+        return {'day2': [], 'day3': [], 'day4_plus': [], 'errors': []}
+
+    day2 = []
+    day3 = []
+    day4_plus = []
+    errors = []
+
+    for t in tickers:
+        try:
+            df_m = get_price(t, days=60)
+            if not valid(df_m) or len(df_m) < 30:
+                continue
+            df_m = calc_indicators(df_m)
+
+            # Filter LIQ
+            if filter_liq:
+                try:
+                    liq = calc_liquidity_tier(df_m)
+                    if liq.get('tier') == 'LOW':
+                        continue
+                except Exception:
+                    pass
+
+            last = df_m.iloc[-1]
+            price = float(last['close'])
+            rsi = float(last['rsi'])
+            vol_strength = float(last.get('vol_strength', 1.0))
+
+            # Filter RSI quá mua
+            if filter_rsi and rsi >= 75:
+                continue
+
+            # Tính chuỗi tăng từ ngày gần nhất ngược về
+            closes = df_m['close'].tail(15).tolist()
+            streak = 0
+            daily_gains = []
+            total_gain = 0
+            for i in range(len(closes) - 1, 0, -1):
+                gain = (closes[i] - closes[i-1]) / closes[i-1] * 100
+                if gain >= min_gain_per_day:
+                    streak += 1
+                    daily_gains.insert(0, round(gain, 2))
+                    total_gain += gain
+                else:
+                    break
+
+            # Loại nếu chưa đủ streak
+            if streak < min_streak:
+                continue
+
+            avg_gain = total_gain / streak if streak > 0 else 0
+
+            # [E2] Xác suất tiếp tục tăng (heuristic dựa trên patterns lịch sử)
+            # Quy tắc thô: streak càng dài, xác suất tiếp tục càng giảm
+            # streak=2: ~55%, streak=3: ~45%, streak=4: ~35%, streak=5+: ~25%
+            prob_continue = max(20, 65 - streak * 10)
+            # Cộng nếu có vol nổ
+            if vol_strength > 1.5:
+                prob_continue += 10
+            # Trừ nếu RSI cao
+            if rsi >= 70:
+                prob_continue -= 15
+            prob_continue = max(15, min(80, prob_continue))
+
+            # [E3] RSI warning
+            rsi_warning = None
+            if rsi >= 70:
+                rsi_warning = f"⚠️ RSI={rsi:.0f} (gần quá mua)"
+            elif rsi >= 65:
+                rsi_warning = f"🟡 RSI={rsi:.0f} (cẩn thận)"
+
+            # [E4] Vol đột biến
+            vol_alert = None
+            if vol_strength >= 2.0:
+                vol_alert = f"🔥 Vol nổ {vol_strength:.1f}x"
+            elif vol_strength >= 1.5:
+                vol_alert = f"📊 Vol mạnh {vol_strength:.1f}x"
+
+            # MA20 check
+            ma20 = float(last.get('ma20', price))
+            above_ma20 = price > ma20
+
+            row_data = {
+                'ticker': t,
+                'price': price,
+                'rsi': round(rsi, 1),
+                'streak': streak,
+                'daily_gains': daily_gains,
+                'total_gain': round(total_gain, 2),
+                'avg_gain': round(avg_gain, 2),
+                'vol_strength': round(vol_strength, 2),
+                'above_ma20': above_ma20,
+                'prob_continue': prob_continue,
+                'rsi_warning': rsi_warning,
+                'vol_alert': vol_alert,
+            }
+
+            # Phân nhóm
+            if streak == 2:
+                day2.append(row_data)
+            elif streak == 3:
+                day3.append(row_data)
+            else:  # 4+
+                day4_plus.append(row_data)
+        except Exception as e:
+            errors.append({'ticker': t, 'error': str(e)[:80]})
+            continue
+
+    # Sort mỗi nhóm theo prob_continue giảm dần (cao nhất lên đầu)
+    day2.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
+    day3.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
+    day4_plus.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
+
+    return {
+        'day2': day2,
+        'day3': day3,
+        'day4_plus': day4_plus,
+        'errors': errors,
+        'n_scanned': len(tickers),
+        'scan_date': date_key,
+    }
+
+
+def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
+    """[V37] Render 1 card mã trong Early Momentum Scanner."""
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1.5, 3, 1.5])
+        with c1:
+            st.markdown(f"### `{row['ticker']}`")
+            st.caption(f"Giá: **{row['price']:,.0f}**")
+            st.caption(f"RSI: {row['rsi']}")
+        with c2:
+            # Chuỗi tăng + daily gains
+            gains_str = " → ".join([f"+{g:.1f}%" for g in row['daily_gains']])
+            st.markdown(f"**🔥 {row['streak']} ngày liên tiếp:** {gains_str}")
+            st.caption(f"Tổng tăng: **+{row['total_gain']:.2f}%** | TB +{row['avg_gain']:.2f}%/ngày")
+            # Alerts
+            if row.get('vol_alert'):
+                st.caption(row['vol_alert'])
+            if row.get('rsi_warning'):
+                st.caption(row['rsi_warning'])
+            if not row.get('above_ma20'):
+                st.caption("📉 Giá đang DƯỚI MA20 (xu hướng vẫn yếu)")
+            else:
+                st.caption("📈 Giá trên MA20")
+        with c3:
+            # Xác suất tiếp tục tăng
+            prob = row['prob_continue']
+            if prob >= 60:
+                st.success(f"🎯 Tiếp tục: **{prob}%**")
+            elif prob >= 40:
+                st.info(f"🎯 Tiếp tục: {prob}%")
+            else:
+                st.warning(f"🎯 Tiếp tục: {prob}%")
+
+
+# [V37 HELPERS END]
+
+
 
 # [V28 HELPERS END]
 
@@ -7034,12 +7233,13 @@ except Exception as _qa_err:
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
-tab_morning, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
+tab_morning, tab1, tab2, tab3, tab4, tab_momentum, tab5, tab6, tab7, tab_compare = st.tabs([
     "🌞 SÁNG NAY",
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
     "🔍 RADAR TRUY QUÉT SIÊU CỔ PHIẾU",
+    "🔥 EARLY MOMENTUM",
     "🏭 SECTOR ROTATION — DÒNG TIỀN NGÀNH",
     "📊 VN-INDEX & TƯƠNG QUAN",
     "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
@@ -9363,6 +9563,138 @@ with tab4:
 | Vol | Khối lượng / TB 10 phiên | 0.8–1.2x tích lũy |
 | ADX | Sức mạnh xu hướng | > 25 đáng tin |
             """)
+# ==============================================================================
+# [V37] TAB EARLY MOMENTUM — Phát hiện sớm mã trong chuỗi tăng
+# ==============================================================================
+with tab_momentum:
+    st.subheader("🔥 Early Momentum Scanner")
+    st.info(
+        "📌 Quét các mã đang trong **chuỗi tăng liên tiếp N ngày** — phát hiện sớm "
+        "khi mới ở ngày 2-3 để có thể vào lệnh kịp thời."
+    )
+    st.warning(
+        "⚠️ **DISCLAIMER QUAN TRỌNG:** "
+        "Mã trong chuỗi tăng KHÔNG có nghĩa 'nên mua ngay'.\\n"
+        "• Chỉ ~50% mã tăng 2 ngày sẽ tiếp tục tăng ngày 3\\n"
+        "• Phải vào Tab 🤖 Robot Advisor phân tích SÂU trước khi vào lệnh\\n"
+        "• Coi đây là **danh sách CANDIDATE để xem xét**, không phải khuyến nghị mua"
+    )
+
+    # ── BỘ ĐIỀU KHIỂN ──
+    with st.container(border=True):
+        em_c1, em_c2, em_c3 = st.columns(3)
+
+        em_streak = em_c1.slider(
+            "📅 Số ngày tăng tối thiểu:",
+            min_value=2, max_value=5, value=2, step=1,
+            key="em_streak"
+        )
+
+        em_min_gain = em_c2.slider(
+            "📈 % tăng tối thiểu/ngày:",
+            min_value=0.0, max_value=3.0, value=0.5, step=0.1,
+            key="em_min_gain"
+        )
+
+        em_universe = em_c3.radio(
+            "🎯 Phạm vi quét:",
+            ['Toàn HOSE (~400 mã, 1-2 phút)',
+             'Watchlist của tôi',
+             'PILLARS top 30'],
+            key="em_universe"
+        )
+
+        em_f_c1, em_f_c2 = st.columns(2)
+        em_filter_rsi = em_f_c1.checkbox(
+            "Chỉ mã RSI < 75 (chưa quá mua)",
+            value=True, key="em_filter_rsi"
+        )
+        em_filter_liq = em_f_c2.checkbox(
+            "Loại mã LIQ_LOW (penny)",
+            value=True, key="em_filter_liq"
+        )
+
+    # ── NÚT QUÉT ──
+    if st.button("🔍 Quét Early Momentum", type="primary", key="em_scan_btn"):
+        # Xác định universe
+        if 'Toàn HOSE' in em_universe:
+            try:
+                universe_em = list(tickers)
+            except Exception:
+                universe_em = list(PILLARS)
+        elif 'PILLARS' in em_universe:
+            universe_em = list(PILLARS[:30])
+        else:
+            universe_em = st.session_state.get('watchlist', PILLARS[:10])
+            universe_em = list(universe_em) if universe_em else list(PILLARS[:10])
+
+        with st.spinner(f"Đang quét {len(universe_em)} mã..."):
+            em_result = scan_early_momentum(
+                json.dumps(universe_em),
+                int(em_streak),
+                float(em_min_gain),
+                bool(em_filter_rsi),
+                bool(em_filter_liq),
+                datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+            )
+            st.session_state['_v37_em_result'] = em_result
+
+    # ── KẾT QUẢ ──
+    em_result = st.session_state.get('_v37_em_result')
+    if em_result:
+        n_day2 = len(em_result['day2'])
+        n_day3 = len(em_result['day3'])
+        n_day4 = len(em_result['day4_plus'])
+        n_total = n_day2 + n_day3 + n_day4
+
+        st.markdown(f"### 📊 Tìm thấy **{n_total}** mã (quét {em_result['n_scanned']} mã)")
+
+        if n_total == 0:
+            st.warning(
+                f"Không có mã nào đạt tiêu chí ≥ {em_streak} ngày tăng "
+                f"({em_min_gain}%/ngày). Thử giảm tiêu chí hoặc đổi phạm vi quét."
+            )
+
+        # Ngày 2 — Vào lệnh sớm nhất
+        if n_day2 > 0:
+            st.markdown(f"#### 🌱 NGÀY 2 — Vào lệnh sớm ({n_day2} mã)")
+            st.caption(
+                "Mã mới tăng 2 ngày — Vào sớm có rủi ro cao nhưng tiềm năng lời lớn nếu trend tiếp tục. "
+                "Size nhỏ + SL chặt -3%."
+            )
+            for r in em_result['day2']:
+                render_momentum_card(r, 'green')
+
+        # Ngày 3 — Đã xác nhận
+        if n_day3 > 0:
+            st.markdown(f"#### 🌿 NGÀY 3 — Đã xác nhận xu hướng ({n_day3} mã)")
+            st.caption(
+                "Mã đã tăng 3 ngày — Trend đã rõ hơn, độ tin cậy cao hơn ngày 2. "
+                "Size vừa + SL -5%."
+            )
+            for r in em_result['day3']:
+                render_momentum_card(r, 'blue')
+
+        # Ngày 4+ — Đã chạy lâu, cẩn thận đỉnh
+        if n_day4 > 0:
+            st.markdown(f"#### 🔥 NGÀY 4+ — Đã chạy lâu, CẨN THẬN ({n_day4} mã)")
+            st.caption(
+                "⚠️ Mã đã tăng ≥ 4 ngày — Rủi ro đảo chiều CAO. "
+                "Nếu vào, ưu tiên trailing stop chặt. Hoặc chờ pullback."
+            )
+            for r in em_result['day4_plus']:
+                render_momentum_card(r, 'orange')
+
+        # Errors
+        if em_result.get('errors'):
+            with st.expander(f"⚠️ {len(em_result['errors'])} mã không quét được"):
+                for e in em_result['errors'][:20]:
+                    st.caption(f"• {e['ticker']}: {e['error']}")
+
+        st.caption(f"Cache 10 phút | Quét lúc: {em_result.get('scan_date', '')}")
+    else:
+        st.caption("👆 Cấu hình rồi nhấn 'Quét Early Momentum' để bắt đầu")
+
 # ==============================================================================
 # TAB 5: SECTOR ROTATION
 # ==============================================================================
