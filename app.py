@@ -22,6 +22,17 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V36 - Combo 4 Features
+# ==============================================================================
+# 4 TÍNH NĂNG MỚI:
+#   N1 - Smart Money Proxy (phát hiện qua price-volume action)
+#   N3 - Daily Routine Wizard (tab "🌞 Sáng nay" - quy trình từng bước)
+#   N4 - Sector Strength Heatmap mở rộng (20 ngành × 4 timeframes)
+#   N6 - Watchlist Theo Ngành (gom theo nhóm)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V37
+# ==============================================================================
 # Quant System V35 - Fix V34 dùng E1VFVN30 (vnstock VN-Index 403)
 # ==============================================================================
 # BUG FIX:
@@ -5767,6 +5778,219 @@ def detect_vni_divergence(df_vni_input: pd.DataFrame = None) -> dict:
 
 # [V34 HELPERS END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V36-N1] SMART MONEY PROXY — Phát hiện qua price-volume action
+# ──────────────────────────────────────────────────────────────────────────────
+def detect_smart_money_proxy(df: pd.DataFrame) -> dict:
+    """[V36-N1] Phát hiện dấu hiệu smart money qua price-volume.
+    Không cần data foreign/prop thật.
+
+    4 trạng thái:
+    - ACCUMULATION (Tích lũy thầm): giá đi ngang/giảm nhẹ + vol thấp đều
+    - DISTRIBUTION (Phân phối thầm): giá đi ngang/tăng nhẹ + vol cao bất thường
+    - STRONG_BUY: giá tăng mạnh + vol cực cao (institutional buying)
+    - STRONG_SELL: giá giảm mạnh + vol bùng (institutional selling)
+    """
+    try:
+        if not valid(df) or len(df) < 20:
+            return {'signal': None, 'message': 'Không đủ data'}
+
+        recent = df.tail(10).copy()
+        ma_vol = float(df['volume'].tail(20).mean()) if 'volume' in df.columns else 0
+        if ma_vol == 0:
+            return {'signal': None, 'message': 'Không có vol data'}
+
+        # Tính thông số 10 ngày gần nhất
+        prices = recent['close'].values
+        vols = recent['volume'].values
+        rets = [(prices[i] - prices[i-1]) / prices[i-1] * 100 for i in range(1, len(prices))]
+
+        avg_ret = sum(rets) / len(rets) if rets else 0
+        avg_vol_ratio = sum(v / ma_vol for v in vols) / len(vols)
+        high_vol_days = sum(1 for v in vols if v > ma_vol * 1.5)
+        very_high_vol_days = sum(1 for v in vols if v > ma_vol * 2.5)
+
+        # Phân tích
+        signals = []
+        primary = None
+        message = ""
+        confidence = 0   # 0-100
+
+        # 1. STRONG_BUY: giá tăng mạnh + vol cao đều
+        if avg_ret > 0.5 and avg_vol_ratio > 1.5 and high_vol_days >= 4:
+            primary = 'STRONG_BUY'
+            message = f"💎 MUA MẠNH: Giá +{avg_ret:.1f}%/ngày + Vol {avg_vol_ratio:.1f}x (cao đều)"
+            confidence = min(95, 60 + high_vol_days * 5 + int(avg_ret * 10))
+            signals.append(message)
+
+        # 2. STRONG_SELL: giá giảm mạnh + vol bùng
+        elif avg_ret < -0.5 and avg_vol_ratio > 1.5 and high_vol_days >= 4:
+            primary = 'STRONG_SELL'
+            message = f"🔴 BÁN MẠNH: Giá {avg_ret:.1f}%/ngày + Vol {avg_vol_ratio:.1f}x"
+            confidence = min(95, 60 + high_vol_days * 5 + int(abs(avg_ret) * 10))
+            signals.append(message)
+
+        # 3. ACCUMULATION: giá ngang/giảm nhẹ + vol thấp đều (smart money gom thầm)
+        elif -0.3 < avg_ret < 0.3 and avg_vol_ratio < 1.0 and high_vol_days <= 2:
+            primary = 'ACCUMULATION'
+            message = f"🤫 TÍCH LŨY THẦM: Giá ngang ({avg_ret:+.1f}%) + Vol thấp ({avg_vol_ratio:.1f}x)"
+            confidence = 65
+            signals.append(message)
+            signals.append("→ Smart money có thể đang gom hàng. Theo dõi break out trong 1-2 tuần.")
+
+        # 4. DISTRIBUTION: giá ngang/tăng nhẹ + vol bất thường cao (smart money xả thầm)
+        elif -0.3 < avg_ret < 1.0 and avg_vol_ratio > 1.3 and very_high_vol_days >= 2:
+            primary = 'DISTRIBUTION'
+            message = f"⚠️ PHÂN PHỐI THẦM: Giá {avg_ret:+.1f}% nhưng Vol bất thường cao ({avg_vol_ratio:.1f}x, {very_high_vol_days} phiên >2.5x)"
+            confidence = 70
+            signals.append(message)
+            signals.append("→ Cảnh báo: Smart money có thể đang xả hàng cho retail. Cẩn thận!")
+
+        # 5. BREAKOUT_ATTEMPT: 1 phiên gần nhất vol cực cao + giá tăng
+        last_ret = rets[-1] if rets else 0
+        last_vol = vols[-1] / ma_vol if ma_vol > 0 else 0
+        if last_ret > 2 and last_vol > 2.5:
+            signals.append(f"🔥 Hôm nay: +{last_ret:.1f}% với Vol {last_vol:.1f}x → Breakout có vol")
+            if not primary:
+                primary = 'STRONG_BUY'
+                confidence = 75
+
+        # 6. BLOW_OFF_TOP: 1 phiên cuối tăng cực mạnh + vol khủng (cảnh báo đỉnh)
+        if last_ret > 5 and last_vol > 3:
+            signals.append(f"🎢 Hôm nay tăng {last_ret:.1f}% Vol {last_vol:.1f}x — Cẩn thận BLOW-OFF (đỉnh)")
+
+        # 7. CAPITULATION: 1 phiên cuối giảm cực mạnh + vol khủng (đáy panic)
+        if last_ret < -5 and last_vol > 3:
+            signals.append(f"💥 Hôm nay giảm {last_ret:.1f}% Vol {last_vol:.1f}x — Có thể CAPITULATION (đáy panic)")
+
+        if not primary:
+            primary = 'NEUTRAL'
+            message = "Không có dấu hiệu smart money rõ rệt"
+            confidence = 30
+
+        return {
+            'signal': primary,
+            'message': message,
+            'signals': signals,
+            'confidence': confidence,
+            'avg_ret_10d': round(avg_ret, 2),
+            'avg_vol_ratio': round(avg_vol_ratio, 2),
+            'high_vol_days': high_vol_days,
+            'very_high_vol_days': very_high_vol_days,
+        }
+    except Exception as e:
+        return {'signal': None, 'message': f'Lỗi: {str(e)[:80]}'}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V36-N4] SECTOR STRENGTH HEATMAP — 4 timeframes
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=900, max_entries=3, show_spinner=False)
+def calc_sector_strength_matrix(date_key: str) -> dict:
+    """[V36-N4] Tính ma trận sức mạnh ngành: 4 timeframes (1d, 5d, 20d, 60d).
+    Trả về DataFrame để render heatmap."""
+    try:
+        # Bản đồ ngành → mã đại diện
+        SECTOR_MAP = {
+            '🏦 Ngân hàng': ['VCB', 'BID', 'CTG', 'ACB', 'TCB', 'MBB', 'STB', 'TPB', 'VPB'],
+            '🏢 Bất động sản': ['VHM', 'VIC', 'NVL', 'PDR', 'DXG', 'KDH', 'NLG', 'KBC'],
+            '🏗️ Thép': ['HPG', 'HSG', 'NKG'],
+            '⛽ Dầu khí': ['GAS', 'PLX', 'PVD', 'PVS', 'BSR'],
+            '🛒 Bán lẻ': ['MWG', 'FRT', 'PNJ', 'DGW'],
+            '💻 Công nghệ': ['FPT', 'CMG', 'ELC'],
+            '🥛 Thực phẩm-Bia': ['VNM', 'MSN', 'SAB', 'KDC'],
+            '🚛 Logistics': ['GMD', 'HAH', 'VSC', 'PHP'],
+            '⚡ Điện-NL': ['POW', 'PPC', 'NT2', 'GEG', 'REE'],
+            '🏭 Hóa chất': ['DGC', 'DPM', 'DCM'],
+            '✈️ Hàng không': ['HVN', 'VJC'],
+            '🚗 Ô tô': ['VEA', 'TMT'],
+            '💊 Dược': ['DHG', 'IMP', 'DBD'],
+            '🌾 Nông nghiệp': ['HAG', 'HNG', 'BAF', 'DBC'],
+            '🏠 Vật liệu XD': ['HT1', 'BCC', 'VGC'],
+        }
+
+        rows = []
+        for sector, tickers_s in SECTOR_MAP.items():
+            # Tính TB return cho từng timeframe
+            ret_1d = []
+            ret_5d = []
+            ret_20d = []
+            ret_60d = []
+            n_ok = 0
+            for t in tickers_s:
+                try:
+                    df_s = get_price(t, days=80)
+                    if not valid(df_s) or len(df_s) < 65:
+                        continue
+                    cur = float(df_s['close'].iloc[-1])
+                    if len(df_s) >= 2:
+                        ret_1d.append((cur - float(df_s['close'].iloc[-2])) / float(df_s['close'].iloc[-2]) * 100)
+                    if len(df_s) >= 6:
+                        ret_5d.append((cur - float(df_s['close'].iloc[-6])) / float(df_s['close'].iloc[-6]) * 100)
+                    if len(df_s) >= 21:
+                        ret_20d.append((cur - float(df_s['close'].iloc[-21])) / float(df_s['close'].iloc[-21]) * 100)
+                    if len(df_s) >= 61:
+                        ret_60d.append((cur - float(df_s['close'].iloc[-61])) / float(df_s['close'].iloc[-61]) * 100)
+                    n_ok += 1
+                except Exception:
+                    continue
+
+            if n_ok == 0:
+                continue
+
+            rows.append({
+                'sector': sector,
+                'n_stocks': n_ok,
+                'ret_1d': round(sum(ret_1d)/len(ret_1d), 2) if ret_1d else 0,
+                'ret_5d': round(sum(ret_5d)/len(ret_5d), 2) if ret_5d else 0,
+                'ret_20d': round(sum(ret_20d)/len(ret_20d), 2) if ret_20d else 0,
+                'ret_60d': round(sum(ret_60d)/len(ret_60d), 2) if ret_60d else 0,
+            })
+
+        if not rows:
+            return {'message': 'Không quét được data'}
+
+        # Sort theo ret_5d giảm dần (xếp ngành mạnh nhất lên đầu)
+        rows.sort(key=lambda x: x['ret_5d'], reverse=True)
+
+        return {
+            'rows': rows,
+            'n_sectors': len(rows),
+            'leaders': rows[:3],   # Top 3 ngành dẫn dắt
+            'laggards': rows[-3:][::-1],  # 3 ngành tệ nhất
+        }
+    except Exception as e:
+        return {'message': f'Lỗi: {str(e)[:80]}'}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V36-N6] WATCHLIST THEO NGÀNH (Groups)
+# ──────────────────────────────────────────────────────────────────────────────
+V36_WL_GROUPS_FILE = 'v36_wl_groups.json'
+
+def load_wl_groups() -> dict:
+    """[V36-N6] Load watchlist groups (theo ngành)."""
+    try:
+        if not os.path.exists(V36_WL_GROUPS_FILE):
+            return {}
+        with open(V36_WL_GROUPS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_wl_groups(groups: dict) -> bool:
+    try:
+        with open(V36_WL_GROUPS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(groups, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+# [V36 HELPERS END]
+
+
 # [V28 HELPERS END]
 
 
@@ -6370,6 +6594,44 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Lỗi khôi phục: {e}")
 
+        # [V36-N6] WATCHLIST THEO NGÀNH
+        with st.expander("📂 Watchlist theo Ngành (N6)", expanded=False):
+            st.caption("Gom watchlist thành nhóm theo ngành — dễ theo dõi.")
+            if 'v36_wl_groups' not in st.session_state:
+                st.session_state['v36_wl_groups'] = load_wl_groups()
+            wl_groups = st.session_state['v36_wl_groups']
+
+            # Tạo group mới
+            with st.form(key="v36_wl_form", clear_on_submit=True):
+                wl_g_name = st.text_input("Tên nhóm (vd: Ngân hàng)",
+                                            max_chars=30, key="v36_wl_name")
+                wl_g_tickers = st.text_input("Mã (cách nhau dấu phẩy, vd: VCB,ACB,TCB)",
+                                                key="v36_wl_tickers").upper()
+                if st.form_submit_button("➕ Thêm nhóm"):
+                    if wl_g_name and wl_g_tickers:
+                        tickers_list_n6 = [t.strip() for t in wl_g_tickers.split(',') if t.strip()]
+                        if tickers_list_n6:
+                            wl_groups[wl_g_name] = tickers_list_n6
+                            save_wl_groups(wl_groups)
+                            st.session_state['v36_wl_groups'] = wl_groups
+                            st.success(f"Đã thêm {len(tickers_list_n6)} mã vào nhóm '{wl_g_name}'")
+
+            # List groups hiện có
+            if wl_groups:
+                st.markdown(f"**📋 {len(wl_groups)} nhóm hiện có:**")
+                for g_name, g_tickers in wl_groups.items():
+                    with st.container(border=True):
+                        gc1, gc2 = st.columns([4, 1])
+                        gc1.markdown(f"**{g_name}** ({len(g_tickers)} mã)")
+                        gc1.caption(", ".join(g_tickers))
+                        if gc2.button("❌", key=f"v36_wl_del_{g_name}"):
+                            del wl_groups[g_name]
+                            save_wl_groups(wl_groups)
+                            st.session_state['v36_wl_groups'] = wl_groups
+                            st.rerun()
+            else:
+                st.info("Chưa có nhóm nào — Thêm nhóm đầu tiên ở trên ↑")
+
         with st.expander("💧 Kiểm tra Thanh Khoản [V24-LIQ]", expanded=False):
             st.caption("Check thanh khoản mã trước khi mua — tránh mã penny rủi ro.")
             liq_chk_ticker = st.text_input("Nhập mã cần check",
@@ -6772,7 +7034,8 @@ except Exception as _qa_err:
 st.sidebar.markdown("---")
 news_headlines = []   # Đã bỏ input tin tức
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
+tab_morning, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
+    "🌞 SÁNG NAY",
     "🤖 ROBOT ADVISOR & BẢN PHÂN TÍCH",
     "🏢 BÁO CÁO TÀI CHÍNH & CANSLIM",
     "🌊 BÓC TÁCH DÒNG TIỀN",
@@ -6782,6 +7045,94 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_compare = st.tabs([
     "🌡️ HEATMAP & ĐỐI THỦ NGÀNH",
     "🆚 SO SÁNH 2 MÃ [V24]",
 ])
+# ==============================================================================
+# [V36-N3] TAB MORNING — Daily Routine Wizard
+# ==============================================================================
+with tab_morning:
+    st.subheader("🌞 Sáng Nay — Daily Routine Wizard")
+    st.info(
+        "📌 Quy trình từng bước mỗi sáng trước khi giao dịch. "
+        "Làm theo thứ tự để không bỏ sót dấu hiệu quan trọng."
+    )
+
+    # BƯỚC 1: Trạng thái thị trường
+    with st.container(border=True):
+        st.markdown("### 1️⃣ Trạng thái Thị trường")
+        st.caption("→ Quyết: Có nên mua hôm nay không? Mua mạnh hay thận trọng?")
+        m1c1, m1c2 = st.columns(2)
+        with m1c1:
+            st.markdown("**🚦 Verdict VN-Index**")
+            st.caption("Vào **Tab 📊 VN-INDEX** → nhấn '🔄 Tải Dữ Liệu' → Xem Verdict Box")
+            st.markdown("- 🟢 NÊN MUA → Vào lệnh full size")
+            st.markdown("- 🟡 THẬN TRỌNG → Size 50%, SL chặt")
+            st.markdown("- 🔴 ĐỨNG NGOÀI → Không mua")
+        with m1c2:
+            st.markdown("**😰 Fear & Greed**")
+            st.caption("Cùng Tab 📊 VN-INDEX")
+            st.markdown("- 🤑 Extreme Greed (≥75) → Chốt lời")
+            st.markdown("- 😨 Extreme Fear (≤25) → Cơ hội đáy")
+            st.markdown("- 😐 Neutral → Giao dịch bình thường")
+
+    # BƯỚC 2: Quản lý vị thế
+    with st.container(border=True):
+        st.markdown("### 2️⃣ Check vị thế đang mở")
+        st.caption("→ Có mã nào chạm SL/TP? Có cảnh báo gì?")
+        positions_m = st.session_state.get('v24_positions', [])
+        if not positions_m:
+            st.info("✅ Chưa có vị thế nào đang mở")
+        else:
+            st.write(f"💼 Đang giữ **{len(positions_m)}** vị thế")
+            for pm in positions_m:
+                try:
+                    df_pm = get_price(pm['ticker'], days=5)
+                    if valid(df_pm):
+                        cur = float(df_pm['close'].iloc[-1])
+                        pnl_pct = (cur - pm['entry']) / pm['entry'] * 100
+                        emoji = '🟢' if pnl_pct >= 0 else '🔴'
+                        st.write(f"{emoji} **{pm['ticker']}** @ {pm['entry']:,.0f} → {cur:,.0f} ({pnl_pct:+.2f}%)")
+                        # Warning logic
+                        if pnl_pct <= -7:
+                            st.error(f"   🚨 {pm['ticker']} lỗ {pnl_pct:.1f}% — CHẠM SL, CÂN NHẮC THOÁT")
+                        elif pnl_pct >= 15:
+                            st.success(f"   💎 {pm['ticker']} lời {pnl_pct:.1f}% — CÂN NHẮC CHỐT 50%")
+                except Exception:
+                    continue
+        st.markdown("**Vào sidebar 💼 Portfolio để xem chi tiết hơn**")
+
+    # BƯỚC 3: Quét cơ hội mới
+    with st.container(border=True):
+        st.markdown("### 3️⃣ Quét cơ hội mới")
+        st.caption("→ Tìm mã đáng phân tích sâu hôm nay")
+        st.markdown("- **Tab 🔍 RADAR** → Quét toàn HOSE, xem Tầng 1/2/3")
+        st.markdown("- **Tab 🏭 SECTOR** → Xem ngành nào đang leading")
+        st.markdown("- **Tab 📊 VN-INDEX** → Xem Market Breadth")
+        # Quick Pick nếu có
+        morning_alerts = st.session_state.get('_a1_alerts', [])
+        if morning_alerts:
+            st.warning(f"🔔 Bạn có {len(morning_alerts)} alert Watchlist Rules đang trigger — Check sidebar 🛠️ Tools")
+
+    # BƯỚC 4: Pre-trade Checklist
+    with st.container(border=True):
+        st.markdown("### 4️⃣ Trước khi vào lệnh")
+        st.caption("→ Bắt buộc làm để tránh impulse trading")
+        st.markdown("**Chọn mã muốn mua → Nhập vào sidebar → Tab 🤖 Robot Advisor**")
+        st.markdown("Mỗi mã sẽ có:")
+        st.markdown("- ✅ Pre-trade Checklist 5 ô bắt buộc tick")
+        st.markdown("- 📊 Position Sizing tự động")
+        st.markdown("- 🚨 FOMO Detector cảnh báo nếu mua đuổi")
+        st.markdown("- 🔴 LIQ_LOW filter loại mã penny")
+
+    # BƯỚC 5: Sau khi vào lệnh
+    with st.container(border=True):
+        st.markdown("### 5️⃣ Sau khi mua")
+        st.caption("→ Để hệ thống theo dõi giúp bạn")
+        st.markdown("- **Thêm vị thế** qua Quick Add (nút ➕ ở Tab Robot Advisor)")
+        st.markdown("- **Đặt SL cứng tại broker** ngay sau khi mua")
+        st.markdown("- **Ghi vào Trade Journal** lý do mua + mood (sidebar 💼 Portfolio → tab Trades)")
+
+    st.markdown("---")
+    st.caption("💡 **Tip:** Làm đủ 5 bước mỗi sáng → giảm 80% lệnh thua do bốc đồng")
+
 # ==============================================================================
 # TAB 1: ROBOT ADVISOR
 # ==============================================================================
@@ -7062,6 +7413,30 @@ with tab1:
             except Exception as _m8_err:
                 print(f"[V24-M8] {_m8_err}")
 
+
+            # ── [V36-N1] SMART MONEY PROXY ──
+            try:
+                smp = detect_smart_money_proxy(df)
+                if smp.get('signal') and smp['signal'] != 'NEUTRAL':
+                    with st.container(border=True):
+                        st.markdown("##### 💰 Smart Money Proxy")
+                        sig = smp['signal']
+                        if sig == 'STRONG_BUY':
+                            st.success(f"💎 **MUA MẠNH** (Confidence: {smp['confidence']}%)")
+                        elif sig == 'STRONG_SELL':
+                            st.error(f"🔴 **BÁN MẠNH** (Confidence: {smp['confidence']}%)")
+                        elif sig == 'ACCUMULATION':
+                            st.info(f"🤫 **TÍCH LŨY THẦM** — Có thể smart money đang gom (Conf: {smp['confidence']}%)")
+                        elif sig == 'DISTRIBUTION':
+                            st.warning(f"⚠️ **PHÂN PHỐI THẦM** — Có thể smart money đang xả (Conf: {smp['confidence']}%)")
+                        for s in smp.get('signals', []):
+                            st.caption(f"• {s}")
+                        st.caption(f"📊 TB 10 ngày: giá {smp['avg_ret_10d']:+.2f}%/ngày, "
+                                      f"vol {smp['avg_vol_ratio']:.2f}x, "
+                                      f"{smp['high_vol_days']} phiên vol >1.5x, "
+                                      f"{smp['very_high_vol_days']} phiên vol >2.5x")
+            except Exception as _smp_err:
+                print(f"[V36-N1] {_smp_err}")
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
@@ -8993,6 +9368,59 @@ with tab4:
 # ==============================================================================
 with tab5:
     st.subheader("🏭 Sector Rotation — Bản Đồ Dòng Tiền Luân Chuyển Ngành")
+
+    # [V36-N4] SECTOR STRENGTH MATRIX (4 timeframes)
+    with st.container(border=True):
+        st.markdown("### 🌡️ Ma trận Sức mạnh Ngành (4 khung thời gian)")
+        st.caption("Xếp hạng 15 ngành theo TB return 1d, 5d, 20d, 60d. Cache 15 phút.")
+        if st.button("📊 Quét Sector Strength", key="v36_n4_btn"):
+            with st.spinner("Đang quét 15 ngành (~1-2 phút)..."):
+                _date_key_n4 = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+                ssm = calc_sector_strength_matrix(_date_key_n4)
+                st.session_state['_v36_ssm'] = ssm
+        ssm = st.session_state.get('_v36_ssm')
+        if ssm:
+            if 'message' in ssm:
+                st.warning(ssm['message'])
+            elif ssm.get('rows'):
+                # Render DataFrame
+                df_ssm = pd.DataFrame(ssm['rows'])
+                df_show = df_ssm[['sector', 'n_stocks', 'ret_1d', 'ret_5d', 'ret_20d', 'ret_60d']]
+                df_show.columns = ['Ngành', '# mã', '1 ngày %', '5 ngày %', '20 ngày %', '60 ngày %']
+
+                # Style: gradient màu theo return
+                def color_ret(val):
+                    if val > 2:
+                        return 'background-color: #16a34a; color: white;'  # đậm xanh
+                    elif val > 0.5:
+                        return 'background-color: #86efac;'  # xanh nhạt
+                    elif val < -2:
+                        return 'background-color: #dc2626; color: white;'  # đậm đỏ
+                    elif val < -0.5:
+                        return 'background-color: #fca5a5;'  # đỏ nhạt
+                    return ''
+
+                try:
+                    styled = df_show.style.map(
+                        color_ret, subset=['1 ngày %', '5 ngày %', '20 ngày %', '60 ngày %']
+                    ).format({'1 ngày %': '{:+.2f}', '5 ngày %': '{:+.2f}',
+                                '20 ngày %': '{:+.2f}', '60 ngày %': '{:+.2f}'})
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
+                except Exception:
+                    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+                # Highlight leaders & laggards
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    st.markdown("**🏆 Top 3 ngành LEADING:**")
+                    for l in ssm.get('leaders', []):
+                        st.success(f"• {l['sector']}: +{l['ret_5d']:.2f}% (5d)")
+                with sc2:
+                    st.markdown("**📉 Top 3 ngành LAGGING:**")
+                    for l in ssm.get('laggards', []):
+                        st.error(f"• {l['sector']}: {l['ret_5d']:+.2f}% (5d)")
+
+    st.markdown("---")
     st.write(
         "Phát hiện dòng tiền đang **chảy vào ngành nào** dựa trên "
         "hiệu suất trung bình 5 ngày của các mã đại diện trong mỗi ngành."
