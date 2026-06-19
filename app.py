@@ -22,6 +22,17 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V38 - Clear Status (Tách rõ XEM/THEO DÕI/ĐÃ MUA)
+# ==============================================================================
+# 4 GIẢI PHÁP:
+#   G1 - Watchlist (theo dõi) tách rõ khỏi Positions (đã mua)
+#   G2 - 2 nút riêng: "📌 Thêm Watchlist" vs "💰 Tôi ĐÃ MUA"
+#   G4 - Reset nhanh vị thế nhầm (nút xoá với confirm)
+#   G5 - Header trạng thái mã ở đầu Tab Robot Advisor
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V39
+# ==============================================================================
 # Quant System V37 - Early Momentum Scanner
 # ==============================================================================
 # TÍNH NĂNG MỚI:
@@ -6913,6 +6924,41 @@ with st.sidebar:
         pt1, pt2 = st.tabs(["💼 Vị thế", "📈 Trades"])
 
         with pt1:
+            # ── [V38-G4] RESET NHANH VỊ THẾ NHẦM ──
+            with st.expander("🗑️ Xoá vị thế nhầm (G4)", expanded=False):
+                st.caption(
+                    "Nếu bạn đã thêm nhầm vị thế (vd: chỉ xem mã, không thực sự mua) "
+                    "→ xoá nhanh ở đây để app không tính lỗ/lời ảo."
+                )
+                _g4_positions = st.session_state.get('v24_positions', [])
+                if not _g4_positions:
+                    st.info("✅ Chưa có vị thế nào trong Portfolio")
+                else:
+                    for _i, _p in enumerate(_g4_positions):
+                        _gc1, _gc2 = st.columns([4, 1])
+                        _gc1.write(
+                            f"• **{_p['ticker']}** — {_p.get('shares', 0):,} cp "
+                            f"@ {_p.get('entry', 0):,.0f}đ "
+                            f"(thêm: {_p.get('added_at', 'N/A')})"
+                        )
+                        if _gc2.button("🗑️ Xoá", key=f"v38_g4_del_{_i}_{_p['ticker']}"):
+                            _g4_positions.pop(_i)
+                            st.session_state['v24_positions'] = _g4_positions
+                            save_positions_to_file(_g4_positions)
+                            st.success(f"Đã xoá vị thế {_p['ticker']}")
+                            st.rerun()
+                    # Nút xoá hết (cẩn thận)
+                    if st.button("🔥 Xoá TẤT CẢ vị thế (cẩn thận!)", key="v38_g4_clear_all"):
+                        if st.session_state.get('_v38_g4_confirm'):
+                            st.session_state['v24_positions'] = []
+                            save_positions_to_file([])
+                            st.session_state['_v38_g4_confirm'] = False
+                            st.success("Đã xoá toàn bộ Portfolio")
+                            st.rerun()
+                        else:
+                            st.session_state['_v38_g4_confirm'] = True
+                            st.warning("⚠️ Bấm lần nữa để xác nhận xoá HẾT")
+
             with st.form(key="pf_add_form", clear_on_submit=True):
                 pf_c1, pf_c2 = st.columns(2)
                 pf_ticker = pf_c1.text_input("Mã", max_chars=4, key="pf_ticker").upper()
@@ -7337,6 +7383,57 @@ with tab_morning:
 # TAB 1: ROBOT ADVISOR
 # ==============================================================================
 with tab1:
+    # ── [V38-G5] HEADER TRẠNG THÁI MÃ ──
+    # Phân biệt rõ: chỉ phân tích / đang theo dõi / đang giữ vị thế
+    try:
+        _v38_positions = st.session_state.get('v24_positions', []) or load_positions_from_file()
+        _v38_watchlist = st.session_state.get('watchlist', []) or []
+        _v38_my_pos = [p for p in _v38_positions if p.get('ticker') == ticker]
+        _v38_in_wl = ticker in _v38_watchlist
+
+        with st.container(border=True):
+            if _v38_my_pos:
+                # ĐANG GIỮ VỊ THẾ
+                _pos = _v38_my_pos[0]
+                try:
+                    _df_cur = get_price(ticker, days=3)
+                    _cur_price = float(_df_cur['close'].iloc[-1]) if valid(_df_cur) else _pos['entry']
+                except Exception:
+                    _cur_price = _pos['entry']
+                _pnl_pct = (_cur_price - _pos['entry']) / _pos['entry'] * 100
+                _pnl_amt = (_cur_price - _pos['entry']) * _pos['shares']
+
+                gc1, gc2, gc3 = st.columns([1.5, 2, 2])
+                with gc1:
+                    st.error(f"### 💰 ĐANG GIỮ VỊ THẾ")
+                    st.caption(f"Mã: **{ticker}**")
+                with gc2:
+                    st.metric(f"Mua @ {_pos['entry']:,.0f}",
+                                f"Hiện: {_cur_price:,.0f}",
+                                delta=f"{_pnl_pct:+.2f}%",
+                                delta_color="normal" if _pnl_pct >= 0 else "inverse")
+                    st.caption(f"📦 {_pos['shares']:,} cp | Vào lệnh: {_pos.get('added_at', 'N/A')}")
+                with gc3:
+                    st.metric("Lãi/Lỗ (đồng)",
+                                f"{_pnl_amt:+,.0f}",
+                                delta_color="normal" if _pnl_amt >= 0 else "inverse")
+                    if _pos.get('reason'):
+                        st.caption(f"📝 Lý do mua: {_pos['reason'][:60]}")
+            elif _v38_in_wl:
+                # ĐANG THEO DÕI (Watchlist)
+                gc1, gc2 = st.columns([1, 3])
+                gc1.info(f"### 📌 ĐANG THEO DÕI")
+                gc2.markdown(f"**{ticker}** đang trong Watchlist của bạn — chỉ theo dõi, "
+                              "chưa có vị thế. Không tính lỗ/lời.")
+            else:
+                # CHỈ ĐANG PHÂN TÍCH
+                gc1, gc2 = st.columns([1, 3])
+                gc1.success(f"### 🔍 CHỈ ĐANG PHÂN TÍCH")
+                gc2.markdown(f"**{ticker}** chưa có trong Watchlist hoặc Portfolio. "
+                              "Bạn chỉ đang xem xét. KHÔNG có lỗ/lời ảo.")
+    except Exception as _v38_g5_err:
+        st.caption(f"(Header trạng thái lỗi: {_v38_g5_err})")
+
     # [#7] Hiển thị kết quả cũ nếu đã phân tích (giữ khi switch tab)
     if st.session_state.get('tab1_ticker') == ticker and st.session_state.get('tab1_done'):
         st.info(f"💾 Đang hiển thị kết quả phân tích đã lưu cho **{ticker}**. Bấm nút bên dưới để phân tích lại.")
@@ -8521,64 +8618,103 @@ with tab1:
                         st.warning(f"Không tính được exit signal: {_pc_err}")
 
 
-            # ── [V24-Q5] QUICK ADD POSITION ──
-            with st.expander(f"📥 Thêm {ticker} vào Portfolio (Quick Add)"):
-                qa_c1, qa_c2, qa_c3 = st.columns([1, 1, 1])
-                qa_shares = qa_c1.number_input("Số cp", min_value=100, step=100,
-                                                  value=1000, key=f"qa_shares_{ticker}")
-                qa_entry = qa_c2.number_input("Giá vào", min_value=100.0, step=100.0,
-                                                value=float(last['close']),
-                                                key=f"qa_entry_{ticker}")
+            # ── [V24-Q5 + V38-G1+G2] QUICK ADD: Tách rõ Watchlist vs Đã mua ──
+            with st.expander(f"📌 Thao tác với {ticker}", expanded=False):
+                st.caption(
+                    "⚠️ **Phân biệt rõ:**\\n"
+                    "• 📌 **Thêm Watchlist** = chỉ theo dõi, KHÔNG tính lỗ/lời\\n"
+                    "• 💰 **Tôi ĐÃ MUA** = thực sự đã giao dịch, sẽ vào Portfolio (lỗ/lời thật)"
+                )
 
-                # [V24-F3] Cảnh báo LIQ_LOW ngay trong Quick Add
-                _liq_q5 = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
-                if _liq_q5.get('tier') == 'LOW':
-                    st.error(f"🔴 **CẢNH BÁO:** {ticker} có thanh khoản thấp — KHÔNG khuyến nghị mua")
-                    st.caption(f"Vol TB: {_liq_q5.get('vol_avg', 0)/1000:.0f}K | Turnover: {_liq_q5.get('turnover_avg', 0):.1f} tỷ")
+                v38_tab_wl, v38_tab_buy = st.tabs(["📌 Thêm Watchlist", "💰 Tôi ĐÃ MUA"])
 
-                # [V24-H3] PRE-TRADE CHECKLIST BUỘC
-                st.markdown("**📋 Tự kiểm trước khi vào lệnh:**")
-                ck1 = st.checkbox("✅ Tôi đã xác định SL rõ ràng", key=f"ck1_{ticker}")
-                ck2 = st.checkbox("✅ Size lệnh KHÔNG quá 20% vốn", key=f"ck2_{ticker}")
-                ck3 = st.checkbox("✅ Tôi KHÔNG đang FOMO (xem cảnh báo bên trên)",
-                                    key=f"ck3_{ticker}")
-                ck4 = st.checkbox("✅ Tôi có lý do CỤ THỂ để mua (không phải vì 'cảm thấy')",
-                                    key=f"ck4_{ticker}")
-                ck5 = st.checkbox("✅ Đã check chiến lược thoát (TP/SL)",
-                                    key=f"ck5_{ticker}")
-                # [V24-F3] Buộc tick thêm khi LIQ_LOW
-                ck_liq = True
-                if _liq_q5.get('tier') == 'LOW':
-                    ck_liq = st.checkbox(f"⚠️ Tôi BIẾT {ticker} có LIQ thấp & chấp nhận rủi ro kẹp hàng",
-                                            key=f"ck_liq_{ticker}")
-                all_checked = ck1 and ck2 and ck3 and ck4 and ck5 and ck_liq
+                # ─── G2-A: TAB WATCHLIST (theo dõi, không tính P&L) ───
+                with v38_tab_wl:
+                    st.markdown(f"### 📌 Thêm **{ticker}** vào Watchlist")
+                    st.caption("Chỉ để theo dõi, KHÔNG vào Portfolio, KHÔNG tính lỗ/lời.")
+                    wl_note = st.text_input(
+                        "Ghi chú (tuỳ chọn)",
+                        key=f"v38_wl_note_{ticker}",
+                        placeholder="VD: Chờ break MA20 mới vào"
+                    )
+                    if st.button(f"📌 Thêm {ticker} vào Watchlist",
+                                  key=f"v38_wl_add_{ticker}",
+                                  type="primary"):
+                        if 'watchlist' not in st.session_state:
+                            st.session_state['watchlist'] = list(PILLARS[:10])
+                        if ticker not in st.session_state['watchlist']:
+                            st.session_state['watchlist'].append(ticker)
+                            try:
+                                with open('watchlist.json', 'w', encoding='utf-8') as f:
+                                    json.dump(list(st.session_state['watchlist']), f, ensure_ascii=False)
+                            except Exception:
+                                pass
+                            st.success(f"✅ Đã thêm **{ticker}** vào Watchlist (chỉ theo dõi)")
+                            if wl_note:
+                                st.caption(f"📝 Ghi chú: {wl_note}")
+                        else:
+                            st.info(f"{ticker} đã có trong Watchlist")
 
-                # Lý do mua (bắt buộc nếu đã tick hết)
-                qa_reason = ""
-                if all_checked:
-                    qa_reason = st.text_input("📝 Lý do mua (bắt buộc)",
-                                                 key=f"qa_reason_{ticker}",
-                                                 placeholder="VD: Chân sóng 7/12 + MACD bullish + RSI 48 hồi")
+                # ─── G2-B: TAB ĐÃ MUA (vào Portfolio thật) ───
+                with v38_tab_buy:
+                    st.markdown(f"### 💰 Tôi ĐÃ MUA **{ticker}**")
+                    st.warning(
+                        "⚠️ **Chỉ ấn nếu bạn ĐÃ THỰC SỰ giao dịch trên broker. "
+                        "Sau khi thêm, app sẽ tính lỗ/lời theo giá entry.**"
+                    )
 
-                if qa_c3.button(f"➕ Thêm {ticker}",
+                    qa_c1, qa_c2 = st.columns(2)
+                    qa_shares = qa_c1.number_input("Số cp đã mua", min_value=100, step=100,
+                                                      value=1000, key=f"qa_shares_{ticker}")
+                    qa_entry = qa_c2.number_input("Giá vào lệnh thực tế", min_value=100.0, step=100.0,
+                                                    value=float(last['close']),
+                                                    key=f"qa_entry_{ticker}")
+
+                    # [V24-F3] Cảnh báo LIQ_LOW
+                    _liq_q5 = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
+                    if _liq_q5.get('tier') == 'LOW':
+                        st.error(f"🔴 **CẢNH BÁO:** {ticker} có thanh khoản thấp — KHÔNG khuyến nghị mua")
+                        st.caption(f"Vol TB: {_liq_q5.get('vol_avg', 0)/1000:.0f}K | Turnover: {_liq_q5.get('turnover_avg', 0):.1f} tỷ")
+
+                    # [V24-H3] PRE-TRADE CHECKLIST (giờ là "post-trade confirmation")
+                    st.markdown("**📋 Xác nhận quyết định mua của bạn:**")
+                    ck1 = st.checkbox("✅ Tôi đã xác định SL rõ ràng", key=f"ck1_{ticker}")
+                    ck2 = st.checkbox("✅ Size lệnh KHÔNG quá 20% vốn", key=f"ck2_{ticker}")
+                    ck3 = st.checkbox("✅ Tôi KHÔNG FOMO khi mua", key=f"ck3_{ticker}")
+                    ck4 = st.checkbox("✅ Tôi có lý do CỤ THỂ để mua", key=f"ck4_{ticker}")
+                    ck5 = st.checkbox("✅ Đã có chiến lược thoát (TP/SL)", key=f"ck5_{ticker}")
+                    ck_liq = True
+                    if _liq_q5.get('tier') == 'LOW':
+                        ck_liq = st.checkbox(f"⚠️ Tôi BIẾT {ticker} có LIQ thấp & chấp nhận rủi ro",
+                                                key=f"ck_liq_{ticker}")
+                    all_checked = ck1 and ck2 and ck3 and ck4 and ck5 and ck_liq
+
+                    qa_reason = ""
+                    if all_checked:
+                        qa_reason = st.text_input("📝 Lý do mua (bắt buộc)",
+                                                     key=f"qa_reason_{ticker}",
+                                                     placeholder="VD: Chân sóng 7/12 + MACD bullish")
+
+                    if st.button(f"💰 Xác nhận: TÔI ĐÃ MUA {qa_shares:,} cp {ticker}",
                                   key=f"qa_add_{ticker}",
+                                  type="primary",
                                   disabled=not (all_checked and qa_reason)):
-                    if 'v24_positions' not in st.session_state:
-                        st.session_state['v24_positions'] = load_positions_from_file()
-                    # [V24-E1] Lưu thêm tier info để time-based exit
-                    _liq_save = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
-                    _label_save = label if 'label' in dir() else 'UNKNOWN'
-                    st.session_state['v24_positions'].append({
-                        'ticker': ticker, 'shares': qa_shares, 'entry': qa_entry,
-                        'reason': qa_reason,
-                        'added_at': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
-                        'tier_at_buy': _label_save,  # Tier lúc mua
-                        'liq_tier_at_buy': _liq_save.get('tier', 'UNKNOWN'),
-                    })
-                    save_positions_to_file(st.session_state['v24_positions'])
-                    st.success(f"✅ Đã thêm {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ + lý do")
-                if not all_checked:
-                    st.caption("⏳ Hãy tick đủ 5 ô và ghi lý do để mở nút Thêm")
+                        if 'v24_positions' not in st.session_state:
+                            st.session_state['v24_positions'] = load_positions_from_file()
+                        _liq_save = st.session_state.get('_v24_liq', {'tier': 'UNKNOWN'})
+                        _label_save = label if 'label' in dir() else 'UNKNOWN'
+                        st.session_state['v24_positions'].append({
+                            'ticker': ticker, 'shares': qa_shares, 'entry': qa_entry,
+                            'reason': qa_reason,
+                            'added_at': datetime.now(TZ_VN).strftime('%Y-%m-%d %H:%M'),
+                            'tier_at_buy': _label_save,
+                            'liq_tier_at_buy': _liq_save.get('tier', 'UNKNOWN'),
+                        })
+                        save_positions_to_file(st.session_state['v24_positions'])
+                        st.success(f"✅ Đã thêm vào Portfolio: {qa_shares:,} cp {ticker} @ {qa_entry:,.0f}đ")
+                        st.balloons()
+                    if not all_checked:
+                        st.caption("⏳ Hãy tick đủ checklist + ghi lý do để mở nút xác nhận")
 
 
             # ── [V24-R2] AUTO POSITION SIZING ──
