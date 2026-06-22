@@ -22,6 +22,24 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V39 - MA10 Booster (Vạch vàng signal)
+# ==============================================================================
+# TÍNH NĂNG MỚI:
+#   MA10 Cross-Up Signal — phát hiện mã vừa cắt lên MA10 (vạch vàng)
+#
+# CÁCH 2 (AN TOÀN): Tách function riêng calc_ma10_bonus()
+#   - V23 core (calc_total_score) NGUYÊN BẢN
+#   - MA10 Bonus là điểm cộng riêng (0-30 điểm)
+#   - Có thể bật/tắt, dễ rollback
+#
+# WIRE 3 CHỖ:
+#   M1 - Tab Robot Advisor / Section A: box "🟡 MA10 Signal"
+#   M2 - Tab Early Momentum: filter + cột MA10 trên card
+#   M3 - Tab Radar: cột MA10 Bonus trong ranking
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V40
+# ==============================================================================
 # Quant System V38 - Clear Status (Tách rõ XEM/THEO DÕI/ĐÃ MUA)
 # ==============================================================================
 # 4 GIẢI PHÁP:
@@ -2643,6 +2661,8 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
             if row.get('Div Bullish'):     badges.append("✅ Phân Kỳ Dương")
             if row.get('Div Bearish'):     badges.append("⚠️ Phân Kỳ Âm")
             if row.get('Wave Bottom'):     badges.append(f"✅ Chân Sóng ({row.get('Wave Score',0)}/8)")
+            # [V39-M3] MA10 badge
+            if row.get('MA10 Cross Up'):   badges.append("⭐ MA10 Cross-Up (V39)")
             if badges:
                 st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
                 if len(badges) > 3:
@@ -6025,8 +6045,8 @@ def save_wl_groups(groups: dict) -> bool:
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: float,
                           filter_rsi: bool, filter_liq: bool,
-                          date_key: str) -> dict:
-    """[V37] Quét mã đang trong chuỗi tăng N ngày liên tiếp.
+                          date_key: str, filter_ma10_cross: bool = False) -> dict:
+    """[V37+V39] Quét mã đang trong chuỗi tăng N ngày liên tiếp.
 
     Args:
         tickers_str: JSON list mã
@@ -6034,9 +6054,10 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
         min_gain_per_day: % tăng tối thiểu mỗi ngày (vd 0.5)
         filter_rsi: chỉ giữ mã RSI < 75
         filter_liq: loại LIQ_LOW
+        filter_ma10_cross: [V39] chỉ giữ mã VỪA CẮT LÊN MA10 (3 phiên gần nhất)
 
     Returns:
-        dict với 3 group: day2 (ngày 2), day3 (ngày 3), day4_plus (ngày 4+)
+        dict với 3 group: day2, day3, day4_plus
     """
     try:
         tickers = json.loads(tickers_str)
@@ -6123,6 +6144,18 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
             ma20 = float(last.get('ma20', price))
             above_ma20 = price > ma20
 
+            # [V39-M2] MA10 Booster info
+            try:
+                ma10_info = calc_ma10_bonus(df_m)
+            except Exception:
+                ma10_info = {'bonus': 0, 'signal_type': None,
+                              'is_cross_up': False, 'cur_ma10': 0,
+                              'message': '', 'pct_vs_ma10': 0}
+
+            # [V39] Filter: nếu user yêu cầu chỉ mã cắt lên MA10 → skip nếu không cắt
+            if filter_ma10_cross and not ma10_info.get('is_cross_up'):
+                continue
+
             row_data = {
                 'ticker': t,
                 'price': price,
@@ -6136,6 +6169,12 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 'prob_continue': prob_continue,
                 'rsi_warning': rsi_warning,
                 'vol_alert': vol_alert,
+                # [V39] MA10 info
+                'ma10': round(ma10_info.get('cur_ma10', 0), 2),
+                'ma10_bonus': ma10_info.get('bonus', 0),
+                'ma10_signal': ma10_info.get('signal_type'),
+                'ma10_is_cross_up': ma10_info.get('is_cross_up', False),
+                'ma10_pct': ma10_info.get('pct_vs_ma10', 0),
             }
 
             # Phân nhóm
@@ -6165,19 +6204,26 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
 
 
 def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
-    """[V37] Render 1 card mã trong Early Momentum Scanner."""
+    """[V37+V39] Render 1 card mã trong Early Momentum Scanner."""
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.5, 3, 1.5])
         with c1:
             st.markdown(f"### `{row['ticker']}`")
             st.caption(f"Giá: **{row['price']:,.0f}**")
             st.caption(f"RSI: {row['rsi']}")
+            # [V39] MA10 mini
+            if row.get('ma10', 0) > 0:
+                pct = row.get('ma10_pct', 0)
+                if row.get('ma10_is_cross_up'):
+                    st.caption(f"⭐ MA10: {row['ma10']:,.2f} (cross-up!)")
+                elif pct > 0:
+                    st.caption(f"📊 MA10: {row['ma10']:,.2f} ({pct:+.1f}%)")
+                else:
+                    st.caption(f"📉 MA10: {row['ma10']:,.2f} ({pct:+.1f}%)")
         with c2:
-            # Chuỗi tăng + daily gains
             gains_str = " → ".join([f"+{g:.1f}%" for g in row['daily_gains']])
             st.markdown(f"**🔥 {row['streak']} ngày liên tiếp:** {gains_str}")
             st.caption(f"Tổng tăng: **+{row['total_gain']:.2f}%** | TB +{row['avg_gain']:.2f}%/ngày")
-            # Alerts
             if row.get('vol_alert'):
                 st.caption(row['vol_alert'])
             if row.get('rsi_warning'):
@@ -6186,6 +6232,9 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
                 st.caption("📉 Giá đang DƯỚI MA20 (xu hướng vẫn yếu)")
             else:
                 st.caption("📈 Giá trên MA20")
+            # [V39] MA10 signal nếu cross_up
+            if row.get('ma10_is_cross_up'):
+                st.success(f"⭐ **MA10 CROSS-UP** — Vạch vàng signal mới (+{row.get('ma10_bonus', 0)} điểm)")
         with c3:
             # Xác suất tiếp tục tăng
             prob = row['prob_continue']
@@ -6195,9 +6244,148 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
                 st.info(f"🎯 Tiếp tục: {prob}%")
             else:
                 st.warning(f"🎯 Tiếp tục: {prob}%")
+            # [V39] MA10 Bonus
+            ma10_b = row.get('ma10_bonus', 0)
+            if ma10_b > 0:
+                st.caption(f"🟡 MA10: +{ma10_b}")
+            elif ma10_b < 0:
+                st.caption(f"🟡 MA10: {ma10_b}")
 
 
 # [V37 HELPERS END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V39] MA10 BOOSTER — Vạch vàng signal (tách riêng, không động V23 core)
+# ──────────────────────────────────────────────────────────────────────────────
+def calc_ma10_bonus(df: pd.DataFrame) -> dict:
+    """[V39] Tính điểm bonus dựa trên tín hiệu MA10 (vạch vàng).
+
+    Logic:
+    - +10 nếu giá > MA10 (cơ bản)
+    - +10 nếu MA10 slope DƯƠNG trong 5 phiên (đường vàng uốn lên)
+    - +15 nếu vừa CẮT LÊN MA10 trong 3 phiên gần nhất (signal mới, ngon nhất)
+    - -10 nếu giá vừa cắt XUỐNG MA10 trong 3 phiên (cảnh báo)
+    - Cap 0-30 điểm
+
+    Returns: dict {bonus, signal_type, message, details, is_cross_up, is_cross_down}
+    """
+    try:
+        if not valid(df) or len(df) < 15:
+            return {'bonus': 0, 'signal_type': None,
+                    'message': 'Không đủ data tính MA10',
+                    'details': [], 'is_cross_up': False, 'is_cross_down': False}
+
+        # Đảm bảo có cột ma10
+        df_calc = df.copy()
+        if 'ma10' not in df_calc.columns:
+            df_calc['ma10'] = df_calc['close'].rolling(10).mean()
+
+        # Lấy 6 phiên gần nhất
+        recent = df_calc.tail(6).copy().reset_index(drop=True)
+        if len(recent) < 6 or pd.isna(recent['ma10'].iloc[-1]):
+            return {'bonus': 0, 'signal_type': None,
+                    'message': 'MA10 chưa tính được',
+                    'details': [], 'is_cross_up': False, 'is_cross_down': False}
+
+        last = recent.iloc[-1]
+        cur_price = float(last['close'])
+        cur_ma10 = float(last['ma10'])
+
+        bonus = 0
+        details = []
+        signal_type = 'NEUTRAL'
+        is_cross_up = False
+        is_cross_down = False
+
+        # 1. Giá > MA10 hay không?
+        above_ma10 = cur_price > cur_ma10
+        pct_vs_ma10 = (cur_price - cur_ma10) / cur_ma10 * 100
+        if above_ma10:
+            bonus += 10
+            details.append(f"✅ Giá {cur_price:,.2f} > MA10 {cur_ma10:,.2f} ({pct_vs_ma10:+.2f}%)")
+        else:
+            details.append(f"❌ Giá {cur_price:,.2f} dưới MA10 {cur_ma10:,.2f} ({pct_vs_ma10:+.2f}%)")
+
+        # 2. MA10 slope (dương hay âm trong 5 phiên)
+        ma10_5d_ago = float(recent['ma10'].iloc[0])
+        if not pd.isna(ma10_5d_ago) and ma10_5d_ago > 0:
+            slope_pct = (cur_ma10 - ma10_5d_ago) / ma10_5d_ago * 100
+            if slope_pct > 0.3:
+                bonus += 10
+                details.append(f"✅ MA10 slope DƯƠNG (+{slope_pct:.2f}% trong 5 phiên) — Vạch vàng uốn lên")
+            elif slope_pct < -0.3:
+                details.append(f"❌ MA10 slope ÂM ({slope_pct:.2f}% trong 5 phiên)")
+            else:
+                details.append(f"🟡 MA10 slope NGANG ({slope_pct:+.2f}% trong 5 phiên)")
+
+        # 3. Cross-up trong 3 phiên gần nhất?
+        # Xét 3 phiên cuối: nếu có phiên nào giá CẮT LÊN MA10 (trước dưới, sau trên)
+        for i in range(len(recent) - 3, len(recent)):
+            if i < 1: continue
+            prev_close = float(recent['close'].iloc[i-1])
+            prev_ma10 = float(recent['ma10'].iloc[i-1])
+            cur_close_i = float(recent['close'].iloc[i])
+            cur_ma10_i = float(recent['ma10'].iloc[i])
+            if pd.isna(prev_ma10) or pd.isna(cur_ma10_i): continue
+            # Cross up: trước dưới, sau trên
+            if prev_close <= prev_ma10 and cur_close_i > cur_ma10_i:
+                is_cross_up = True
+                bonus += 15
+                days_ago = len(recent) - 1 - i
+                ago_str = "Hôm nay" if days_ago == 0 else f"{days_ago} phiên trước"
+                details.append(f"⭐ VỪA CẮT LÊN MA10 ({ago_str}) — Signal mới, mạnh nhất")
+                break
+            # Cross down: trước trên, sau dưới
+            if prev_close >= prev_ma10 and cur_close_i < cur_ma10_i:
+                is_cross_down = True
+                bonus -= 10
+                days_ago = len(recent) - 1 - i
+                ago_str = "Hôm nay" if days_ago == 0 else f"{days_ago} phiên trước"
+                details.append(f"🔴 VỪA CẮT XUỐNG MA10 ({ago_str}) — Cảnh báo")
+                break
+
+        # Cap bonus 0-30
+        bonus = max(-10, min(30, bonus))
+
+        # Xác định signal_type
+        if is_cross_up:
+            signal_type = 'CROSS_UP'
+            message = '⭐ MA10 CROSS-UP — TÍCH CỰC (vừa cắt lên vạch vàng)'
+        elif is_cross_down:
+            signal_type = 'CROSS_DOWN'
+            message = '🔴 MA10 CROSS-DOWN — Cảnh báo (vừa cắt xuống)'
+        elif above_ma10 and bonus >= 15:
+            signal_type = 'STRONG_ABOVE'
+            message = '🟢 Trên MA10 + slope dương — Xu hướng tăng'
+        elif above_ma10:
+            signal_type = 'ABOVE'
+            message = '🟢 Trên MA10 — Tích cực nhẹ'
+        elif not above_ma10:
+            signal_type = 'BELOW'
+            message = '🔴 Dưới MA10 — Xu hướng yếu'
+        else:
+            signal_type = 'NEUTRAL'
+            message = 'Tín hiệu MA10 trung tính'
+
+        return {
+            'bonus': bonus,
+            'signal_type': signal_type,
+            'message': message,
+            'details': details,
+            'is_cross_up': is_cross_up,
+            'is_cross_down': is_cross_down,
+            'cur_price': cur_price,
+            'cur_ma10': cur_ma10,
+            'pct_vs_ma10': round(pct_vs_ma10, 2),
+        }
+    except Exception as e:
+        return {'bonus': 0, 'signal_type': None,
+                'message': f'Lỗi: {str(e)[:60]}',
+                'details': [], 'is_cross_up': False, 'is_cross_down': False}
+
+
+# [V39 HELPER END]
+
 
 
 
@@ -7734,6 +7922,50 @@ with tab1:
                                       f"{smp['very_high_vol_days']} phiên vol >2.5x")
             except Exception as _smp_err:
                 print(f"[V36-N1] {_smp_err}")
+
+            # ── [V39-M1] MA10 BOOSTER — Vạch vàng signal ──
+            try:
+                ma10_res = calc_ma10_bonus(df)
+                with st.container(border=True):
+                    st.markdown("##### 🟡 MA10 Signal (Vạch vàng)")
+                    sig_type = ma10_res.get('signal_type')
+                    if sig_type == 'CROSS_UP':
+                        st.success(f"### {ma10_res['message']}")
+                    elif sig_type == 'CROSS_DOWN':
+                        st.error(f"### {ma10_res['message']}")
+                    elif sig_type == 'STRONG_ABOVE':
+                        st.success(ma10_res['message'])
+                    elif sig_type == 'ABOVE':
+                        st.info(ma10_res['message'])
+                    elif sig_type == 'BELOW':
+                        st.warning(ma10_res['message'])
+                    else:
+                        st.info(ma10_res.get('message', ''))
+
+                    for d in ma10_res.get('details', []):
+                        st.caption(d)
+
+                    # Hiển thị điểm bonus + tổng kết hợp
+                    bonus = ma10_res.get('bonus', 0)
+                    ma10_c1, ma10_c2 = st.columns(2)
+                    if bonus > 0:
+                        ma10_c1.metric("🎯 MA10 Bonus", f"+{bonus} điểm",
+                                          delta="Tích cực" if bonus >= 15 else "Nhẹ")
+                    elif bonus < 0:
+                        ma10_c1.metric("🎯 MA10 Bonus", f"{bonus} điểm",
+                                          delta="Cảnh báo", delta_color="inverse")
+                    else:
+                        ma10_c1.metric("🎯 MA10 Bonus", "0 điểm", delta="Trung tính")
+
+                    # Tổng điểm V39 = điểm V23 + MA10 bonus
+                    _v23_score = total_score if 'total_score' in dir() else 0
+                    _v39_total = _v23_score + bonus
+                    ma10_c2.metric("📊 Điểm V39 (V23 + MA10)",
+                                      f"{_v39_total:.0f}",
+                                      delta=f"V23: {_v23_score:.0f} | MA10: {bonus:+d}",
+                                      delta_color="off")
+            except Exception as _ma10_err:
+                st.caption(f"[V39-M1 lỗi]: {_ma10_err}")
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
@@ -9557,6 +9789,16 @@ with tab4:
                     'Wave Bottom': bool(wave_s['is_wave_bottom']),
                     'Wave Score':  wave_s['score'],
                 }
+                # [V39-M3] MA10 Booster info — thêm vào row Radar
+                try:
+                    _ma10_r = calc_ma10_bonus(df_s)
+                    row['MA10 Bonus'] = _ma10_r.get('bonus', 0)
+                    row['MA10 Signal'] = _ma10_r.get('signal_type')
+                    row['MA10 Cross Up'] = bool(_ma10_r.get('is_cross_up', False))
+                except Exception:
+                    row['MA10 Bonus'] = 0
+                    row['MA10 Signal'] = None
+                    row['MA10 Cross Up'] = False
                 # [V24-LIQ+F2] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) — không push 2 lần
                 try:
                     _liq_rd = calc_liquidity_tier_cached(t, date_key)
@@ -9740,7 +9982,7 @@ with tab_momentum:
             key="em_universe"
         )
 
-        em_f_c1, em_f_c2 = st.columns(2)
+        em_f_c1, em_f_c2, em_f_c3 = st.columns(3)
         em_filter_rsi = em_f_c1.checkbox(
             "Chỉ mã RSI < 75 (chưa quá mua)",
             value=True, key="em_filter_rsi"
@@ -9748,6 +9990,11 @@ with tab_momentum:
         em_filter_liq = em_f_c2.checkbox(
             "Loại mã LIQ_LOW (penny)",
             value=True, key="em_filter_liq"
+        )
+        em_filter_ma10 = em_f_c3.checkbox(
+            "⭐ Chỉ mã CẮT LÊN MA10 (V39)",
+            value=False, key="em_filter_ma10",
+            help="Chỉ giữ mã vừa cắt lên vạch vàng MA10 trong 3 phiên gần nhất"
         )
 
     # ── NÚT QUÉT ──
@@ -9771,7 +10018,8 @@ with tab_momentum:
                 float(em_min_gain),
                 bool(em_filter_rsi),
                 bool(em_filter_liq),
-                datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+                datetime.now(TZ_VN).strftime('%Y-%m-%d-%H'),
+                filter_ma10_cross=bool(em_filter_ma10),
             )
             st.session_state['_v37_em_result'] = em_result
 
