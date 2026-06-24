@@ -22,6 +22,25 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V40 - Float Analysis + Mini Defensive
+# ==============================================================================
+# 4 TÍNH NĂNG MỚI (Float):
+#   F1 - Float Tier Classifier (HIGH/MED/LOW/VERY_LOW)
+#   F2 - Box "📦 Float Analysis" trong Section A (Tab Robot Advisor)
+#   F3 - Cảnh báo "Float thấp + Vol nổ = Pump risk"
+#   F4 - Badge Float warning trong card Early Momentum & Radar
+#
+# DEFENSIVE (Mini):
+#   D1 - Cache 24h cho trading_stats() — giảm risk hit API
+#   D2 - Try/except cứng — fail graceful nếu vnstock vỡ
+#
+# DATA SOURCE:
+#   Hiện tại: vnstock 3.2.6 (trading_stats() trả về free_float_percentage)
+#   Tương lai: V41+ sẽ swap sang SSI FastConnect API khi có key
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V41
+# ==============================================================================
 # Quant System V39 - MA10 Booster (Vạch vàng signal)
 # ==============================================================================
 # TÍNH NĂNG MỚI:
@@ -2663,6 +2682,13 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
             if row.get('Wave Bottom'):     badges.append(f"✅ Chân Sóng ({row.get('Wave Score',0)}/8)")
             # [V39-M3] MA10 badge
             if row.get('MA10 Cross Up'):   badges.append("⭐ MA10 Cross-Up (V39)")
+            # [V40-F4] Float warning badge
+            float_tier_r = row.get('Float Tier')
+            float_pct_r = row.get('Float Pct', 0)
+            if float_tier_r == 'VERY_LOW':
+                badges.append(f"🔴 Float CỰC thấp ({float_pct_r:.0f}%)")
+            elif float_tier_r == 'LOW':
+                badges.append(f"🟠 Float thấp ({float_pct_r:.0f}%)")
             if badges:
                 st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
                 if len(badges) > 3:
@@ -6156,6 +6182,23 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
             if filter_ma10_cross and not ma10_info.get('is_cross_up'):
                 continue
 
+            # [V40-F4] Float info (nhẹ, không filter, chỉ hiển thị)
+            try:
+                _f_date = date_key[:10]  # chỉ lấy YYYY-MM-DD
+                float_info = get_float_data_cached(t, _f_date)
+                if float_info.get('available'):
+                    _ff = float_info['free_float_pct']
+                    _fr = float_info['foreigner_pct']
+                    _ft = classify_float_tier(_ff, _fr)
+                    float_tier = _ft['tier']
+                    float_pct = _ff
+                else:
+                    float_tier = None
+                    float_pct = 0
+            except Exception:
+                float_tier = None
+                float_pct = 0
+
             row_data = {
                 'ticker': t,
                 'price': price,
@@ -6175,6 +6218,9 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 'ma10_signal': ma10_info.get('signal_type'),
                 'ma10_is_cross_up': ma10_info.get('is_cross_up', False),
                 'ma10_pct': ma10_info.get('pct_vs_ma10', 0),
+                # [V40-F4] Float info
+                'float_tier': float_tier,
+                'float_pct': float_pct,
             }
 
             # Phân nhóm
@@ -6204,7 +6250,7 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
 
 
 def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
-    """[V37+V39] Render 1 card mã trong Early Momentum Scanner."""
+    """[V37+V39+V40] Render 1 card mã trong Early Momentum Scanner."""
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.5, 3, 1.5])
         with c1:
@@ -6235,6 +6281,13 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
             # [V39] MA10 signal nếu cross_up
             if row.get('ma10_is_cross_up'):
                 st.success(f"⭐ **MA10 CROSS-UP** — Vạch vàng signal mới (+{row.get('ma10_bonus', 0)} điểm)")
+            # [V40-F4] Float warning badge (nếu data có)
+            float_tier = row.get('float_tier')
+            float_pct = row.get('float_pct', 0)
+            if float_tier == 'VERY_LOW':
+                st.error(f"🔴 Float CỰC thấp ({float_pct:.1f}%) — Pump risk cao")
+            elif float_tier == 'LOW':
+                st.warning(f"🟠 Float thấp ({float_pct:.1f}%) — Cẩn thận biến động")
         with c3:
             # Xác suất tiếp tục tăng
             prob = row['prob_continue']
@@ -6385,6 +6438,159 @@ def calc_ma10_bonus(df: pd.DataFrame) -> dict:
 
 
 # [V39 HELPER END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V40-F1+D1+D2] FLOAT ANALYSIS — Cache 24h + Defensive guard
+# ──────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=86400, max_entries=500, show_spinner=False)
+def get_float_data_cached(ticker: str, date_key: str) -> dict:
+    """[V40-F1] Lấy data Float từ vnstock trading_stats() — cache 24h.
+
+    Returns dict:
+        free_float_pct: float (0-100)
+        foreigner_pct: float (0-100)
+        max_foreigner_pct: float (0-100)
+        room_left_pct: float (0-100) = max_foreigner - foreigner
+        outstanding_share: int (optional)
+        avg_match_val_1m: float (tỷ)
+        available: bool — True nếu có data, False nếu thiếu/lỗi
+        error: str — chi tiết lỗi nếu fail
+    """
+    result = {
+        'free_float_pct': 0,
+        'foreigner_pct': 0,
+        'max_foreigner_pct': 0,
+        'room_left_pct': 0,
+        'outstanding_share': 0,
+        'avg_match_val_1m': 0,
+        'available': False,
+        'error': None,
+    }
+    try:
+        stk_fin = Vnstock().stock(symbol=ticker, source='VCI')
+        df_ts = stk_fin.company.trading_stats()
+        if not valid(df_ts):
+            result['error'] = 'No data'
+            return result
+        row_ts = df_ts.iloc[0]
+        ff = float(row_ts.get('free_float_percentage', 0) or 0) * 100
+        fr = float(row_ts.get('foreigner_percentage', 0) or 0) * 100
+        fr_max = float(row_ts.get('maximum_foreign_percentage', 0) or 0) * 100
+        avg_val = float(row_ts.get('average_match_value1_month', 0) or 0)
+        out_sh = int(row_ts.get('outstanding_share', 0) or 0)
+
+        # Nếu data trả về 0 cả → coi như không có
+        if ff == 0 and fr == 0 and fr_max == 0:
+            result['error'] = 'All zeros — data có thể thiếu'
+            return result
+
+        result.update({
+            'free_float_pct': round(ff, 2),
+            'foreigner_pct': round(fr, 2),
+            'max_foreigner_pct': round(fr_max, 2),
+            'room_left_pct': round(max(0, fr_max - fr), 2),
+            'outstanding_share': out_sh,
+            'avg_match_val_1m': round(avg_val / 1e9, 1),  # đổi sang tỷ
+            'available': True,
+            'error': None,
+        })
+        return result
+    except Exception as e:
+        result['error'] = str(e)[:100]
+        return result
+
+
+def classify_float_tier(free_float_pct: float, foreigner_pct: float = 0) -> dict:
+    """[V40-F1] Phân loại Float Tier.
+
+    Tier:
+    - 🟢 HIGH: Free Float > 50%
+    - 🟡 MEDIUM: 20-50%
+    - 🟠 LOW: 10-20%
+    - 🔴 VERY_LOW: < 10%
+    - ❓ UNKNOWN: data thiếu
+    """
+    if free_float_pct <= 0:
+        return {
+            'tier': 'UNKNOWN',
+            'tier_emoji': '❓',
+            'message': 'Không có data Float — không đánh giá được',
+            'color': 'gray',
+            'size_advice': 'N/A',
+        }
+
+    # Effective float = free float - foreign holding nếu > 10%
+    effective_float = free_float_pct - max(0, foreigner_pct - 10)
+
+    if effective_float > 50:
+        tier = 'HIGH'
+        emoji = '🟢'
+        msg = 'Float cao — Nhiều hàng, khó bị làm giá'
+        color = 'green'
+        size = 'Đầy đủ (≤ 20% NAV)'
+    elif effective_float > 20:
+        tier = 'MEDIUM'
+        emoji = '🟡'
+        msg = 'Float trung bình — Bình thường'
+        color = 'yellow'
+        size = 'Vừa (≤ 15% NAV)'
+    elif effective_float > 10:
+        tier = 'LOW'
+        emoji = '🟠'
+        msg = 'Float thấp — Dễ biến động, cẩn thận'
+        color = 'orange'
+        size = 'Nhỏ (≤ 10% NAV)'
+    else:
+        tier = 'VERY_LOW'
+        emoji = '🔴'
+        msg = 'Float CỰC thấp — Dễ bị làm giá, rủi ro cao'
+        color = 'red'
+        size = 'Rất nhỏ (≤ 5% NAV) hoặc TRÁNH'
+
+    return {
+        'tier': tier,
+        'tier_emoji': emoji,
+        'message': msg,
+        'color': color,
+        'size_advice': size,
+        'effective_float': round(effective_float, 2),
+    }
+
+
+def detect_float_pump_risk(float_data: dict, vol_strength: float,
+                              price_change_pct: float) -> dict:
+    """[V40-F3] Phát hiện risk "tay to làm giá" khi Float thấp + Vol nổ + Giá nhảy.
+
+    Trigger conditions (cần TẤT CẢ):
+    - Free Float < 20% (LOW/VERY_LOW)
+    - Vol > 3x TB
+    - |Price change| > 5%
+    """
+    if not float_data.get('available'):
+        return {'risk': False, 'message': None}
+
+    ff = float_data.get('free_float_pct', 0)
+    if ff <= 0 or ff >= 20:
+        return {'risk': False, 'message': None}
+
+    if vol_strength < 3.0:
+        return {'risk': False, 'message': None}
+
+    if abs(price_change_pct) < 5.0:
+        return {'risk': False, 'message': None}
+
+    return {
+        'risk': True,
+        'severity': 'HIGH' if ff < 10 else 'MEDIUM',
+        'message': (f"⚠️ **PUMP RISK** — Free Float chỉ {ff:.1f}% + Vol {vol_strength:.1f}x + "
+                    f"Giá {price_change_pct:+.1f}% trong 1 phiên\n"
+                    f"→ CÓ THỂ BỊ LÀM GIÁ. Cực kỳ cẩn thận!"),
+    }
+
+
+# [V40 FLOAT HELPERS END]
+
 
 
 
@@ -7966,6 +8172,77 @@ with tab1:
                                       delta_color="off")
             except Exception as _ma10_err:
                 st.caption(f"[V39-M1 lỗi]: {_ma10_err}")
+
+            # ── [V40-F2+F3] FLOAT ANALYSIS — Số CP lưu hành & cảnh báo Pump Risk ──
+            try:
+                _date_key_f = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                float_data = get_float_data_cached(ticker, _date_key_f)
+                with st.container(border=True):
+                    st.markdown("##### 📦 Float Analysis (V40)")
+
+                    if not float_data.get('available'):
+                        st.info(
+                            f"ℹ️ Không có data Float cho {ticker} "
+                            f"(lý do: {float_data.get('error', 'N/A')[:60]})"
+                        )
+                    else:
+                        ff = float_data['free_float_pct']
+                        fr = float_data['foreigner_pct']
+                        fr_max = float_data['max_foreigner_pct']
+                        room = float_data['room_left_pct']
+                        out_sh = float_data['outstanding_share']
+                        avg_val = float_data['avg_match_val_1m']
+
+                        # Classifier
+                        ft = classify_float_tier(ff, fr)
+                        tier = ft['tier']
+                        emoji = ft['tier_emoji']
+
+                        # Hiển thị tier verdict
+                        if tier == 'HIGH':
+                            st.success(f"### {emoji} FLOAT {tier} — {ft['message']}")
+                        elif tier == 'MEDIUM':
+                            st.info(f"### {emoji} FLOAT {tier} — {ft['message']}")
+                        elif tier == 'LOW':
+                            st.warning(f"### {emoji} FLOAT {tier} — {ft['message']}")
+                        elif tier == 'VERY_LOW':
+                            st.error(f"### {emoji} FLOAT {tier} — {ft['message']}")
+
+                        # Metrics
+                        fc1, fc2, fc3, fc4 = st.columns(4)
+                        fc1.metric("Free Float", f"{ff:.1f}%",
+                                     help="% CP có thể giao dịch tự do (loại trừ CP bị khoá)")
+                        fc2.metric("Khối ngoại giữ", f"{fr:.1f}%",
+                                     delta=f"Room còn {room:.1f}%",
+                                     delta_color="off")
+                        fc3.metric("Effective Float",
+                                     f"~{ft.get('effective_float', 0):.1f}%",
+                                     help="Free Float - phần ngoại giữ chặt (>10%)")
+                        if avg_val > 0:
+                            fc4.metric("Giá trị khớp TB 1 tháng",
+                                         f"{avg_val:.1f} tỷ/phiên")
+
+                        # Outstanding shares (nếu có)
+                        if out_sh > 0:
+                            st.caption(f"📊 Tổng CP lưu hành: **{out_sh:,}** cp")
+
+                        # Size advice
+                        st.markdown(f"💡 **Khuyến nghị size lệnh:** {ft['size_advice']}")
+
+                        # F3: Pump risk detection
+                        try:
+                            _last = df.iloc[-1]
+                            _vol = float(_last.get('vol_strength', 1.0))
+                            _ret_1d = float(_last.get('return_1d', 0)) * 100
+                            pump = detect_float_pump_risk(float_data, _vol, _ret_1d)
+                            if pump.get('risk'):
+                                st.error(pump['message'])
+                        except Exception:
+                            pass
+
+                        st.caption(f"💾 Cache 24h | Data: vnstock trading_stats()")
+            except Exception as _f_err:
+                st.caption(f"[V40-F2 lỗi]: {_f_err}")
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
@@ -9799,6 +10076,22 @@ with tab4:
                     row['MA10 Bonus'] = 0
                     row['MA10 Signal'] = None
                     row['MA10 Cross Up'] = False
+
+                # [V40-F4] Float info — thêm vào row Radar (chỉ hiển thị, không filter)
+                try:
+                    _float_r = get_float_data_cached(t, date_key[:10] if isinstance(date_key, str) else datetime.now(TZ_VN).strftime('%Y-%m-%d'))
+                    if _float_r.get('available'):
+                        _ff_r = _float_r['free_float_pct']
+                        _fr_r = _float_r['foreigner_pct']
+                        _ft_r = classify_float_tier(_ff_r, _fr_r)
+                        row['Float Tier'] = _ft_r['tier']
+                        row['Float Pct'] = _ff_r
+                    else:
+                        row['Float Tier'] = None
+                        row['Float Pct'] = 0
+                except Exception:
+                    row['Float Tier'] = None
+                    row['Float Pct'] = 0
                 # [V24-LIQ+F2] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) — không push 2 lần
                 try:
                     _liq_rd = calc_liquidity_tier_cached(t, date_key)
