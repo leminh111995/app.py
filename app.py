@@ -22,6 +22,31 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V41 - Rút Chân Detector
+# ==============================================================================
+# TÍNH NĂNG MỚI: Phát hiện "Rút chân về tham chiếu" (đặc trưng thị trường VN)
+#   - Trong phiên giảm sâu rồi BẬT VỀ tham chiếu cuối phiên
+#   - Cho thấy lực mua bắt đáy mạnh → thường tăng phiên sau
+#
+# 3 VỊ TRÍ WIRE:
+#   R1 - Section A (Tab Robot Advisor): Box "🦵 Rút Chân"
+#   R2 - Tab Radar: Badge "🦵 Rút Chân STRONG"
+#   R3 - Tab Early Momentum: Filter + Badge trong card
+#
+# PHÂN LOẠI:
+#   💎 STRONG: recovery ≥85% + drop ≥-4% (lực bắt đáy cực mạnh)
+#   🟢 GOOD: recovery ≥70% + drop ≥-3% (lực mua tốt)
+#   🟡 MILD: recovery ≥65% + drop ≥-2.5% (hồi nhẹ)
+#
+# QUALITY SCORE để phân biệt rút chân thật/giả:
+#   +10 nếu tại hỗ trợ (gần MA20/MA50)
+#   +10 nếu vol nổ (≥1.5x)
+#   +10 nếu RSI < 65 (chưa quá mua)
+#   -15 nếu trong downtrend mạnh (dead cat bounce)
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V42
+# ==============================================================================
 # Quant System V40 - Float Analysis + Mini Defensive
 # ==============================================================================
 # 4 TÍNH NĂNG MỚI (Float):
@@ -2689,6 +2714,15 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
                 badges.append(f"🔴 Float CỰC thấp ({float_pct_r:.0f}%)")
             elif float_tier_r == 'LOW':
                 badges.append(f"🟠 Float thấp ({float_pct_r:.0f}%)")
+            # [V41-R2] Rút Chân badge
+            rc_sig_r = row.get('RC Signal')
+            rc_q_r = row.get('RC Quality', 0)
+            if rc_sig_r == 'STRONG' and rc_q_r >= 60:
+                badges.append(f"💎 Rút Chân STRONG (Q{rc_q_r})")
+            elif rc_sig_r == 'GOOD' and rc_q_r >= 50:
+                badges.append(f"🟢 Rút Chân GOOD (Q{rc_q_r})")
+            elif rc_sig_r == 'MILD':
+                badges.append(f"🟡 Rút Chân MILD")
             if badges:
                 st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
                 if len(badges) > 3:
@@ -6071,19 +6105,13 @@ def save_wl_groups(groups: dict) -> bool:
 @st.cache_data(ttl=600, max_entries=10, show_spinner=False)
 def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: float,
                           filter_rsi: bool, filter_liq: bool,
-                          date_key: str, filter_ma10_cross: bool = False) -> dict:
-    """[V37+V39] Quét mã đang trong chuỗi tăng N ngày liên tiếp.
+                          date_key: str, filter_ma10_cross: bool = False,
+                          filter_rut_chan: bool = False) -> dict:
+    """[V37+V39+V41] Quét mã đang trong chuỗi tăng N ngày liên tiếp.
 
     Args:
-        tickers_str: JSON list mã
-        min_streak: số ngày tăng tối thiểu (2, 3, 4, 5)
-        min_gain_per_day: % tăng tối thiểu mỗi ngày (vd 0.5)
-        filter_rsi: chỉ giữ mã RSI < 75
-        filter_liq: loại LIQ_LOW
-        filter_ma10_cross: [V39] chỉ giữ mã VỪA CẮT LÊN MA10 (3 phiên gần nhất)
-
-    Returns:
-        dict với 3 group: day2, day3, day4_plus
+        filter_ma10_cross: [V39] chỉ mã VỪA CẮT LÊN MA10
+        filter_rut_chan: [V41] chỉ mã có RÚT CHÂN signal (STRONG/GOOD/MILD)
     """
     try:
         tickers = json.loads(tickers_str)
@@ -6199,6 +6227,20 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 float_tier = None
                 float_pct = 0
 
+            # [V41-R3] Rút Chân info
+            try:
+                rc_info = detect_rut_chan(df_m)
+                rc_signal = rc_info.get('signal')
+                rc_quality = rc_info.get('quality_score', 0)
+            except Exception:
+                rc_info = {}
+                rc_signal = None
+                rc_quality = 0
+
+            # [V41] Filter: nếu user yêu cầu chỉ mã rút chân → skip nếu không có
+            if filter_rut_chan and not rc_signal:
+                continue
+
             row_data = {
                 'ticker': t,
                 'price': price,
@@ -6221,6 +6263,11 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 # [V40-F4] Float info
                 'float_tier': float_tier,
                 'float_pct': float_pct,
+                # [V41-R3] Rút Chân
+                'rc_signal': rc_signal,
+                'rc_quality': rc_quality,
+                'rc_drop_pct': rc_info.get('drop_pct', 0),
+                'rc_recovery_pct': rc_info.get('recovery_pct', 0),
             }
 
             # Phân nhóm
@@ -6288,6 +6335,14 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
                 st.error(f"🔴 Float CỰC thấp ({float_pct:.1f}%) — Pump risk cao")
             elif float_tier == 'LOW':
                 st.warning(f"🟠 Float thấp ({float_pct:.1f}%) — Cẩn thận biến động")
+            # [V41-R3] Rút Chân badge
+            rc_sig = row.get('rc_signal')
+            if rc_sig == 'STRONG':
+                st.success(f"💎 **RÚT CHÂN STRONG** — Giảm {row.get('rc_drop_pct', 0):.1f}% rồi hồi {row.get('rc_recovery_pct', 0):.0f}% (Quality: {row.get('rc_quality', 0)}/100)")
+            elif rc_sig == 'GOOD':
+                st.info(f"🟢 Rút chân GOOD — Hồi {row.get('rc_recovery_pct', 0):.0f}% (Q: {row.get('rc_quality', 0)}/100)")
+            elif rc_sig == 'MILD':
+                st.caption(f"🟡 Rút chân nhẹ — Hồi {row.get('rc_recovery_pct', 0):.0f}%")
         with c3:
             # Xác suất tiếp tục tăng
             prob = row['prob_continue']
@@ -6590,6 +6645,184 @@ def detect_float_pump_risk(float_data: dict, vol_strength: float,
 
 
 # [V40 FLOAT HELPERS END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V41] RÚT CHÂN DETECTOR — Phát hiện nến rút chân về tham chiếu
+# ──────────────────────────────────────────────────────────────────────────────
+
+def detect_rut_chan(df: pd.DataFrame) -> dict:
+    """[V41] Phát hiện nến "rút chân về tham chiếu" - đặc trưng VN market.
+
+    Logic:
+    - Phiên giảm sâu trong ngày nhưng cuối phiên hồi gần về open (tham chiếu)
+    - Cho thấy có lực mua bắt đáy mạnh
+    - Thường báo hiệu sóng tăng
+
+    Phân loại:
+    - STRONG: recovery ≥85% + drop ≥-4%
+    - GOOD: recovery ≥70% + drop ≥-3%
+    - MILD: recovery ≥65% + drop ≥-2.5%
+    - None: không đạt
+
+    Returns dict:
+        signal: 'STRONG' | 'GOOD' | 'MILD' | None
+        recovery_pct: % phục hồi từ đáy
+        drop_pct: % giảm sâu nhất trong phiên
+        close_vs_open_pct: close so với open
+        vol_strength: vol / TB
+        quality_score: 0-100 (phân biệt thật/giả)
+        is_at_support: bool — tại MA20/MA50 không
+        rsi: float
+        message: str — mô tả
+        warnings: list — cảnh báo nếu là rút chân giả
+    """
+    try:
+        if not valid(df) or len(df) < 20:
+            return {'signal': None, 'message': 'Không đủ data'}
+
+        df_calc = df.copy()
+        if 'ma10' not in df_calc.columns:
+            df_calc['ma10'] = df_calc['close'].rolling(10).mean()
+        if 'ma20' not in df_calc.columns:
+            df_calc['ma20'] = df_calc['close'].rolling(20).mean()
+        if 'ma50' not in df_calc.columns:
+            df_calc['ma50'] = df_calc['close'].rolling(50).mean()
+
+        last = df_calc.iloc[-1]
+        open_p = float(last['open'])
+        close_p = float(last['close'])
+        high_p = float(last['high'])
+        low_p = float(last['low'])
+
+        if open_p <= 0 or high_p <= low_p:
+            return {'signal': None, 'message': 'Data nến không hợp lệ'}
+
+        # Tính chỉ số
+        drop_pct = (low_p - open_p) / open_p * 100  # % giảm sâu nhất so với open
+        close_vs_open_pct = (close_p - open_p) / open_p * 100  # % close vs open
+        range_size = high_p - low_p
+        if range_size <= 0:
+            return {'signal': None, 'message': 'Range 0'}
+        recovery_pct = (close_p - low_p) / range_size * 100  # % phục hồi từ đáy
+
+        # Vol strength
+        vol_strength = float(last.get('vol_strength', 1.0))
+        rsi = float(last.get('rsi', 50))
+
+        # Trigger check
+        signal = None
+        # Điều kiện 1: phải đóng cửa gần/trên tham chiếu (close ≥ open * 0.99)
+        # → close không thấp hơn open quá 1%
+        close_near_or_above_open = close_vs_open_pct >= -1.0
+
+        # Điều kiện 2: phải giảm sâu trong phiên
+        # Điều kiện 3: phục hồi mạnh
+
+        if close_near_or_above_open:
+            if drop_pct <= -4.0 and recovery_pct >= 85 and vol_strength >= 1.2:
+                signal = 'STRONG'
+                emoji = '💎'
+                msg = (f"{emoji} **RÚT CHÂN STRONG** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
+                        f"về tham chiếu (close {close_vs_open_pct:+.2f}% so open)")
+            elif drop_pct <= -3.0 and recovery_pct >= 70 and vol_strength >= 1.0:
+                signal = 'GOOD'
+                emoji = '🟢'
+                msg = (f"{emoji} **RÚT CHÂN GOOD** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
+                        f"(close {close_vs_open_pct:+.2f}%)")
+            elif drop_pct <= -2.5 and recovery_pct >= 65:
+                signal = 'MILD'
+                emoji = '🟡'
+                msg = (f"{emoji} **RÚT CHÂN MILD** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
+                        f"(close {close_vs_open_pct:+.2f}%)")
+
+        if signal is None:
+            return {
+                'signal': None,
+                'recovery_pct': round(recovery_pct, 1),
+                'drop_pct': round(drop_pct, 2),
+                'close_vs_open_pct': round(close_vs_open_pct, 2),
+                'message': 'Không có rút chân hôm nay',
+            }
+
+        # ─── QUALITY SCORE — Phân biệt rút chân THẬT / GIẢ ───
+        quality = 50  # base
+        warnings = []
+        is_at_support = False
+
+        # +10 nếu tại hỗ trợ kỹ thuật (low gần MA20 hoặc MA50)
+        try:
+            ma20_v = float(last.get('ma20', 0))
+            ma50_v = float(last.get('ma50', 0))
+            ma10_v = float(last.get('ma10', 0))
+            # Coi là "tại hỗ trợ" nếu low ≤ MA20 hoặc MA50 (giảm xuống chạm MA rồi bật lên)
+            if ma20_v > 0 and abs(low_p - ma20_v) / ma20_v < 0.02:
+                is_at_support = True
+                quality += 10
+            elif ma50_v > 0 and abs(low_p - ma50_v) / ma50_v < 0.02:
+                is_at_support = True
+                quality += 10
+            elif ma10_v > 0 and abs(low_p - ma10_v) / ma10_v < 0.02:
+                is_at_support = True
+                quality += 5  # MA10 ít quan trọng hơn
+        except Exception:
+            pass
+
+        # +10 nếu vol nổ
+        if vol_strength >= 1.5:
+            quality += 10
+
+        # +10 nếu RSI < 65 (chưa quá mua)
+        if rsi < 65:
+            quality += 10
+        elif rsi >= 70:
+            quality -= 10
+            warnings.append(f"⚠️ RSI={rsi:.0f} (quá mua) — Rút chân có thể giả")
+
+        # -15 nếu trong downtrend mạnh (close < MA50 + MA20 < MA50)
+        try:
+            ma20_v = float(last.get('ma20', 0))
+            ma50_v = float(last.get('ma50', 0))
+            if ma50_v > 0 and close_p < ma50_v and ma20_v < ma50_v:
+                quality -= 15
+                warnings.append("⚠️ Đang trong downtrend mạnh — Cảnh báo dead cat bounce")
+        except Exception:
+            pass
+
+        # +5 nếu close TRÊN open (xanh nhẹ thay vì đứng tham chiếu)
+        if close_vs_open_pct > 0:
+            quality += 5
+
+        quality = max(0, min(100, quality))
+
+        # Verdict quality
+        if quality >= 75:
+            quality_verdict = '💎 RÚT CHÂN CHẤT LƯỢNG CAO — Khả năng thật cao'
+        elif quality >= 55:
+            quality_verdict = '🟢 Chất lượng tốt — Đáng theo dõi'
+        elif quality >= 35:
+            quality_verdict = '🟡 Chất lượng trung bình — Cần xác nhận thêm'
+        else:
+            quality_verdict = '🔴 Chất lượng thấp — Có thể là bẫy'
+
+        return {
+            'signal': signal,
+            'message': msg,
+            'recovery_pct': round(recovery_pct, 1),
+            'drop_pct': round(drop_pct, 2),
+            'close_vs_open_pct': round(close_vs_open_pct, 2),
+            'vol_strength': round(vol_strength, 2),
+            'rsi': round(rsi, 1),
+            'quality_score': quality,
+            'quality_verdict': quality_verdict,
+            'is_at_support': is_at_support,
+            'warnings': warnings,
+        }
+    except Exception as e:
+        return {'signal': None, 'message': f'Lỗi: {str(e)[:80]}'}
+
+
+# [V41 HELPER END]
+
 
 
 
@@ -8243,6 +8476,64 @@ with tab1:
                         st.caption(f"💾 Cache 24h | Data: vnstock trading_stats()")
             except Exception as _f_err:
                 st.caption(f"[V40-F2 lỗi]: {_f_err}")
+
+            # ── [V41-R1] RÚT CHÂN DETECTOR ──
+            try:
+                rc = detect_rut_chan(df)
+                with st.container(border=True):
+                    st.markdown("##### 🦵 Rút Chân Detector (V41)")
+                    if rc.get('signal'):
+                        sig = rc['signal']
+                        if sig == 'STRONG':
+                            st.success(f"### {rc['message']}")
+                        elif sig == 'GOOD':
+                            st.info(f"### {rc['message']}")
+                        elif sig == 'MILD':
+                            st.warning(f"### {rc['message']}")
+
+                        # Metrics
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        rc1.metric("Giảm sâu nhất", f"{rc['drop_pct']:.2f}%",
+                                     help="% giảm so với open trong phiên")
+                        rc2.metric("Phục hồi từ đáy", f"{rc['recovery_pct']:.0f}%",
+                                     help="% close phục hồi trong range cao-thấp")
+                        rc3.metric("Close vs Open", f"{rc['close_vs_open_pct']:+.2f}%")
+                        rc4.metric("Vol strength", f"{rc['vol_strength']:.2f}x")
+
+                        # Quality verdict
+                        st.markdown(f"**{rc['quality_verdict']}**")
+                        qc1, qc2 = st.columns([1, 3])
+                        qc1.metric("Quality", f"{rc['quality_score']}/100")
+                        with qc2:
+                            if rc.get('is_at_support'):
+                                st.success("✅ Rút chân TẠI HỖ TRỢ (gần MA) — tín hiệu mạnh")
+                            for w in rc.get('warnings', []):
+                                st.warning(w)
+
+                        # Hành động đề xuất
+                        if rc['quality_score'] >= 75 and sig in ('STRONG', 'GOOD'):
+                            st.success(
+                                "💡 **Đề xuất hành động:** Đáng cân nhắc vào lệnh phiên sau "
+                                "với size vừa + SL chặt dưới low hôm nay 1-2%"
+                            )
+                        elif rc['quality_score'] < 35:
+                            st.error(
+                                "⚠️ **Đề xuất hành động:** TRÁNH — Rút chân chất lượng thấp, có thể là bẫy"
+                            )
+                        else:
+                            st.info(
+                                "💡 **Đề xuất hành động:** Theo dõi phiên sau xác nhận trước khi vào lệnh"
+                            )
+                    else:
+                        st.caption(f"ℹ️ {rc.get('message', 'Không có rút chân hôm nay')}")
+                        if rc.get('drop_pct') is not None and rc.get('drop_pct') < -1:
+                            st.caption(
+                                f"📊 Phiên nay: giảm sâu nhất {rc['drop_pct']:.2f}%, "
+                                f"phục hồi {rc.get('recovery_pct', 0):.0f}%, "
+                                f"close {rc.get('close_vs_open_pct', 0):+.2f}% so open"
+                            )
+            except Exception as _rc_err:
+                st.caption(f"[V41-R1 lỗi]: {_rc_err}")
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
@@ -10092,6 +10383,17 @@ with tab4:
                 except Exception:
                     row['Float Tier'] = None
                     row['Float Pct'] = 0
+
+                # [V41-R2] Rút Chân info — thêm vào row Radar
+                try:
+                    _rc_r = detect_rut_chan(df_s)
+                    row['RC Signal'] = _rc_r.get('signal')
+                    row['RC Quality'] = _rc_r.get('quality_score', 0)
+                    row['RC Drop'] = _rc_r.get('drop_pct', 0)
+                    row['RC Recovery'] = _rc_r.get('recovery_pct', 0)
+                except Exception:
+                    row['RC Signal'] = None
+                    row['RC Quality'] = 0
                 # [V24-LIQ+F2] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) — không push 2 lần
                 try:
                     _liq_rd = calc_liquidity_tier_cached(t, date_key)
@@ -10289,6 +10591,12 @@ with tab_momentum:
             value=False, key="em_filter_ma10",
             help="Chỉ giữ mã vừa cắt lên vạch vàng MA10 trong 3 phiên gần nhất"
         )
+        # [V41-R3] Thêm checkbox filter Rút Chân
+        em_filter_rc = st.checkbox(
+            "🦵 Chỉ mã có RÚT CHÂN hôm nay (V41) — phiên giảm sâu rồi hồi mạnh",
+            value=False, key="em_filter_rc",
+            help="Chỉ giữ mã có signal Rút Chân STRONG/GOOD/MILD trong phiên gần nhất"
+        )
 
     # ── NÚT QUÉT ──
     if st.button("🔍 Quét Early Momentum", type="primary", key="em_scan_btn"):
@@ -10313,6 +10621,7 @@ with tab_momentum:
                 bool(em_filter_liq),
                 datetime.now(TZ_VN).strftime('%Y-%m-%d-%H'),
                 filter_ma10_cross=bool(em_filter_ma10),
+                filter_rut_chan=bool(em_filter_rc),
             )
             st.session_state['_v37_em_result'] = em_result
 
