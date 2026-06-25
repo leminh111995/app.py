@@ -22,6 +22,52 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V43 - Unified Scoring System (Điểm thống nhất)
+# ==============================================================================
+# THAY ĐỔI LỚN:
+#   Gộp tất cả tín hiệu vào 1 ĐIỂM V43 TỔNG = V23 + ΣBonus
+#
+# 4 PHÊ DUYỆT ĐÃ ÁP DỤNG:
+#   [1B] MA10 Bonus: giảm từ +30 → +20 (bỏ "giá > MA10" để tránh double V23)
+#   [2]  Rút Chân Quality 0-100 → Rút Chân Bonus -15 đến +25 (theo bảng mapping)
+#   [3A] RSI: GIỮ ở V23 core, BỎ ở Rút Chân Quality (tránh double)
+#   [4]  Float Penalty: LOW -5, VERY_LOW -15 (UNKNOWN không phạt)
+#
+# THÊM R-STREAK:
+#   - Đếm số phiên rút chân trong 5 phiên gần nhất
+#   - Bonus +5 nếu 2 lần, +10 nếu 3+ lần
+#   - Bonus +10 nếu 2 phiên rút chân LIÊN TIẾP (xác nhận)
+#   - Bonus +5 nếu vol tăng dần qua các phiên
+#
+# CÔNG THỨC:
+#   Điểm V43 = V23 Core + MA10 Bonus + Float Penalty + Rút Chân Unified Bonus
+#   Range thực tế: 0 đến 145 (V23 max 100 + bonus max 45)
+#
+# VERDICT TỔNG:
+#   ≥110: 💎 NÊN MUA MẠNH
+#   85-109: 🟢 NÊN MUA
+#   60-84: 🟡 CÂN NHẮC
+#   40-59: 🟠 CẨN THẬN
+#   <40: 🔴 TRÁNH
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V44
+# ==============================================================================
+# Quant System V42 - Fix Rút Chân Detector (dùng TC thay vì Open)
+# ==============================================================================
+# BUG FIX V41:
+#   - drop_pct tính so với OPEN (sai) → chuyển sang so với TC (giá đóng phiên trước)
+#   - Lý do: VN market dùng TC làm tham chiếu, không phải Open
+#     Mã có thể gap mở phiên thấp hơn TC nhiều → open không phản ánh đúng "rút chân"
+#   - Nới ngưỡng phù hợp VN market (biên độ ±7%):
+#     STRONG: drop ≤ -3% (cũ -4%), recovery ≥ 75% (cũ 85%)
+#     GOOD: drop ≤ -2% (cũ -3%), recovery ≥ 60% (cũ 70%)
+#     MILD: drop ≤ -1.5% (cũ -2.5%), recovery ≥ 55% (cũ 65%)
+#   - Recovery cũng tính 2 cách: từ đáy về close, và từ đáy về TC
+#
+# QUY TẮC VERSIONING:
+#   - Update tiếp theo: V43
+# ==============================================================================
 # Quant System V41 - Rút Chân Detector
 # ==============================================================================
 # TÍNH NĂNG MỚI: Phát hiện "Rút chân về tham chiếu" (đặc trưng thị trường VN)
@@ -6366,14 +6412,14 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
 # [V39] MA10 BOOSTER — Vạch vàng signal (tách riêng, không động V23 core)
 # ──────────────────────────────────────────────────────────────────────────────
 def calc_ma10_bonus(df: pd.DataFrame) -> dict:
-    """[V39] Tính điểm bonus dựa trên tín hiệu MA10 (vạch vàng).
+    """[V39+V43] Tính điểm bonus dựa trên tín hiệu MA10 (vạch vàng).
 
-    Logic:
-    - +10 nếu giá > MA10 (cơ bản)
-    - +10 nếu MA10 slope DƯƠNG trong 5 phiên (đường vàng uốn lên)
+    [V43-1B] BỎ check "giá > MA10" để tránh DOUBLE với V23 (đã có check trên MA20).
+    Logic mới:
+    - +10 nếu MA10 slope DƯƠNG trong 5 phiên (đường vàng uốn lên) — info riêng
     - +15 nếu vừa CẮT LÊN MA10 trong 3 phiên gần nhất (signal mới, ngon nhất)
     - -10 nếu giá vừa cắt XUỐNG MA10 trong 3 phiên (cảnh báo)
-    - Cap 0-30 điểm
+    - Cap -10 đến +20 (V43 giảm từ +30)
 
     Returns: dict {bonus, signal_type, message, details, is_cross_up, is_cross_down}
     """
@@ -6405,29 +6451,27 @@ def calc_ma10_bonus(df: pd.DataFrame) -> dict:
         is_cross_up = False
         is_cross_down = False
 
-        # 1. Giá > MA10 hay không?
+        # 1. Giá > MA10 hay không? (CHỈ INFO, KHÔNG CỘNG ĐIỂM — V43-1B)
         above_ma10 = cur_price > cur_ma10
         pct_vs_ma10 = (cur_price - cur_ma10) / cur_ma10 * 100
         if above_ma10:
-            bonus += 10
-            details.append(f"✅ Giá {cur_price:,.2f} > MA10 {cur_ma10:,.2f} ({pct_vs_ma10:+.2f}%)")
+            details.append(f"✅ Giá {cur_price:,.2f} > MA10 {cur_ma10:,.2f} ({pct_vs_ma10:+.2f}%) — info")
         else:
             details.append(f"❌ Giá {cur_price:,.2f} dưới MA10 {cur_ma10:,.2f} ({pct_vs_ma10:+.2f}%)")
 
-        # 2. MA10 slope (dương hay âm trong 5 phiên)
+        # 2. MA10 slope (dương hay âm trong 5 phiên) — vẫn cộng +10
         ma10_5d_ago = float(recent['ma10'].iloc[0])
         if not pd.isna(ma10_5d_ago) and ma10_5d_ago > 0:
             slope_pct = (cur_ma10 - ma10_5d_ago) / ma10_5d_ago * 100
             if slope_pct > 0.3:
                 bonus += 10
-                details.append(f"✅ MA10 slope DƯƠNG (+{slope_pct:.2f}% trong 5 phiên) — Vạch vàng uốn lên")
+                details.append(f"✅ MA10 slope DƯƠNG (+{slope_pct:.2f}% trong 5 phiên) — Vạch vàng uốn lên (+10)")
             elif slope_pct < -0.3:
                 details.append(f"❌ MA10 slope ÂM ({slope_pct:.2f}% trong 5 phiên)")
             else:
                 details.append(f"🟡 MA10 slope NGANG ({slope_pct:+.2f}% trong 5 phiên)")
 
         # 3. Cross-up trong 3 phiên gần nhất?
-        # Xét 3 phiên cuối: nếu có phiên nào giá CẮT LÊN MA10 (trước dưới, sau trên)
         for i in range(len(recent) - 3, len(recent)):
             if i < 1: continue
             prev_close = float(recent['close'].iloc[i-1])
@@ -6435,25 +6479,25 @@ def calc_ma10_bonus(df: pd.DataFrame) -> dict:
             cur_close_i = float(recent['close'].iloc[i])
             cur_ma10_i = float(recent['ma10'].iloc[i])
             if pd.isna(prev_ma10) or pd.isna(cur_ma10_i): continue
-            # Cross up: trước dưới, sau trên
+            # Cross up
             if prev_close <= prev_ma10 and cur_close_i > cur_ma10_i:
                 is_cross_up = True
                 bonus += 15
                 days_ago = len(recent) - 1 - i
                 ago_str = "Hôm nay" if days_ago == 0 else f"{days_ago} phiên trước"
-                details.append(f"⭐ VỪA CẮT LÊN MA10 ({ago_str}) — Signal mới, mạnh nhất")
+                details.append(f"⭐ VỪA CẮT LÊN MA10 ({ago_str}) — Signal mới, mạnh nhất (+15)")
                 break
-            # Cross down: trước trên, sau dưới
+            # Cross down
             if prev_close >= prev_ma10 and cur_close_i < cur_ma10_i:
                 is_cross_down = True
                 bonus -= 10
                 days_ago = len(recent) - 1 - i
                 ago_str = "Hôm nay" if days_ago == 0 else f"{days_ago} phiên trước"
-                details.append(f"🔴 VỪA CẮT XUỐNG MA10 ({ago_str}) — Cảnh báo")
+                details.append(f"🔴 VỪA CẮT XUỐNG MA10 ({ago_str}) — Cảnh báo (-10)")
                 break
 
-        # Cap bonus 0-30
-        bonus = max(-10, min(30, bonus))
+        # [V43-1B] Cap bonus -10 đến +20 (giảm từ +30)
+        bonus = max(-10, min(20, bonus))
 
         # Xác định signal_type
         if is_cross_up:
@@ -6462,7 +6506,7 @@ def calc_ma10_bonus(df: pd.DataFrame) -> dict:
         elif is_cross_down:
             signal_type = 'CROSS_DOWN'
             message = '🔴 MA10 CROSS-DOWN — Cảnh báo (vừa cắt xuống)'
-        elif above_ma10 and bonus >= 15:
+        elif above_ma10 and bonus >= 10:
             signal_type = 'STRONG_ABOVE'
             message = '🟢 Trên MA10 + slope dương — Xu hướng tăng'
         elif above_ma10:
@@ -6694,46 +6738,50 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
         high_p = float(last['high'])
         low_p = float(last['low'])
 
-        if open_p <= 0 or high_p <= low_p:
+        # [V42-FIX] Lấy TC = giá đóng cửa phiên TRƯỚC (Tham Chiếu chuẩn VN)
+        if len(df_calc) >= 2:
+            ref_price = float(df_calc.iloc[-2]['close'])  # TC
+        else:
+            ref_price = open_p  # fallback
+
+        if ref_price <= 0 or high_p <= low_p:
             return {'signal': None, 'message': 'Data nến không hợp lệ'}
 
-        # Tính chỉ số
-        drop_pct = (low_p - open_p) / open_p * 100  # % giảm sâu nhất so với open
-        close_vs_open_pct = (close_p - open_p) / open_p * 100  # % close vs open
+        # [V42-FIX] Tính chỉ số dựa trên TC (chuẩn VN)
+        drop_pct = (low_p - ref_price) / ref_price * 100  # % giảm sâu nhất SO VỚI TC
+        close_vs_ref_pct = (close_p - ref_price) / ref_price * 100  # % close vs TC
+        close_vs_open_pct = (close_p - open_p) / open_p * 100 if open_p > 0 else 0  # % close vs open (giữ cho info)
         range_size = high_p - low_p
         if range_size <= 0:
             return {'signal': None, 'message': 'Range 0'}
-        recovery_pct = (close_p - low_p) / range_size * 100  # % phục hồi từ đáy
+        recovery_pct = (close_p - low_p) / range_size * 100  # % phục hồi từ đáy về close trong range
 
         # Vol strength
         vol_strength = float(last.get('vol_strength', 1.0))
         rsi = float(last.get('rsi', 50))
 
-        # Trigger check
+        # [V42-FIX] Trigger check theo TC (chuẩn VN)
         signal = None
-        # Điều kiện 1: phải đóng cửa gần/trên tham chiếu (close ≥ open * 0.99)
-        # → close không thấp hơn open quá 1%
-        close_near_or_above_open = close_vs_open_pct >= -1.0
+        # Điều kiện 1: close gần/trên TC (close không thấp hơn TC quá 1.5%)
+        close_near_or_above_ref = close_vs_ref_pct >= -1.5
 
-        # Điều kiện 2: phải giảm sâu trong phiên
-        # Điều kiện 3: phục hồi mạnh
-
-        if close_near_or_above_open:
-            if drop_pct <= -4.0 and recovery_pct >= 85 and vol_strength >= 1.2:
+        # [V42-FIX] Ngưỡng phù hợp VN market (biên độ ±7%, không phải US ±10-20%)
+        if close_near_or_above_ref:
+            if drop_pct <= -3.0 and recovery_pct >= 75 and vol_strength >= 1.0:
                 signal = 'STRONG'
                 emoji = '💎'
-                msg = (f"{emoji} **RÚT CHÂN STRONG** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
-                        f"về tham chiếu (close {close_vs_open_pct:+.2f}% so open)")
-            elif drop_pct <= -3.0 and recovery_pct >= 70 and vol_strength >= 1.0:
+                msg = (f"{emoji} **RÚT CHÂN STRONG** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                        f"(close {close_vs_ref_pct:+.2f}% so TC)")
+            elif drop_pct <= -2.0 and recovery_pct >= 60 and vol_strength >= 0.9:
                 signal = 'GOOD'
                 emoji = '🟢'
-                msg = (f"{emoji} **RÚT CHÂN GOOD** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
-                        f"(close {close_vs_open_pct:+.2f}%)")
-            elif drop_pct <= -2.5 and recovery_pct >= 65:
+                msg = (f"{emoji} **RÚT CHÂN GOOD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                        f"(close {close_vs_ref_pct:+.2f}%)")
+            elif drop_pct <= -1.5 and recovery_pct >= 55:
                 signal = 'MILD'
                 emoji = '🟡'
-                msg = (f"{emoji} **RÚT CHÂN MILD** — Giảm {drop_pct:.1f}% rồi hồi {recovery_pct:.0f}% "
-                        f"(close {close_vs_open_pct:+.2f}%)")
+                msg = (f"{emoji} **RÚT CHÂN MILD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                        f"(close {close_vs_ref_pct:+.2f}%)")
 
         if signal is None:
             return {
@@ -6741,10 +6789,13 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
                 'recovery_pct': round(recovery_pct, 1),
                 'drop_pct': round(drop_pct, 2),
                 'close_vs_open_pct': round(close_vs_open_pct, 2),
+                'close_vs_ref_pct': round(close_vs_ref_pct, 2),
+                'ref_price': round(ref_price, 2),
                 'message': 'Không có rút chân hôm nay',
             }
 
         # ─── QUALITY SCORE — Phân biệt rút chân THẬT / GIẢ ───
+        # [V43-3A] BỎ RSI khỏi quality (V23 đã có RSI check, tránh double)
         quality = 50  # base
         warnings = []
         is_at_support = False
@@ -6757,32 +6808,31 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
             # Coi là "tại hỗ trợ" nếu low ≤ MA20 hoặc MA50 (giảm xuống chạm MA rồi bật lên)
             if ma20_v > 0 and abs(low_p - ma20_v) / ma20_v < 0.02:
                 is_at_support = True
-                quality += 10
+                quality += 15  # [V43-3A] tăng từ +10 → +15 bù cho việc bỏ RSI
             elif ma50_v > 0 and abs(low_p - ma50_v) / ma50_v < 0.02:
                 is_at_support = True
-                quality += 10
+                quality += 15
             elif ma10_v > 0 and abs(low_p - ma10_v) / ma10_v < 0.02:
                 is_at_support = True
-                quality += 5  # MA10 ít quan trọng hơn
+                quality += 10  # [V43-3A] tăng từ +5 → +10
         except Exception:
             pass
 
-        # +10 nếu vol nổ
+        # +15 nếu vol nổ (tăng từ +10, bù cho việc bỏ RSI)
         if vol_strength >= 1.5:
-            quality += 10
+            quality += 15  # [V43-3A] tăng từ +10 → +15
+        elif vol_strength >= 1.2:
+            quality += 8
 
-        # +10 nếu RSI < 65 (chưa quá mua)
-        if rsi < 65:
-            quality += 10
-        elif rsi >= 70:
-            quality -= 10
-            warnings.append(f"⚠️ RSI={rsi:.0f} (quá mua) — Rút chân có thể giả")
+        # [V43-3A] BỎ RSI check (đã có ở V23 core)
 
         # -15 nếu trong downtrend mạnh (close < MA50 + MA20 < MA50)
+        in_downtrend = False
         try:
             ma20_v = float(last.get('ma20', 0))
             ma50_v = float(last.get('ma50', 0))
             if ma50_v > 0 and close_p < ma50_v and ma20_v < ma50_v:
+                in_downtrend = True
                 quality -= 15
                 warnings.append("⚠️ Đang trong downtrend mạnh — Cảnh báo dead cat bounce")
         except Exception:
@@ -6810,11 +6860,14 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
             'recovery_pct': round(recovery_pct, 1),
             'drop_pct': round(drop_pct, 2),
             'close_vs_open_pct': round(close_vs_open_pct, 2),
+            'close_vs_ref_pct': round(close_vs_ref_pct, 2),
+            'ref_price': round(ref_price, 2),
             'vol_strength': round(vol_strength, 2),
             'rsi': round(rsi, 1),
             'quality_score': quality,
             'quality_verdict': quality_verdict,
             'is_at_support': is_at_support,
+            'in_downtrend': in_downtrend,  # [V43] thêm
             'warnings': warnings,
         }
     except Exception as e:
@@ -6822,6 +6875,226 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
 
 
 # [V41 HELPER END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V43] R-STREAK + UNIFIED SCORING SYSTEM
+# ──────────────────────────────────────────────────────────────────────────────
+
+def calc_rut_chan_streak(df: pd.DataFrame) -> dict:
+    """[V43] Đếm số phiên rút chân trong 5 phiên gần nhất + check vol trend.
+
+    Logic mỗi phiên: dùng cùng logic detect_rut_chan nhưng cho phiên i bất kỳ.
+    Trả về: {n_streak, has_consecutive, vol_trend_up, signals_history}
+    """
+    try:
+        if not valid(df) or len(df) < 10:
+            return {'n_streak': 0, 'has_consecutive': False,
+                    'vol_trend_up': False, 'signals_history': []}
+
+        df_calc = df.copy()
+        signals_history = []  # list 5 phần tử: True/False
+        vols_history = []
+
+        # Quét 5 phiên gần nhất
+        for offset in range(4, -1, -1):  # 4,3,2,1,0
+            if len(df_calc) < offset + 2:
+                signals_history.append(False)
+                vols_history.append(0)
+                continue
+            idx = len(df_calc) - 1 - offset
+            cur = df_calc.iloc[idx]
+            prev = df_calc.iloc[idx - 1]
+
+            open_p = float(cur['open'])
+            close_p = float(cur['close'])
+            high_p = float(cur['high'])
+            low_p = float(cur['low'])
+            ref_price = float(prev['close'])  # TC
+
+            if ref_price <= 0 or high_p <= low_p:
+                signals_history.append(False)
+                vols_history.append(0)
+                continue
+
+            drop_pct = (low_p - ref_price) / ref_price * 100
+            range_size = high_p - low_p
+            recovery_pct = (close_p - low_p) / range_size * 100 if range_size > 0 else 0
+            close_vs_ref = (close_p - ref_price) / ref_price * 100
+
+            # Có rút chân? (theo logic V42)
+            has_rc = (
+                close_vs_ref >= -1.5 and  # close gần/trên TC
+                drop_pct <= -1.5 and       # giảm đủ sâu
+                recovery_pct >= 55          # phục hồi
+            )
+            signals_history.append(has_rc)
+            vols_history.append(float(cur.get('volume', 0) or 0))
+
+        # Đếm tổng số phiên có rút chân
+        n_streak = sum(signals_history)
+
+        # Check liên tiếp: 2 phiên cuối đều có rút chân?
+        has_consecutive = signals_history[-1] and signals_history[-2] if len(signals_history) >= 2 else False
+
+        # Check vol trend: vol tăng dần qua các phiên có rút chân?
+        rc_vols = [v for v, s in zip(vols_history, signals_history) if s]
+        vol_trend_up = False
+        if len(rc_vols) >= 2:
+            # So sánh vol phiên rút chân cuối với phiên rút chân trước đó
+            vol_trend_up = rc_vols[-1] > rc_vols[0] * 1.1
+
+        return {
+            'n_streak': n_streak,
+            'has_consecutive': has_consecutive,
+            'vol_trend_up': vol_trend_up,
+            'signals_history': signals_history,
+            'rc_vols': rc_vols,
+        }
+    except Exception as e:
+        return {'n_streak': 0, 'has_consecutive': False,
+                'vol_trend_up': False, 'signals_history': [],
+                'error': str(e)[:80]}
+
+
+def calc_rut_chan_unified_bonus(rc_info: dict, streak_info: dict,
+                                    in_downtrend: bool = False) -> dict:
+    """[V43] Convert Rút Chân Quality (0-100) → Bonus thống nhất -15 đến +25.
+
+    Logic mapping:
+    - STRONG + Quality≥75 + Streak≥2 → +25
+    - STRONG + Quality≥75 → +20
+    - STRONG + Quality 55-74 → +15
+    - GOOD + Quality≥55 → +10
+    - MILD → +5
+    - Trong downtrend → -15 (cảnh báo dead cat bounce)
+    - Không có RC → 0
+
+    Bonus thêm từ R-Streak:
+    - +5 nếu có 2 lần rút chân trong 5 phiên
+    - +10 nếu có 3+ lần
+    - +10 nếu 2 phiên rút chân LIÊN TIẾP (xác nhận)
+    - +5 nếu vol tăng dần
+    """
+    bonus = 0
+    breakdown = []
+
+    if in_downtrend:
+        return {
+            'bonus': -15,
+            'breakdown': ['🔴 Trong downtrend mạnh → -15 (cảnh báo dead cat bounce)'],
+        }
+
+    sig = rc_info.get('signal')
+    quality = rc_info.get('quality_score', 0)
+
+    # Base bonus theo signal + quality
+    if sig == 'STRONG' and quality >= 75:
+        if streak_info.get('n_streak', 0) >= 2:
+            base = 25
+            breakdown.append(f'💎 STRONG + Quality {quality}/100 + Streak {streak_info["n_streak"]}/5 → +25')
+        else:
+            base = 20
+            breakdown.append(f'💎 STRONG + Quality {quality}/100 → +20')
+        bonus = base
+    elif sig == 'STRONG' and 55 <= quality < 75:
+        bonus = 15
+        breakdown.append(f'💎 STRONG + Quality {quality}/100 → +15')
+    elif sig == 'GOOD' and quality >= 55:
+        bonus = 10
+        breakdown.append(f'🟢 GOOD + Quality {quality}/100 → +10')
+    elif sig == 'MILD':
+        bonus = 5
+        breakdown.append(f'🟡 MILD → +5')
+    else:
+        bonus = 0
+        if streak_info.get('n_streak', 0) == 0:
+            breakdown.append('• Không có rút chân → 0')
+
+    # Bonus từ Streak (chỉ cộng nếu đã có signal cơ bản hoặc streak ≥2)
+    if sig and streak_info.get('n_streak', 0) >= 3:
+        # Đã bị cộng trong case STRONG+streak, nhưng nếu là GOOD/MILD thì cộng thêm
+        if not (sig == 'STRONG' and quality >= 75 and streak_info['n_streak'] >= 2):
+            bonus += 10
+            breakdown.append(f'🔥 Streak {streak_info["n_streak"]}/5 phiên có rút chân → +10')
+    elif sig and streak_info.get('n_streak', 0) == 2:
+        if not (sig == 'STRONG' and quality >= 75):
+            bonus += 5
+            breakdown.append(f'🔥 Streak 2/5 phiên có rút chân → +5')
+
+    # Bonus xác nhận: 2 phiên rút chân LIÊN TIẾP
+    if streak_info.get('has_consecutive') and sig:
+        bonus += 10
+        breakdown.append('⭐ Rút chân 2 phiên LIÊN TIẾP → +10 (xác nhận)')
+
+    # Bonus vol tăng dần
+    if streak_info.get('vol_trend_up') and sig:
+        bonus += 5
+        breakdown.append('📈 Vol tăng dần qua các phiên rút chân → +5')
+
+    # Cap -15 đến +25 (max total)
+    bonus = max(-15, min(25, bonus))
+
+    return {'bonus': bonus, 'breakdown': breakdown}
+
+
+def calc_float_penalty(float_tier: str) -> dict:
+    """[V43-4] Penalty cho Float thấp.
+    - HIGH/MEDIUM/UNKNOWN: 0
+    - LOW: -5
+    - VERY_LOW: -15
+    """
+    if float_tier == 'VERY_LOW':
+        return {'penalty': -15, 'message': '🔴 Float CỰC thấp → -15'}
+    elif float_tier == 'LOW':
+        return {'penalty': -5, 'message': '🟠 Float thấp → -5'}
+    else:
+        return {'penalty': 0, 'message': None}
+
+
+def calc_unified_score_v43(v23_score: float, ma10_bonus: float,
+                             float_penalty: float, rc_bonus: float) -> dict:
+    """[V43] Tổng hợp điểm V43 = V23 + tất cả bonus/penalty.
+
+    Returns: dict {total, verdict, color, breakdown_str}
+    """
+    total = v23_score + ma10_bonus + float_penalty + rc_bonus
+
+    # Verdict
+    if total >= 110:
+        verdict = '💎 NÊN MUA MẠNH'
+        color = 'green'
+    elif total >= 85:
+        verdict = '🟢 NÊN MUA'
+        color = 'green'
+    elif total >= 60:
+        verdict = '🟡 CÂN NHẮC'
+        color = 'yellow'
+    elif total >= 40:
+        verdict = '🟠 CẨN THẬN'
+        color = 'orange'
+    else:
+        verdict = '🔴 TRÁNH'
+        color = 'red'
+
+    breakdown_str = (
+        f"V23: {v23_score:.0f} | MA10: {ma10_bonus:+.0f} | "
+        f"Float: {float_penalty:+.0f} | Rút Chân: {rc_bonus:+.0f}"
+    )
+
+    return {
+        'total': round(total, 1),
+        'verdict': verdict,
+        'color': color,
+        'breakdown_str': breakdown_str,
+        'v23_score': v23_score,
+        'ma10_bonus': ma10_bonus,
+        'float_penalty': float_penalty,
+        'rc_bonus': rc_bonus,
+    }
+
+
+# [V43 UNIFIED HELPERS END]
+
 
 
 
@@ -8477,11 +8750,18 @@ with tab1:
             except Exception as _f_err:
                 st.caption(f"[V40-F2 lỗi]: {_f_err}")
 
-            # ── [V41-R1] RÚT CHÂN DETECTOR ──
+            # ── [V41-R1+V42] RÚT CHÂN DETECTOR ──
             try:
                 rc = detect_rut_chan(df)
                 with st.container(border=True):
-                    st.markdown("##### 🦵 Rút Chân Detector (V41)")
+                    st.markdown("##### 🦵 Rút Chân Detector (V42)")
+                    # [V42] Warning về EOD data
+                    _now_h = datetime.now(TZ_VN).hour
+                    if 9 <= _now_h <= 15:
+                        st.caption(
+                            "⏰ **Lưu ý:** Trong phiên giao dịch (9h-15h), data có thể CHƯA phản ánh "
+                            "đầy đủ phiên hôm nay. Để detect chính xác, hãy check SAU 15h30."
+                        )
                     if rc.get('signal'):
                         sig = rc['signal']
                         if sig == 'STRONG':
@@ -8494,10 +8774,11 @@ with tab1:
                         # Metrics
                         rc1, rc2, rc3, rc4 = st.columns(4)
                         rc1.metric("Giảm sâu nhất", f"{rc['drop_pct']:.2f}%",
-                                     help="% giảm so với open trong phiên")
+                                     help="% giảm so với TC (giá đóng phiên trước)")
                         rc2.metric("Phục hồi từ đáy", f"{rc['recovery_pct']:.0f}%",
                                      help="% close phục hồi trong range cao-thấp")
-                        rc3.metric("Close vs Open", f"{rc['close_vs_open_pct']:+.2f}%")
+                        rc3.metric("Close vs TC", f"{rc.get('close_vs_ref_pct', 0):+.2f}%",
+                                     help=f"TC = {rc.get('ref_price', 0):,.2f} (giá đóng phiên trước)")
                         rc4.metric("Vol strength", f"{rc['vol_strength']:.2f}x")
 
                         # Quality verdict
@@ -8509,31 +8790,130 @@ with tab1:
                                 st.success("✅ Rút chân TẠI HỖ TRỢ (gần MA) — tín hiệu mạnh")
                             for w in rc.get('warnings', []):
                                 st.warning(w)
-
-                        # Hành động đề xuất
-                        if rc['quality_score'] >= 75 and sig in ('STRONG', 'GOOD'):
-                            st.success(
-                                "💡 **Đề xuất hành động:** Đáng cân nhắc vào lệnh phiên sau "
-                                "với size vừa + SL chặt dưới low hôm nay 1-2%"
-                            )
-                        elif rc['quality_score'] < 35:
-                            st.error(
-                                "⚠️ **Đề xuất hành động:** TRÁNH — Rút chân chất lượng thấp, có thể là bẫy"
-                            )
-                        else:
-                            st.info(
-                                "💡 **Đề xuất hành động:** Theo dõi phiên sau xác nhận trước khi vào lệnh"
-                            )
                     else:
                         st.caption(f"ℹ️ {rc.get('message', 'Không có rút chân hôm nay')}")
-                        if rc.get('drop_pct') is not None and rc.get('drop_pct') < -1:
+                        if rc.get('drop_pct') is not None and rc.get('drop_pct') < -0.5:
                             st.caption(
-                                f"📊 Phiên nay: giảm sâu nhất {rc['drop_pct']:.2f}%, "
+                                f"📊 Phiên nay (so TC {rc.get('ref_price', 0):,.2f}): "
+                                f"giảm sâu nhất {rc['drop_pct']:.2f}% so TC, "
                                 f"phục hồi {rc.get('recovery_pct', 0):.0f}%, "
-                                f"close {rc.get('close_vs_open_pct', 0):+.2f}% so open"
+                                f"close {rc.get('close_vs_ref_pct', 0):+.2f}% so TC"
                             )
+
+                # [V43] R-Streak info
+                try:
+                    rc_streak = calc_rut_chan_streak(df)
+                    if rc_streak.get('n_streak', 0) > 0:
+                        with st.container(border=True):
+                            st.markdown("##### 🔥 Rút Chân Streak (V43)")
+                            sh = rc_streak.get('signals_history', [])
+                            history_str = " ".join(['🟢' if s else '⚪' for s in sh])
+                            st.markdown(f"**5 phiên gần nhất:** {history_str}")
+                            sc1, sc2, sc3 = st.columns(3)
+                            sc1.metric("Số phiên rút chân", f"{rc_streak['n_streak']}/5")
+                            sc2.metric("2 phiên liên tiếp?",
+                                          "✅ Có" if rc_streak.get('has_consecutive') else "❌ Không")
+                            sc3.metric("Vol tăng dần?",
+                                          "✅ Có" if rc_streak.get('vol_trend_up') else "❌ Không")
+                except Exception as _st_err:
+                    pass
             except Exception as _rc_err:
                 st.caption(f"[V41-R1 lỗi]: {_rc_err}")
+
+            # ── [V43] BOX ĐIỂM V43 TỔNG — Unified Score ──
+            try:
+                # Lấy V23 score
+                _v23_score = total_score if 'total_score' in dir() else 0
+
+                # Lấy MA10 bonus (đã tính ở trên)
+                _ma10_bonus = ma10_res.get('bonus', 0) if 'ma10_res' in dir() else 0
+
+                # Lấy Float penalty
+                _float_tier = None
+                if 'float_data' in dir() and float_data.get('available'):
+                    _ft_pen = classify_float_tier(
+                        float_data.get('free_float_pct', 0),
+                        float_data.get('foreigner_pct', 0)
+                    )
+                    _float_tier = _ft_pen.get('tier')
+                _float_pen_res = calc_float_penalty(_float_tier)
+                _float_penalty = _float_pen_res['penalty']
+
+                # Lấy Rút Chân unified bonus
+                _rc_info = rc if 'rc' in dir() else {}
+                _rc_streak = rc_streak if 'rc_streak' in dir() else {}
+                _in_dt = _rc_info.get('in_downtrend', False)
+                _rc_unified = calc_rut_chan_unified_bonus(_rc_info, _rc_streak, _in_dt)
+                _rc_bonus = _rc_unified['bonus']
+
+                # Unified score
+                v43_res = calc_unified_score_v43(_v23_score, _ma10_bonus,
+                                                     _float_penalty, _rc_bonus)
+
+                with st.container(border=True):
+                    st.markdown("## 🎯 ĐIỂM V43 TỔNG — Unified Score")
+
+                    # Verdict box lớn
+                    vc1, vc2 = st.columns([1, 2])
+                    with vc1:
+                        st.metric("Điểm V43", f"{v43_res['total']:.0f}")
+                    with vc2:
+                        if v43_res['color'] == 'green':
+                            st.success(f"### {v43_res['verdict']}")
+                        elif v43_res['color'] == 'yellow':
+                            st.info(f"### {v43_res['verdict']}")
+                        elif v43_res['color'] == 'orange':
+                            st.warning(f"### {v43_res['verdict']}")
+                        else:
+                            st.error(f"### {v43_res['verdict']}")
+
+                    # Breakdown chi tiết
+                    st.markdown("**📊 Breakdown:**")
+                    bc1, bc2, bc3, bc4 = st.columns(4)
+                    bc1.metric("V23 Core", f"{_v23_score:.0f}/100")
+                    bc2.metric("MA10 Bonus", f"{_ma10_bonus:+.0f}",
+                                 help="Max +20 (V43 giảm từ +30)")
+                    bc3.metric("Float Penalty", f"{_float_penalty:+.0f}",
+                                 help="LOW=-5, VERY_LOW=-15, còn lại=0",
+                                 delta_color="inverse" if _float_penalty < 0 else "off")
+                    bc4.metric("Rút Chân Bonus", f"{_rc_bonus:+.0f}",
+                                 help="STRONG max +25, downtrend -15")
+
+                    # Chi tiết Rút Chân breakdown
+                    if _rc_unified.get('breakdown'):
+                        with st.expander("🔍 Chi tiết Rút Chân Bonus"):
+                            for b in _rc_unified['breakdown']:
+                                st.markdown(f"• {b}")
+
+                    # Đề xuất hành động theo verdict
+                    if v43_res['total'] >= 110:
+                        st.success(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Đáng cân nhắc vào lệnh SIZE ĐẦY ĐỦ "
+                            "(≤ 20% NAV). Đặt SL chặt 3-5% dưới giá vào."
+                        )
+                    elif v43_res['total'] >= 85:
+                        st.info(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Có thể vào lệnh SIZE VỪA (≤ 15% NAV). "
+                            "Đặt SL 5%."
+                        )
+                    elif v43_res['total'] >= 60:
+                        st.warning(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Cân nhắc kỹ. Nếu vào, SIZE NHỎ (≤ 10% NAV), "
+                            "SL chặt 3%."
+                        )
+                    elif v43_res['total'] >= 40:
+                        st.warning(
+                            "⚠️ **HÀNH ĐỘNG ĐỀ XUẤT:** Tín hiệu yếu — chờ xác nhận thêm. "
+                            "Nếu vào, size rất nhỏ (≤ 5%)."
+                        )
+                    else:
+                        st.error(
+                            "🔴 **HÀNH ĐỘNG ĐỀ XUẤT:** TRÁNH — tín hiệu xấu, rủi ro cao."
+                        )
+
+                    st.caption(v43_res['breakdown_str'])
+            except Exception as _v43_err:
+                st.caption(f"[V43 lỗi]: {_v43_err}")
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
