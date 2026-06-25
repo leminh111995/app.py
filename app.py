@@ -22,6 +22,21 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V47 - Early Momentum nới ngưỡng + Ngày 1 detection
+# ==============================================================================
+# THAY ĐỔI:
+#   1. min_streak slider: từ 2-5 → 1-5 (mặc định 1, bắt cả mã mới tăng 1 ngày)
+#   2. min_gain_per_day: từ 0.5% → 0.3% (default, bắt mã tăng nhẹ như SAB)
+#   3. Thêm nhóm "🌱 NGÀY 1 — Mới bắt đầu tăng" trong scan result
+#   4. prob_continue cho ngày 1: ~50% (chưa đủ xác nhận, cẩn thận)
+#
+# LÝ DO:
+#   - Mã chỉ cần tăng 1 ngày sau giai đoạn tích lũy đã là tín hiệu sớm
+#   - Filter quá khắt khe (≥2 ngày, ≥0.5%) sẽ loại nhầm nhiều mã tốt
+#   - User có thể tự tăng slider nếu muốn lọc gắt hơn
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V48
+# ==============================================================================
 # Quant System V46 - Fix 3 bugs nghiêm trọng V45
 # ==============================================================================
 # 3 BUGS ĐÃ SỬA:
@@ -6201,8 +6216,9 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
     try:
         tickers = json.loads(tickers_str)
     except Exception:
-        return {'day2': [], 'day3': [], 'day4_plus': [], 'errors': []}
+        return {'day1': [], 'day2': [], 'day3': [], 'day4_plus': [], 'errors': []}
 
+    day1 = []  # [V47] Thêm nhóm Ngày 1
     day2 = []
     day3 = []
     day4_plus = []
@@ -6362,7 +6378,9 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
             }
 
             # Phân nhóm
-            if streak == 2:
+            if streak == 1:
+                day1.append(row_data)
+            elif streak == 2:
                 day2.append(row_data)
             elif streak == 3:
                 day3.append(row_data)
@@ -6373,11 +6391,13 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
             continue
 
     # Sort mỗi nhóm theo prob_continue giảm dần (cao nhất lên đầu)
+    day1.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
     day2.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
     day3.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
     day4_plus.sort(key=lambda x: (x['prob_continue'], x['avg_gain']), reverse=True)
 
     return {
+        'day1': day1,  # [V47] Thêm
         'day2': day2,
         'day3': day3,
         'day4_plus': day4_plus,
@@ -11137,14 +11157,16 @@ with tab_momentum:
 
         em_streak = em_c1.slider(
             "📅 Số ngày tăng tối thiểu:",
-            min_value=2, max_value=5, value=2, step=1,
-            key="em_streak"
+            min_value=1, max_value=5, value=1, step=1,
+            key="em_streak",
+            help="V47: Mặc định 1 ngày để bắt cả mã mới bắt đầu tăng. Tăng lên 2-5 nếu muốn lọc gắt hơn."
         )
 
         em_min_gain = em_c2.slider(
             "📈 % tăng tối thiểu/ngày:",
-            min_value=0.0, max_value=3.0, value=0.5, step=0.1,
-            key="em_min_gain"
+            min_value=0.0, max_value=3.0, value=0.3, step=0.1,
+            key="em_min_gain",
+            help="V47: Mặc định 0.3% để bắt mã tăng nhẹ (VN biên độ ±7% — 0.3% là đáng kể)"
         )
 
         em_universe = em_c3.radio(
@@ -11219,10 +11241,11 @@ with tab_momentum:
     # ── KẾT QUẢ ──
     em_result = st.session_state.get('_v37_em_result')
     if em_result:
+        n_day1 = len(em_result.get('day1', []))  # [V47]
         n_day2 = len(em_result['day2'])
         n_day3 = len(em_result['day3'])
         n_day4 = len(em_result['day4_plus'])
-        n_total = n_day2 + n_day3 + n_day4
+        n_total = n_day1 + n_day2 + n_day3 + n_day4
 
         st.markdown(f"### 📊 Tìm thấy **{n_total}** mã (quét {em_result['n_scanned']} mã)")
 
@@ -11232,7 +11255,18 @@ with tab_momentum:
                 f"({em_min_gain}%/ngày). Thử giảm tiêu chí hoặc đổi phạm vi quét."
             )
 
-        # Ngày 2 — Vào lệnh sớm nhất
+        # [V47] Ngày 1 — Mã mới bắt đầu tăng
+        if n_day1 > 0:
+            st.markdown(f"#### 🌱 NGÀY 1 — Mới bắt đầu tăng ({n_day1} mã)")
+            st.caption(
+                "⚠️ Mã CHỈ MỚI tăng 1 phiên — Tín hiệu sớm, CHƯA xác nhận xu hướng. "
+                "Khuyến nghị: Chờ xác nhận phiên sau, hoặc vào với size CỰC NHỎ + SL chặt 2%. "
+                "Đối chiếu thêm Rút Chân & MA10 trước khi quyết định."
+            )
+            for r in em_result['day1']:
+                render_momentum_card(r, 'gray')
+
+        # Ngày 2 — Vào lệnh sớm
         if n_day2 > 0:
             st.markdown(f"#### 🌱 NGÀY 2 — Vào lệnh sớm ({n_day2} mã)")
             st.caption(
