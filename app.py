@@ -22,6 +22,16 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V44 - Fix UX Rút Chân + Đồng bộ Logic
+# ==============================================================================
+# 4 FIXES:
+#   F1 - Streak hiển thị có nhãn ngày (T-4, T-3, T-2, T-1, HÔM NAY)
+#   F2 - Nới ngưỡng MILD: drop ≤-1.0% recovery ≥60% (phù hợp VN ±7%)
+#   F3 - Filter Early Momentum: chấp nhận Streak ≥1 trong 5 phiên (không chỉ hôm nay)
+#   F4 - Đồng bộ trigger: tạo helper _check_rut_chan_for_session() dùng chung
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V45
+# ==============================================================================
 # Quant System V43 - Unified Scoring System (Điểm thống nhất)
 # ==============================================================================
 # THAY ĐỔI LỚN:
@@ -6278,13 +6288,17 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 rc_info = detect_rut_chan(df_m)
                 rc_signal = rc_info.get('signal')
                 rc_quality = rc_info.get('quality_score', 0)
+                # [V44-F3] Cũng lấy Streak để cho phép phiên cũ
+                rc_streak_info = calc_rut_chan_streak(df_m)
+                rc_streak_count = rc_streak_info.get('n_streak', 0)
             except Exception:
                 rc_info = {}
                 rc_signal = None
                 rc_quality = 0
+                rc_streak_count = 0
 
-            # [V41] Filter: nếu user yêu cầu chỉ mã rút chân → skip nếu không có
-            if filter_rut_chan and not rc_signal:
+            # [V44-F3] Filter: pass nếu có signal hôm nay HOẶC có streak ≥1 trong 5 phiên
+            if filter_rut_chan and not rc_signal and rc_streak_count == 0:
                 continue
 
             row_data = {
@@ -6314,6 +6328,8 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 'rc_quality': rc_quality,
                 'rc_drop_pct': rc_info.get('drop_pct', 0),
                 'rc_recovery_pct': rc_info.get('recovery_pct', 0),
+                # [V44-F3] Streak count
+                'rc_streak_count': rc_streak_count,
             }
 
             # Phân nhóm
@@ -6383,12 +6399,16 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
                 st.warning(f"🟠 Float thấp ({float_pct:.1f}%) — Cẩn thận biến động")
             # [V41-R3] Rút Chân badge
             rc_sig = row.get('rc_signal')
+            rc_streak_c = row.get('rc_streak_count', 0)
             if rc_sig == 'STRONG':
-                st.success(f"💎 **RÚT CHÂN STRONG** — Giảm {row.get('rc_drop_pct', 0):.1f}% rồi hồi {row.get('rc_recovery_pct', 0):.0f}% (Quality: {row.get('rc_quality', 0)}/100)")
+                st.success(f"💎 **RÚT CHÂN STRONG HÔM NAY** — Giảm {row.get('rc_drop_pct', 0):.1f}% rồi hồi {row.get('rc_recovery_pct', 0):.0f}% (Quality: {row.get('rc_quality', 0)}/100)")
             elif rc_sig == 'GOOD':
-                st.info(f"🟢 Rút chân GOOD — Hồi {row.get('rc_recovery_pct', 0):.0f}% (Q: {row.get('rc_quality', 0)}/100)")
+                st.info(f"🟢 Rút chân GOOD hôm nay — Hồi {row.get('rc_recovery_pct', 0):.0f}% (Q: {row.get('rc_quality', 0)}/100)")
             elif rc_sig == 'MILD':
-                st.caption(f"🟡 Rút chân nhẹ — Hồi {row.get('rc_recovery_pct', 0):.0f}%")
+                st.caption(f"🟡 Rút chân nhẹ hôm nay — Hồi {row.get('rc_recovery_pct', 0):.0f}%")
+            elif rc_streak_c > 0:
+                # [V44-F3] Không có signal hôm nay nhưng có streak phiên cũ
+                st.caption(f"🦵 Có {rc_streak_c}/5 phiên gần đây từng rút chân")
         with c3:
             # Xác suất tiếp tục tăng
             prob = row['prob_continue']
@@ -6694,6 +6714,65 @@ def detect_float_pump_risk(float_data: dict, vol_strength: float,
 # [V41] RÚT CHÂN DETECTOR — Phát hiện nến rút chân về tham chiếu
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V44-F4] HELPER DÙNG CHUNG — Đảm bảo Detector & Streak nhất quán
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _check_rut_chan_for_session(open_p: float, close_p: float, high_p: float,
+                                   low_p: float, ref_price: float) -> dict:
+    """[V44-F4] Tính metrics rút chân cho 1 phiên cụ thể.
+    DÙNG CHUNG cho cả detect_rut_chan và calc_rut_chan_streak để TRÁNH LỆCH LOGIC.
+
+    [V44-F2] Ngưỡng mới (phù hợp VN biên độ ±7%):
+    - STRONG: drop ≤ -3.0%, recovery ≥ 75%
+    - GOOD:   drop ≤ -2.0%, recovery ≥ 60%
+    - MILD:   drop ≤ -1.0%, recovery ≥ 60% (nới từ -1.5%/55%)
+
+    Returns:
+        signal: 'STRONG' | 'GOOD' | 'MILD' | None
+        drop_pct, recovery_pct, close_vs_ref_pct
+        has_rc: bool — có rút chân (≥ MILD)
+    """
+    if ref_price <= 0 or high_p <= low_p:
+        return {'signal': None, 'has_rc': False,
+                'drop_pct': 0, 'recovery_pct': 0, 'close_vs_ref_pct': 0}
+
+    drop_pct = (low_p - ref_price) / ref_price * 100
+    close_vs_ref_pct = (close_p - ref_price) / ref_price * 100
+    range_size = high_p - low_p
+    if range_size <= 0:
+        return {'signal': None, 'has_rc': False,
+                'drop_pct': drop_pct, 'recovery_pct': 0,
+                'close_vs_ref_pct': close_vs_ref_pct}
+    recovery_pct = (close_p - low_p) / range_size * 100
+
+    # Điều kiện 1: close gần/trên TC (close không thấp hơn TC quá 1.5%)
+    close_near_or_above_ref = close_vs_ref_pct >= -1.5
+
+    signal = None
+    if close_near_or_above_ref:
+        # [V44-F2] Ngưỡng nới
+        if drop_pct <= -3.0 and recovery_pct >= 75:
+            signal = 'STRONG'
+        elif drop_pct <= -2.0 and recovery_pct >= 60:
+            signal = 'GOOD'
+        elif drop_pct <= -1.0 and recovery_pct >= 60:  # [V44-F2] nới từ -1.5%/55%
+            signal = 'MILD'
+
+    return {
+        'signal': signal,
+        'has_rc': signal is not None,
+        'drop_pct': drop_pct,
+        'recovery_pct': recovery_pct,
+        'close_vs_ref_pct': close_vs_ref_pct,
+    }
+
+
+# [V44-F4 END]
+
+
 def detect_rut_chan(df: pd.DataFrame) -> dict:
     """[V41] Phát hiện nến "rút chân về tham chiếu" - đặc trưng VN market.
 
@@ -6747,41 +6826,34 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
         if ref_price <= 0 or high_p <= low_p:
             return {'signal': None, 'message': 'Data nến không hợp lệ'}
 
-        # [V42-FIX] Tính chỉ số dựa trên TC (chuẩn VN)
-        drop_pct = (low_p - ref_price) / ref_price * 100  # % giảm sâu nhất SO VỚI TC
-        close_vs_ref_pct = (close_p - ref_price) / ref_price * 100  # % close vs TC
-        close_vs_open_pct = (close_p - open_p) / open_p * 100 if open_p > 0 else 0  # % close vs open (giữ cho info)
+        # [V42-FIX + V44-F4] Tính metrics bằng helper dùng chung
+        _rc_metrics = _check_rut_chan_for_session(open_p, close_p, high_p, low_p, ref_price)
+        drop_pct = _rc_metrics['drop_pct']
+        close_vs_ref_pct = _rc_metrics['close_vs_ref_pct']
+        recovery_pct = _rc_metrics['recovery_pct']
+        close_vs_open_pct = (close_p - open_p) / open_p * 100 if open_p > 0 else 0
         range_size = high_p - low_p
         if range_size <= 0:
             return {'signal': None, 'message': 'Range 0'}
-        recovery_pct = (close_p - low_p) / range_size * 100  # % phục hồi từ đáy về close trong range
 
         # Vol strength
         vol_strength = float(last.get('vol_strength', 1.0))
         rsi = float(last.get('rsi', 50))
 
-        # [V42-FIX] Trigger check theo TC (chuẩn VN)
-        signal = None
-        # Điều kiện 1: close gần/trên TC (close không thấp hơn TC quá 1.5%)
-        close_near_or_above_ref = close_vs_ref_pct >= -1.5
-
-        # [V42-FIX] Ngưỡng phù hợp VN market (biên độ ±7%, không phải US ±10-20%)
-        if close_near_or_above_ref:
-            if drop_pct <= -3.0 and recovery_pct >= 75 and vol_strength >= 1.0:
-                signal = 'STRONG'
-                emoji = '💎'
-                msg = (f"{emoji} **RÚT CHÂN STRONG** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
-                        f"(close {close_vs_ref_pct:+.2f}% so TC)")
-            elif drop_pct <= -2.0 and recovery_pct >= 60 and vol_strength >= 0.9:
-                signal = 'GOOD'
-                emoji = '🟢'
-                msg = (f"{emoji} **RÚT CHÂN GOOD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
-                        f"(close {close_vs_ref_pct:+.2f}%)")
-            elif drop_pct <= -1.5 and recovery_pct >= 55:
-                signal = 'MILD'
-                emoji = '🟡'
-                msg = (f"{emoji} **RÚT CHÂN MILD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
-                        f"(close {close_vs_ref_pct:+.2f}%)")
+        # [V44-F4] Lấy signal từ helper (đã dùng ngưỡng F2 nới)
+        signal = _rc_metrics.get('signal')
+        if signal == 'STRONG':
+            emoji = '💎'
+            msg = (f"{emoji} **RÚT CHÂN STRONG** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                    f"(close {close_vs_ref_pct:+.2f}% so TC)")
+        elif signal == 'GOOD':
+            emoji = '🟢'
+            msg = (f"{emoji} **RÚT CHÂN GOOD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                    f"(close {close_vs_ref_pct:+.2f}%)")
+        elif signal == 'MILD':
+            emoji = '🟡'
+            msg = (f"{emoji} **RÚT CHÂN MILD** — Giảm {drop_pct:.1f}% so TC rồi hồi {recovery_pct:.0f}% "
+                    f"(close {close_vs_ref_pct:+.2f}%)")
 
         if signal is None:
             return {
@@ -6911,22 +6983,9 @@ def calc_rut_chan_streak(df: pd.DataFrame) -> dict:
             low_p = float(cur['low'])
             ref_price = float(prev['close'])  # TC
 
-            if ref_price <= 0 or high_p <= low_p:
-                signals_history.append(False)
-                vols_history.append(0)
-                continue
-
-            drop_pct = (low_p - ref_price) / ref_price * 100
-            range_size = high_p - low_p
-            recovery_pct = (close_p - low_p) / range_size * 100 if range_size > 0 else 0
-            close_vs_ref = (close_p - ref_price) / ref_price * 100
-
-            # Có rút chân? (theo logic V42)
-            has_rc = (
-                close_vs_ref >= -1.5 and  # close gần/trên TC
-                drop_pct <= -1.5 and       # giảm đủ sâu
-                recovery_pct >= 55          # phục hồi
-            )
+            # [V44-F4] Dùng helper chung — đảm bảo nhất quán với detect_rut_chan
+            _m = _check_rut_chan_for_session(open_p, close_p, high_p, low_p, ref_price)
+            has_rc = _m['has_rc']
             signals_history.append(has_rc)
             vols_history.append(float(cur.get('volume', 0) or 0))
 
@@ -8800,21 +8859,37 @@ with tab1:
                                 f"close {rc.get('close_vs_ref_pct', 0):+.2f}% so TC"
                             )
 
-                # [V43] R-Streak info
+                # [V43+V44-F1] R-Streak info — hiển thị có nhãn ngày
                 try:
                     rc_streak = calc_rut_chan_streak(df)
                     if rc_streak.get('n_streak', 0) > 0:
                         with st.container(border=True):
-                            st.markdown("##### 🔥 Rút Chân Streak (V43)")
+                            st.markdown("##### 🔥 Rút Chân Streak (V44)")
                             sh = rc_streak.get('signals_history', [])
-                            history_str = " ".join(['🟢' if s else '⚪' for s in sh])
-                            st.markdown(f"**5 phiên gần nhất:** {history_str}")
+                            # [V44-F1] Hiển thị có nhãn ngày
+                            labels = ['T-4', 'T-3', 'T-2', 'T-1', 'HÔM NAY']
+                            st.markdown("**5 phiên gần nhất (cũ → mới):**")
+                            cols_lbl = st.columns(5)
+                            for i, (lbl, sig_v) in enumerate(zip(labels, sh)):
+                                emo = '🟢' if sig_v else '⚪'
+                                with cols_lbl[i]:
+                                    if lbl == 'HÔM NAY':
+                                        st.markdown(f"**{lbl}**<br>{emo}", unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(f"{lbl}<br>{emo}", unsafe_allow_html=True)
                             sc1, sc2, sc3 = st.columns(3)
                             sc1.metric("Số phiên rút chân", f"{rc_streak['n_streak']}/5")
                             sc2.metric("2 phiên liên tiếp?",
                                           "✅ Có" if rc_streak.get('has_consecutive') else "❌ Không")
                             sc3.metric("Vol tăng dần?",
                                           "✅ Có" if rc_streak.get('vol_trend_up') else "❌ Không")
+                            # [V44-F1] Giải thích ngắn nếu hôm nay không có nhưng phiên cũ có
+                            if not sh[-1] and rc_streak['n_streak'] > 0:
+                                st.caption(
+                                    f"ℹ️ HÔM NAY chưa có rút chân, nhưng có "
+                                    f"{rc_streak['n_streak']} phiên trong 5 phiên gần nhất từng rút chân — "
+                                    "vẫn đáng theo dõi."
+                                )
                 except Exception as _st_err:
                     pass
             except Exception as _rc_err:
@@ -10973,9 +11048,9 @@ with tab_momentum:
         )
         # [V41-R3] Thêm checkbox filter Rút Chân
         em_filter_rc = st.checkbox(
-            "🦵 Chỉ mã có RÚT CHÂN hôm nay (V41) — phiên giảm sâu rồi hồi mạnh",
+            "🦵 Chỉ mã có RÚT CHÂN trong 5 phiên gần nhất (V44) — bao gồm cả hôm nay & các phiên trước",
             value=False, key="em_filter_rc",
-            help="Chỉ giữ mã có signal Rút Chân STRONG/GOOD/MILD trong phiên gần nhất"
+            help="Pass nếu có rút chân HÔM NAY (signal STRONG/GOOD/MILD) HOẶC có ≥1 phiên rút chân trong 5 phiên gần nhất"
         )
 
     # ── NÚT QUÉT ──
