@@ -22,6 +22,22 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V45 - Polish toàn diện (8 fixes UX + Logic)
+# ==============================================================================
+# 8 FIXES:
+#   S1 - ĐIỂM V43 TỔNG chuyển lên ĐẦU Section A (TLDR ngay)
+#   S2 - Ẩn quality_score 0-100, chỉ giữ verdict text
+#   S3 - V23 tier T1-T5 chỉ dùng ở Tab Radar (đúng vai trò gốc).
+#        Tab Robot Advisor đã chỉ dùng ĐIỂM V43 TỔNG, không hiển thị tier V23
+#        → User sẽ KHÔNG bị nhầm 2 hệ thống verdict
+#   S4 - Cảnh báo conflict Smart Money DISTRIBUTION vs RC STRONG (-10 điểm)
+#   S5 - Gộp cảnh báo EOD data lên đầu Section A
+#   S6 - Cảnh báo khi user bật ≥3 filter trong Early Momentum
+#   S7 - Bỏ size advice trong box Float (chỉ giữ ở V43 TỔNG)
+#   S8 - Lưu V43 score + breakdown vào tier_history
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V46
+# ==============================================================================
 # Quant System V44 - Fix UX Rút Chân + Đồng bộ Logic
 # ==============================================================================
 # 4 FIXES:
@@ -7111,12 +7127,32 @@ def calc_float_penalty(float_tier: str) -> dict:
 
 
 def calc_unified_score_v43(v23_score: float, ma10_bonus: float,
-                             float_penalty: float, rc_bonus: float) -> dict:
-    """[V43] Tổng hợp điểm V43 = V23 + tất cả bonus/penalty.
+                             float_penalty: float, rc_bonus: float,
+                             smp_signal: str = None, rc_signal: str = None) -> dict:
+    """[V43+V45-S4] Tổng hợp điểm V43 = V23 + tất cả bonus/penalty.
 
-    Returns: dict {total, verdict, color, breakdown_str}
+    [V45-S4] Thêm conflict detection:
+    - Smart Money DISTRIBUTION + RC STRONG/GOOD → trừ -10 (mâu thuẫn)
+
+    Returns: dict {total, verdict, color, breakdown_str, conflict_warning}
     """
-    total = v23_score + ma10_bonus + float_penalty + rc_bonus
+    # [V45-S4] Conflict detection
+    conflict_penalty = 0
+    conflict_warning = None
+    if smp_signal == 'DISTRIBUTION' and rc_signal in ('STRONG', 'GOOD'):
+        conflict_penalty = -10
+        conflict_warning = (
+            "⚠️ **MÂU THUẪN TÍN HIỆU:** Smart Money có vẻ ĐANG XẢ + Rút Chân báo bắt đáy. "
+            "→ Có thể là bẫy. Tỉnh táo! (trừ -10 điểm)"
+        )
+    elif smp_signal == 'STRONG_SELL' and rc_signal == 'STRONG':
+        conflict_penalty = -15
+        conflict_warning = (
+            "🔴 **MÂU THUẪN MẠNH:** Smart Money BÁN MẠNH + Rút Chân STRONG. "
+            "→ Khả năng cao là bẫy bull trap! (trừ -15 điểm)"
+        )
+
+    total = v23_score + ma10_bonus + float_penalty + rc_bonus + conflict_penalty
 
     # Verdict
     if total >= 110:
@@ -7139,6 +7175,8 @@ def calc_unified_score_v43(v23_score: float, ma10_bonus: float,
         f"V23: {v23_score:.0f} | MA10: {ma10_bonus:+.0f} | "
         f"Float: {float_penalty:+.0f} | Rút Chân: {rc_bonus:+.0f}"
     )
+    if conflict_penalty != 0:
+        breakdown_str += f" | Conflict: {conflict_penalty:+.0f}"
 
     return {
         'total': round(total, 1),
@@ -7149,6 +7187,8 @@ def calc_unified_score_v43(v23_score: float, ma10_bonus: float,
         'ma10_bonus': ma10_bonus,
         'float_penalty': float_penalty,
         'rc_bonus': rc_bonus,
+        'conflict_penalty': conflict_penalty,
+        'conflict_warning': conflict_warning,
     }
 
 
@@ -8670,6 +8710,182 @@ with tab1:
                 print(f"[V24-M8] {_m8_err}")
 
 
+            # ══════════════════════════════════════════════════════════════
+            # [V45-S1+S5] PHẦN ĐẦU SECTION A: TLDR Verdict + Cảnh báo chung
+            # ══════════════════════════════════════════════════════════════
+
+            # [V45-S5] Cảnh báo EOD chung cho toàn bộ Section A
+            _now_h_main = datetime.now(TZ_VN).hour
+            if 9 <= _now_h_main <= 15:
+                st.info(
+                    "⏰ **Lưu ý chung:** Trong giờ giao dịch (9h-15h), data EOD có thể CHƯA "
+                    "phản ánh đầy đủ phiên hôm nay. Tất cả tín hiệu bên dưới có thể chưa chính xác. "
+                    "Để phân tích chính xác nhất, hãy check **sau 15h30**."
+                )
+
+            # [V45-S1] BOX ĐIỂM V43 TỔNG — TLDR Verdict (đặt LÊN ĐẦU)
+            try:
+                # Pre-compute tất cả bonus cần thiết cho V43 score
+                _v23_score_top = total_score if 'total_score' in dir() else 0
+
+                # MA10
+                try:
+                    _ma10_top = calc_ma10_bonus(df)
+                    _ma10_bonus_top = _ma10_top.get('bonus', 0)
+                except Exception:
+                    _ma10_top = {}
+                    _ma10_bonus_top = 0
+
+                # Float
+                _float_tier_top = None
+                try:
+                    _f_date_top = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                    _float_data_top = get_float_data_cached(ticker, _f_date_top)
+                    if _float_data_top.get('available'):
+                        _ft_pen_top = classify_float_tier(
+                            _float_data_top.get('free_float_pct', 0),
+                            _float_data_top.get('foreigner_pct', 0)
+                        )
+                        _float_tier_top = _ft_pen_top.get('tier')
+                except Exception:
+                    _float_data_top = {'available': False}
+                _float_pen_top = calc_float_penalty(_float_tier_top)
+                _float_penalty_top = _float_pen_top['penalty']
+
+                # Rút chân
+                try:
+                    _rc_top = detect_rut_chan(df)
+                    _rc_streak_top = calc_rut_chan_streak(df)
+                except Exception:
+                    _rc_top = {}
+                    _rc_streak_top = {}
+                _in_dt_top = _rc_top.get('in_downtrend', False)
+                _rc_unified_top = calc_rut_chan_unified_bonus(_rc_top, _rc_streak_top, _in_dt_top)
+                _rc_bonus_top = _rc_unified_top['bonus']
+
+                # Smart Money Proxy (cho conflict detection)
+                try:
+                    _smp_top = detect_smart_money_proxy(df)
+                    _smp_signal_top = _smp_top.get('signal')
+                except Exception:
+                    _smp_signal_top = None
+
+                # [V45-S4] Pass smp_signal + rc_signal vào để detect conflict
+                v43_res_top = calc_unified_score_v43(
+                    _v23_score_top, _ma10_bonus_top,
+                    _float_penalty_top, _rc_bonus_top,
+                    smp_signal=_smp_signal_top,
+                    rc_signal=_rc_top.get('signal'),
+                )
+
+                # Lưu lại vào session để các box dưới dùng (tránh tính lại)
+                st.session_state['_v45_v43_res'] = v43_res_top
+                st.session_state['_v45_ma10'] = _ma10_top
+                st.session_state['_v45_float_data'] = _float_data_top
+                st.session_state['_v45_rc'] = _rc_top
+                st.session_state['_v45_rc_streak'] = _rc_streak_top
+                st.session_state['_v45_rc_unified'] = _rc_unified_top
+                st.session_state['_v45_smp'] = _smp_top if 'smp_top' in dir() or '_smp_top' in dir() else {}
+
+                # ─── RENDER BOX V43 TỔNG (TLDR) ───
+                with st.container(border=True):
+                    st.markdown("## 🎯 ĐIỂM V43 TỔNG — KẾT LUẬN NHANH")
+
+                    # Verdict box lớn
+                    vc1, vc2 = st.columns([1, 2])
+                    with vc1:
+                        st.metric("Điểm V43", f"{v43_res_top['total']:.0f}")
+                    with vc2:
+                        if v43_res_top['color'] == 'green':
+                            st.success(f"### {v43_res_top['verdict']}")
+                        elif v43_res_top['color'] == 'yellow':
+                            st.info(f"### {v43_res_top['verdict']}")
+                        elif v43_res_top['color'] == 'orange':
+                            st.warning(f"### {v43_res_top['verdict']}")
+                        else:
+                            st.error(f"### {v43_res_top['verdict']}")
+
+                    # [V45-S4] Cảnh báo conflict nếu có
+                    if v43_res_top.get('conflict_warning'):
+                        st.error(v43_res_top['conflict_warning'])
+
+                    # Breakdown chi tiết
+                    st.markdown("**📊 Breakdown:**")
+                    bc1, bc2, bc3, bc4 = st.columns(4)
+                    bc1.metric("V23 Core", f"{_v23_score_top:.0f}/100")
+                    bc2.metric("MA10 Bonus", f"{_ma10_bonus_top:+.0f}",
+                                 help="Max +20")
+                    bc3.metric("Float Penalty", f"{_float_penalty_top:+.0f}",
+                                 help="LOW=-5, VERY_LOW=-15",
+                                 delta_color="inverse" if _float_penalty_top < 0 else "off")
+                    bc4.metric("Rút Chân Bonus", f"{_rc_bonus_top:+.0f}",
+                                 help="STRONG max +25, downtrend -15")
+
+                    # Chi tiết Rút Chân breakdown
+                    if _rc_unified_top.get('breakdown'):
+                        with st.expander("🔍 Chi tiết Rút Chân Bonus"):
+                            for b in _rc_unified_top['breakdown']:
+                                st.markdown(f"• {b}")
+
+                    # Đề xuất hành động (TLDR)
+                    if v43_res_top['total'] >= 110:
+                        st.success(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Vào lệnh **SIZE ĐẦY ĐỦ (≤20% NAV)**. "
+                            "SL chặt 3-5% dưới giá vào."
+                        )
+                    elif v43_res_top['total'] >= 85:
+                        st.info(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Vào lệnh **SIZE VỪA (≤15% NAV)**. SL 5%."
+                        )
+                    elif v43_res_top['total'] >= 60:
+                        st.warning(
+                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** **SIZE NHỎ (≤10% NAV)** nếu vào, SL chặt 3%."
+                        )
+                    elif v43_res_top['total'] >= 40:
+                        st.warning(
+                            "⚠️ **HÀNH ĐỘNG ĐỀ XUẤT:** Tín hiệu yếu — chờ xác nhận thêm. "
+                            "Size rất nhỏ (≤5%) nếu vào."
+                        )
+                    else:
+                        st.error(
+                            "🔴 **HÀNH ĐỘNG ĐỀ XUẤT:** TRÁNH — rủi ro cao."
+                        )
+
+                    st.caption(v43_res_top['breakdown_str'])
+                    st.caption("⬇️ Chi tiết từng tín hiệu ở các box bên dưới")
+
+                # [V45-S8] Lưu V43 score vào tier_history
+                try:
+                    if 'v24_tier_history' not in st.session_state:
+                        st.session_state['v24_tier_history'] = {}
+                    _hist_key = datetime.now(TZ_VN).strftime('%Y-%m-%d')
+                    if ticker not in st.session_state['v24_tier_history']:
+                        st.session_state['v24_tier_history'][ticker] = {}
+                    st.session_state['v24_tier_history'][ticker][_hist_key] = {
+                        'v43_total': v43_res_top['total'],
+                        'verdict': v43_res_top['verdict'],
+                        'v23': _v23_score_top,
+                        'ma10': _ma10_bonus_top,
+                        'float': _float_penalty_top,
+                        'rc': _rc_bonus_top,
+                    }
+                    try:
+                        save_tier_history(st.session_state['v24_tier_history'])
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            except Exception as _v45_top_err:
+                st.error(f"[V45-S1 lỗi]: {_v45_top_err}")
+
+            st.markdown("---")
+            st.markdown("### 📊 Chi tiết từng tín hiệu (giải thích)")
+
+            # ══════════════════════════════════════════════════════════════
+            # CÁC BOX CHI TIẾT BÊN DƯỚI (giữ nguyên thứ tự cũ)
+            # ══════════════════════════════════════════════════════════════
+
             # ── [V36-N1] SMART MONEY PROXY ──
             try:
                 smp = detect_smart_money_proxy(df)
@@ -8791,8 +9007,8 @@ with tab1:
                         if out_sh > 0:
                             st.caption(f"📊 Tổng CP lưu hành: **{out_sh:,}** cp")
 
-                        # Size advice
-                        st.markdown(f"💡 **Khuyến nghị size lệnh:** {ft['size_advice']}")
+                        # [V45-S7] Bỏ size advice ở đây (đã có ở ĐIỂM V43 TỔNG)
+                        # Size advice cũ: 💡 Khuyến nghị size lệnh: ... → bỏ tránh trùng
 
                         # F3: Pump risk detection
                         try:
@@ -8814,13 +9030,7 @@ with tab1:
                 rc = detect_rut_chan(df)
                 with st.container(border=True):
                     st.markdown("##### 🦵 Rút Chân Detector (V42)")
-                    # [V42] Warning về EOD data
-                    _now_h = datetime.now(TZ_VN).hour
-                    if 9 <= _now_h <= 15:
-                        st.caption(
-                            "⏰ **Lưu ý:** Trong phiên giao dịch (9h-15h), data có thể CHƯA phản ánh "
-                            "đầy đủ phiên hôm nay. Để detect chính xác, hãy check SAU 15h30."
-                        )
+                    # [V45-S5] Cảnh báo EOD đã có ở đầu Section A — không cần riêng
                     if rc.get('signal'):
                         sig = rc['signal']
                         if sig == 'STRONG':
@@ -8840,15 +9050,12 @@ with tab1:
                                      help=f"TC = {rc.get('ref_price', 0):,.2f} (giá đóng phiên trước)")
                         rc4.metric("Vol strength", f"{rc['vol_strength']:.2f}x")
 
-                        # Quality verdict
+                        # [V45-S2] Chỉ hiện verdict text, ẨN quality_score 0-100
                         st.markdown(f"**{rc['quality_verdict']}**")
-                        qc1, qc2 = st.columns([1, 3])
-                        qc1.metric("Quality", f"{rc['quality_score']}/100")
-                        with qc2:
-                            if rc.get('is_at_support'):
-                                st.success("✅ Rút chân TẠI HỖ TRỢ (gần MA) — tín hiệu mạnh")
-                            for w in rc.get('warnings', []):
-                                st.warning(w)
+                        if rc.get('is_at_support'):
+                            st.success("✅ Rút chân TẠI HỖ TRỢ (gần MA) — tín hiệu mạnh")
+                        for w in rc.get('warnings', []):
+                            st.warning(w)
                     else:
                         st.caption(f"ℹ️ {rc.get('message', 'Không có rút chân hôm nay')}")
                         if rc.get('drop_pct') is not None and rc.get('drop_pct') < -0.5:
@@ -8895,100 +9102,7 @@ with tab1:
             except Exception as _rc_err:
                 st.caption(f"[V41-R1 lỗi]: {_rc_err}")
 
-            # ── [V43] BOX ĐIỂM V43 TỔNG — Unified Score ──
-            try:
-                # Lấy V23 score
-                _v23_score = total_score if 'total_score' in dir() else 0
-
-                # Lấy MA10 bonus (đã tính ở trên)
-                _ma10_bonus = ma10_res.get('bonus', 0) if 'ma10_res' in dir() else 0
-
-                # Lấy Float penalty
-                _float_tier = None
-                if 'float_data' in dir() and float_data.get('available'):
-                    _ft_pen = classify_float_tier(
-                        float_data.get('free_float_pct', 0),
-                        float_data.get('foreigner_pct', 0)
-                    )
-                    _float_tier = _ft_pen.get('tier')
-                _float_pen_res = calc_float_penalty(_float_tier)
-                _float_penalty = _float_pen_res['penalty']
-
-                # Lấy Rút Chân unified bonus
-                _rc_info = rc if 'rc' in dir() else {}
-                _rc_streak = rc_streak if 'rc_streak' in dir() else {}
-                _in_dt = _rc_info.get('in_downtrend', False)
-                _rc_unified = calc_rut_chan_unified_bonus(_rc_info, _rc_streak, _in_dt)
-                _rc_bonus = _rc_unified['bonus']
-
-                # Unified score
-                v43_res = calc_unified_score_v43(_v23_score, _ma10_bonus,
-                                                     _float_penalty, _rc_bonus)
-
-                with st.container(border=True):
-                    st.markdown("## 🎯 ĐIỂM V43 TỔNG — Unified Score")
-
-                    # Verdict box lớn
-                    vc1, vc2 = st.columns([1, 2])
-                    with vc1:
-                        st.metric("Điểm V43", f"{v43_res['total']:.0f}")
-                    with vc2:
-                        if v43_res['color'] == 'green':
-                            st.success(f"### {v43_res['verdict']}")
-                        elif v43_res['color'] == 'yellow':
-                            st.info(f"### {v43_res['verdict']}")
-                        elif v43_res['color'] == 'orange':
-                            st.warning(f"### {v43_res['verdict']}")
-                        else:
-                            st.error(f"### {v43_res['verdict']}")
-
-                    # Breakdown chi tiết
-                    st.markdown("**📊 Breakdown:**")
-                    bc1, bc2, bc3, bc4 = st.columns(4)
-                    bc1.metric("V23 Core", f"{_v23_score:.0f}/100")
-                    bc2.metric("MA10 Bonus", f"{_ma10_bonus:+.0f}",
-                                 help="Max +20 (V43 giảm từ +30)")
-                    bc3.metric("Float Penalty", f"{_float_penalty:+.0f}",
-                                 help="LOW=-5, VERY_LOW=-15, còn lại=0",
-                                 delta_color="inverse" if _float_penalty < 0 else "off")
-                    bc4.metric("Rút Chân Bonus", f"{_rc_bonus:+.0f}",
-                                 help="STRONG max +25, downtrend -15")
-
-                    # Chi tiết Rút Chân breakdown
-                    if _rc_unified.get('breakdown'):
-                        with st.expander("🔍 Chi tiết Rút Chân Bonus"):
-                            for b in _rc_unified['breakdown']:
-                                st.markdown(f"• {b}")
-
-                    # Đề xuất hành động theo verdict
-                    if v43_res['total'] >= 110:
-                        st.success(
-                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Đáng cân nhắc vào lệnh SIZE ĐẦY ĐỦ "
-                            "(≤ 20% NAV). Đặt SL chặt 3-5% dưới giá vào."
-                        )
-                    elif v43_res['total'] >= 85:
-                        st.info(
-                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Có thể vào lệnh SIZE VỪA (≤ 15% NAV). "
-                            "Đặt SL 5%."
-                        )
-                    elif v43_res['total'] >= 60:
-                        st.warning(
-                            "💡 **HÀNH ĐỘNG ĐỀ XUẤT:** Cân nhắc kỹ. Nếu vào, SIZE NHỎ (≤ 10% NAV), "
-                            "SL chặt 3%."
-                        )
-                    elif v43_res['total'] >= 40:
-                        st.warning(
-                            "⚠️ **HÀNH ĐỘNG ĐỀ XUẤT:** Tín hiệu yếu — chờ xác nhận thêm. "
-                            "Nếu vào, size rất nhỏ (≤ 5%)."
-                        )
-                    else:
-                        st.error(
-                            "🔴 **HÀNH ĐỘNG ĐỀ XUẤT:** TRÁNH — tín hiệu xấu, rủi ro cao."
-                        )
-
-                    st.caption(v43_res['breakdown_str'])
-            except Exception as _v43_err:
-                st.caption(f"[V43 lỗi]: {_v43_err}")
+            # [V45-S1] Box ĐIỂM V43 TỔNG đã được di chuyển lên ĐẦU Section A
 
             # ── [V28-P1] CANDLESTICK PATTERN DETECTOR ──
             try:
@@ -11052,6 +11166,19 @@ with tab_momentum:
             value=False, key="em_filter_rc",
             help="Pass nếu có rút chân HÔM NAY (signal STRONG/GOOD/MILD) HOẶC có ≥1 phiên rút chân trong 5 phiên gần nhất"
         )
+
+        # [V45-S6] Cảnh báo nếu user bật ≥3 filter
+        _n_filters_on = sum([
+            bool(em_filter_rsi),
+            bool(em_filter_liq),
+            bool(em_filter_ma10),
+            bool(em_filter_rc),
+        ])
+        if _n_filters_on >= 3:
+            st.warning(
+                f"⚠️ Đang bật **{_n_filters_on}/4 filter** cùng lúc — kết quả có thể rất hẹp, "
+                "có thể không có mã nào pass. Nếu kết quả ít, thử tắt 1-2 filter."
+            )
 
     # ── NÚT QUÉT ──
     if st.button("🔍 Quét Early Momentum", type="primary", key="em_scan_btn"):
