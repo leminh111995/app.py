@@ -22,6 +22,19 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V46 - Fix 3 bugs nghiêm trọng V45
+# ==============================================================================
+# 3 BUGS ĐÃ SỬA:
+#   BUG #1 - "Data nến không hợp lệ" khi high == low (mã đứng yên)
+#            → sửa: high < low (chứ không phải <=)
+#   BUG #2 - Sidebar preview giá hiển thị "29,..." bị cắt
+#            → sửa: format thành "{:,.0f}" với cmpct, hoặc xuống dòng
+#   BUG #3 - V23 Core = 0 dù scoring thành công
+#            → sửa: dùng scoring['score'] thay vì biến total_score (không tồn tại)
+#            Đây là bug NẶNG NHẤT — V43 luôn báo TRÁNH dù mã tốt
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V47
+# ==============================================================================
 # Quant System V45 - Polish toàn diện (8 fixes UX + Logic)
 # ==============================================================================
 # 8 FIXES:
@@ -6738,7 +6751,7 @@ def detect_float_pump_risk(float_data: dict, vol_strength: float,
 
 def _check_rut_chan_for_session(open_p: float, close_p: float, high_p: float,
                                    low_p: float, ref_price: float) -> dict:
-    """[V44-F4] Tính metrics rút chân cho 1 phiên cụ thể.
+    """[V44-F4 + V46-BUG1] Tính metrics rút chân cho 1 phiên cụ thể.
     DÙNG CHUNG cho cả detect_rut_chan và calc_rut_chan_streak để TRÁNH LỆCH LOGIC.
 
     [V44-F2] Ngưỡng mới (phù hợp VN biên độ ±7%):
@@ -6746,22 +6759,23 @@ def _check_rut_chan_for_session(open_p: float, close_p: float, high_p: float,
     - GOOD:   drop ≤ -2.0%, recovery ≥ 60%
     - MILD:   drop ≤ -1.0%, recovery ≥ 60% (nới từ -1.5%/55%)
 
-    Returns:
-        signal: 'STRONG' | 'GOOD' | 'MILD' | None
-        drop_pct, recovery_pct, close_vs_ref_pct
-        has_rc: bool — có rút chân (≥ MILD)
+    [V46-BUG1] Sửa high <= low thành high < low (cho phép mã đứng yên trong phiên)
     """
-    if ref_price <= 0 or high_p <= low_p:
+    # [V46-BUG1] Chỉ skip nếu thật sự sai data (ref ≤0 hoặc high < low — không thể được)
+    if ref_price <= 0 or high_p < low_p:
         return {'signal': None, 'has_rc': False,
                 'drop_pct': 0, 'recovery_pct': 0, 'close_vs_ref_pct': 0}
+
+    # Nếu high == low (mã đứng yên 1 phiên, không có biến động) → không có rút chân nhưng KHÔNG báo lỗi
+    if high_p == low_p:
+        close_vs_ref_pct = (close_p - ref_price) / ref_price * 100
+        return {'signal': None, 'has_rc': False,
+                'drop_pct': 0, 'recovery_pct': 0,
+                'close_vs_ref_pct': close_vs_ref_pct}
 
     drop_pct = (low_p - ref_price) / ref_price * 100
     close_vs_ref_pct = (close_p - ref_price) / ref_price * 100
     range_size = high_p - low_p
-    if range_size <= 0:
-        return {'signal': None, 'has_rc': False,
-                'drop_pct': drop_pct, 'recovery_pct': 0,
-                'close_vs_ref_pct': close_vs_ref_pct}
     recovery_pct = (close_p - low_p) / range_size * 100
 
     # Điều kiện 1: close gần/trên TC (close không thấp hơn TC quá 1.5%)
@@ -6839,8 +6853,12 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
         else:
             ref_price = open_p  # fallback
 
-        if ref_price <= 0 or high_p <= low_p:
+        # [V46-BUG1] Chỉ báo lỗi nếu thật sự sai (ref ≤0 hoặc high < low)
+        # Nếu high == low (mã đứng yên) — không có rút chân, không báo lỗi
+        if ref_price <= 0 or high_p < low_p:
             return {'signal': None, 'message': 'Data nến không hợp lệ'}
+        if high_p == low_p:
+            return {'signal': None, 'message': 'Mã đứng yên hôm nay — không có biến động'}
 
         # [V42-FIX + V44-F4] Tính metrics bằng helper dùng chung
         _rc_metrics = _check_rut_chan_for_session(open_p, close_p, high_p, low_p, ref_price)
@@ -6848,10 +6866,6 @@ def detect_rut_chan(df: pd.DataFrame) -> dict:
         close_vs_ref_pct = _rc_metrics['close_vs_ref_pct']
         recovery_pct = _rc_metrics['recovery_pct']
         close_vs_open_pct = (close_p - open_p) / open_p * 100 if open_p > 0 else 0
-        range_size = high_p - low_p
-        if range_size <= 0:
-            return {'signal': None, 'message': 'Range 0'}
-
         # Vol strength
         vol_strength = float(last.get('vol_strength', 1.0))
         rsi = float(last.get('rsi', 50))
@@ -8251,11 +8265,14 @@ try:
     if 'error' not in qa_preview:
         with st.sidebar.container(border=True):
             st.markdown(f"#### ⚡ Preview nhanh: **{ticker}**")
-            qpv_c1, qpv_c2 = st.columns(2)
-            qpv_c1.metric("Giá",
-                            f"{qa_preview['price']:,.0f}",
-                            delta=f"{qa_preview['ret_pct']:+.2f}%")
-            qpv_c2.metric("RSI", f"{qa_preview['rsi']:.0f}")
+            # [V46-BUG2] Đổi từ st.metric (bị cắt trên sidebar hẹp) sang markdown
+            _price_str = f"{qa_preview['price']:,.0f}"
+            _ret_pct = qa_preview['ret_pct']
+            _ret_color = '🟢' if _ret_pct > 0 else ('🔴' if _ret_pct < 0 else '⚪')
+            st.markdown(
+                f"**Giá:** `{_price_str}` {_ret_color} `{_ret_pct:+.2f}%` "
+                f"| **RSI:** `{qa_preview['rsi']:.0f}`"
+            )
             st.markdown(f"**{qa_preview['tier']}** | Vol {qa_preview['vol']:.1f}x")
             sig_emoji = '✅' if qa_preview['macd_up'] else '❌'
             ma_emoji = '✅' if qa_preview['above_ma20'] else '❌'
@@ -8725,8 +8742,8 @@ with tab1:
 
             # [V45-S1] BOX ĐIỂM V43 TỔNG — TLDR Verdict (đặt LÊN ĐẦU)
             try:
-                # Pre-compute tất cả bonus cần thiết cho V43 score
-                _v23_score_top = total_score if 'total_score' in dir() else 0
+                # [V46-BUG3] Lấy V23 score từ scoring['score'] (không phải total_score)
+                _v23_score_top = float(scoring.get('score', 0)) if 'scoring' in dir() else 0
 
                 # MA10
                 try:
@@ -8932,25 +8949,17 @@ with tab1:
                     for d in ma10_res.get('details', []):
                         st.caption(d)
 
-                    # Hiển thị điểm bonus + tổng kết hợp
+                    # Hiển thị điểm bonus (MA10)
+                    # [V46-BUG3] Box V43 TỔNG ở ĐẦU đã hiển thị tổng → chỉ giữ MA10 Bonus
                     bonus = ma10_res.get('bonus', 0)
-                    ma10_c1, ma10_c2 = st.columns(2)
                     if bonus > 0:
-                        ma10_c1.metric("🎯 MA10 Bonus", f"+{bonus} điểm",
-                                          delta="Tích cực" if bonus >= 15 else "Nhẹ")
+                        st.metric("🎯 MA10 Bonus", f"+{bonus} điểm",
+                                    delta="Tích cực" if bonus >= 15 else "Nhẹ")
                     elif bonus < 0:
-                        ma10_c1.metric("🎯 MA10 Bonus", f"{bonus} điểm",
-                                          delta="Cảnh báo", delta_color="inverse")
+                        st.metric("🎯 MA10 Bonus", f"{bonus} điểm",
+                                    delta="Cảnh báo", delta_color="inverse")
                     else:
-                        ma10_c1.metric("🎯 MA10 Bonus", "0 điểm", delta="Trung tính")
-
-                    # Tổng điểm V39 = điểm V23 + MA10 bonus
-                    _v23_score = total_score if 'total_score' in dir() else 0
-                    _v39_total = _v23_score + bonus
-                    ma10_c2.metric("📊 Điểm V39 (V23 + MA10)",
-                                      f"{_v39_total:.0f}",
-                                      delta=f"V23: {_v23_score:.0f} | MA10: {bonus:+d}",
-                                      delta_color="off")
+                        st.metric("🎯 MA10 Bonus", "0 điểm", delta="Trung tính")
             except Exception as _ma10_err:
                 st.caption(f"[V39-M1 lỗi]: {_ma10_err}")
 
