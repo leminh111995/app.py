@@ -22,6 +22,21 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V48 - BB Touch Notes (observation only)
+# ==============================================================================
+# TÍNH NĂNG MỚI: Phát hiện mã VỪA CHẠM BB Middle (vạch giữa) hoặc BB Lower (biên dưới)
+#
+# CHỌN CỦA USER (B + 1+2+3 + Y):
+#   - B: "Vừa chạm" = low trong 3 PHIÊN gần nhất chạm BB
+#   - Y: Tolerant — tính nếu low cách BB ≤ 0.5% (gần chạm)
+#   - 1+2+3: Wire vào Section A + Early Momentum + Radar
+#
+# QUAN TRỌNG: KHÔNG CHẤM ĐIỂM, KHÔNG FILTER
+#   - Chỉ là observation flag để user tự đánh giá
+#   - Caption cảnh báo: "Có thể là trap nếu vol giảm + downtrend"
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V49
+# ==============================================================================
 # Quant System V47 - Early Momentum nới ngưỡng + Ngày 1 detection
 # ==============================================================================
 # THAY ĐỔI:
@@ -2823,6 +2838,15 @@ def render_radar_card(row: dict, tier_color: str = "blue") -> None:
                 badges.append(f"🟢 Rút Chân GOOD (Q{rc_q_r})")
             elif rc_sig_r == 'MILD':
                 badges.append(f"🟡 Rút Chân MILD")
+            # [V48] BB Touch badges (observation only)
+            if row.get('BB Touched Lower'):
+                ago_d = row.get('BB Lower Days Ago', -1)
+                ago_str = "T0" if ago_d == 0 else f"T-{ago_d}"
+                badges.append(f"📍 BB Lower ({ago_str})")
+            if row.get('BB Touched Middle'):
+                ago_d = row.get('BB Middle Days Ago', -1)
+                ago_str = "T0" if ago_d == 0 else f"T-{ago_d}"
+                badges.append(f"📍 BB Middle ({ago_str})")
             if badges:
                 st.success(" | ".join(badges[:3]))   # max 3 badge để gọn
                 if len(badges) > 3:
@@ -6342,6 +6366,19 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 rc_quality = 0
                 rc_streak_count = 0
 
+            # [V48] BB Touch info (observation only)
+            try:
+                bb_info = detect_bb_touch(df_m, lookback=3, tolerance_pct=0.5)
+                bb_touched_middle = bb_info.get('touched_middle', False)
+                bb_touched_lower = bb_info.get('touched_lower', False)
+                bb_middle_days_ago = bb_info.get('middle_days_ago', -1)
+                bb_lower_days_ago = bb_info.get('lower_days_ago', -1)
+            except Exception:
+                bb_touched_middle = False
+                bb_touched_lower = False
+                bb_middle_days_ago = -1
+                bb_lower_days_ago = -1
+
             # [V44-F3] Filter: pass nếu có signal hôm nay HOẶC có streak ≥1 trong 5 phiên
             if filter_rut_chan and not rc_signal and rc_streak_count == 0:
                 continue
@@ -6375,6 +6412,11 @@ def scan_early_momentum(tickers_str: str, min_streak: int, min_gain_per_day: flo
                 'rc_recovery_pct': rc_info.get('recovery_pct', 0),
                 # [V44-F3] Streak count
                 'rc_streak_count': rc_streak_count,
+                # [V48] BB Touch (observation only)
+                'bb_touched_middle': bb_touched_middle,
+                'bb_touched_lower': bb_touched_lower,
+                'bb_middle_days_ago': bb_middle_days_ago,
+                'bb_lower_days_ago': bb_lower_days_ago,
             }
 
             # Phân nhóm
@@ -6458,6 +6500,15 @@ def render_momentum_card(row: dict, highlight_color: str = 'blue') -> None:
             elif rc_streak_c > 0:
                 # [V44-F3] Không có signal hôm nay nhưng có streak phiên cũ
                 st.caption(f"🦵 Có {rc_streak_c}/5 phiên gần đây từng rút chân")
+            # [V48] BB Touch badges (observation only)
+            if row.get('bb_touched_lower'):
+                ago_d = row.get('bb_lower_days_ago', -1)
+                ago_str = "hôm nay" if ago_d == 0 else f"T-{ago_d}"
+                st.caption(f"📍 Vừa chạm BB Lower ({ago_str}) — oversold, cẩn thận trap")
+            if row.get('bb_touched_middle'):
+                ago_d = row.get('bb_middle_days_ago', -1)
+                ago_str = "hôm nay" if ago_d == 0 else f"T-{ago_d}"
+                st.caption(f"📍 Vừa chạm BB Middle/MA20 ({ago_str}) — test hỗ trợ")
         with c3:
             # Xác suất tiếp tục tăng
             prob = row['prob_continue']
@@ -6821,6 +6872,131 @@ def _check_rut_chan_for_session(open_p: float, close_p: float, high_p: float,
 
 
 # [V44-F4 END]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [V48] BB TOUCH DETECTOR — Phát hiện chạm BB Middle / Lower (observation only)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def detect_bb_touch(df: pd.DataFrame, lookback: int = 3,
+                       tolerance_pct: float = 0.5) -> dict:
+    """[V48] Phát hiện mã VỪA CHẠM BB Middle hoặc BB Lower trong N phiên gần nhất.
+
+    KHÔNG CHẤM ĐIỂM — chỉ là observation tag để user tự đánh giá.
+
+    Args:
+        lookback: số phiên gần nhất để check (default 3)
+        tolerance_pct: % tolerance cho "gần chạm" (default 0.5%)
+
+    Returns dict:
+        touched_middle: bool — có chạm BB Middle trong lookback ngày
+        touched_lower: bool — có chạm BB Lower
+        middle_days_ago: int — phiên cách bao lâu (0=hôm nay, 1=hôm qua...)
+        lower_days_ago: int
+        current_close: float
+        current_bb_middle: float
+        current_bb_lower: float
+        distance_to_middle_pct: float — % giá hiện tại cách BB Middle
+        distance_to_lower_pct: float
+        verdict: str — text mô tả ngắn
+    """
+    try:
+        if not valid(df) or len(df) < 25:
+            return {'touched_middle': False, 'touched_lower': False,
+                    'verdict': None, 'message': 'Không đủ data tính BB'}
+
+        df_calc = df.copy()
+        # BB Middle = MA20, BB Upper/Lower = MA20 ± 2*std
+        if 'bb_middle' not in df_calc.columns:
+            df_calc['bb_middle'] = df_calc['close'].rolling(20).mean()
+        if 'bb_lower' not in df_calc.columns:
+            _std = df_calc['close'].rolling(20).std()
+            df_calc['bb_lower'] = df_calc['bb_middle'] - 2 * _std
+        if 'bb_upper' not in df_calc.columns:
+            _std = df_calc['close'].rolling(20).std() if 'bb_lower' not in df_calc.columns else None
+            if _std is None:
+                _std = df_calc['close'].rolling(20).std()
+            df_calc['bb_upper'] = df_calc['bb_middle'] + 2 * _std
+
+        # Lấy lookback phiên gần nhất
+        recent = df_calc.tail(lookback).reset_index(drop=True)
+        if len(recent) < lookback or pd.isna(recent['bb_middle'].iloc[-1]):
+            return {'touched_middle': False, 'touched_lower': False,
+                    'verdict': None, 'message': 'BB chưa tính được'}
+
+        last = df_calc.iloc[-1]
+        cur_close = float(last['close'])
+        cur_bb_middle = float(last['bb_middle'])
+        cur_bb_lower = float(last['bb_lower'])
+
+        touched_middle = False
+        touched_lower = False
+        middle_days_ago = -1
+        lower_days_ago = -1
+
+        # Check từng phiên trong lookback (mới nhất → cũ nhất)
+        for offset in range(lookback):
+            idx = len(recent) - 1 - offset  # 0=hôm nay, 1=hôm qua...
+            if idx < 0: break
+            row = recent.iloc[idx]
+            low_p = float(row['low'])
+            bb_mid = float(row['bb_middle'])
+            bb_low = float(row['bb_lower'])
+            if pd.isna(bb_mid) or pd.isna(bb_low): continue
+
+            # Tolerance: gần chạm nếu low cách BB ≤ tolerance%
+            # Chạm BB Middle: low ≤ bb_mid * (1 + tolerance/100)
+            #                 và low ≥ bb_mid * (1 - tolerance/100)
+            #                 (low test xuống gần BB mid)
+            mid_low_diff_pct = (low_p - bb_mid) / bb_mid * 100 if bb_mid > 0 else 999
+            if not touched_middle and abs(mid_low_diff_pct) <= tolerance_pct:
+                touched_middle = True
+                middle_days_ago = offset
+
+            # Chạm BB Lower: low ≤ bb_low * (1 + tolerance/100)
+            #                và low ≥ bb_low * (1 - tolerance/100)
+            low_low_diff_pct = (low_p - bb_low) / bb_low * 100 if bb_low > 0 else 999
+            if not touched_lower and abs(low_low_diff_pct) <= tolerance_pct:
+                touched_lower = True
+                lower_days_ago = offset
+
+            if touched_middle and touched_lower:
+                break
+
+        # Distance hiện tại
+        distance_to_middle = (cur_close - cur_bb_middle) / cur_bb_middle * 100 if cur_bb_middle > 0 else 0
+        distance_to_lower = (cur_close - cur_bb_lower) / cur_bb_lower * 100 if cur_bb_lower > 0 else 0
+
+        # Verdict
+        verdict_parts = []
+        if touched_lower:
+            ago_str = "hôm nay" if lower_days_ago == 0 else f"{lower_days_ago} phiên trước"
+            verdict_parts.append(f"📍 Vừa chạm BB Lower ({ago_str}) — oversold mạnh, có thể bật mạnh nhưng cũng có thể tiếp tục giảm")
+        if touched_middle:
+            ago_str = "hôm nay" if middle_days_ago == 0 else f"{middle_days_ago} phiên trước"
+            verdict_parts.append(f"📍 Vừa chạm BB Middle ({ago_str}) — test hỗ trợ động MA20")
+
+        verdict = " | ".join(verdict_parts) if verdict_parts else None
+
+        return {
+            'touched_middle': touched_middle,
+            'touched_lower': touched_lower,
+            'middle_days_ago': middle_days_ago,
+            'lower_days_ago': lower_days_ago,
+            'current_close': round(cur_close, 2),
+            'current_bb_middle': round(cur_bb_middle, 2),
+            'current_bb_lower': round(cur_bb_lower, 2),
+            'distance_to_middle_pct': round(distance_to_middle, 2),
+            'distance_to_lower_pct': round(distance_to_lower, 2),
+            'verdict': verdict,
+            'message': verdict or 'Không có chạm BB gần đây',
+        }
+    except Exception as e:
+        return {'touched_middle': False, 'touched_lower': False,
+                'verdict': None, 'message': f'Lỗi: {str(e)[:80]}'}
+
+
+# [V48 HELPER END]
+
 
 
 def detect_rut_chan(df: pd.DataFrame) -> dict:
@@ -9054,6 +9230,37 @@ with tab1:
             except Exception as _f_err:
                 st.caption(f"[V40-F2 lỗi]: {_f_err}")
 
+            # ── [V48] BB TOUCH NOTES (observation only — KHÔNG chấm điểm) ──
+            try:
+                bb_touch = detect_bb_touch(df, lookback=3, tolerance_pct=0.5)
+                if bb_touch.get('touched_middle') or bb_touch.get('touched_lower'):
+                    with st.container(border=True):
+                        st.markdown("##### 📍 BB Touch Notes (V48)")
+                        st.caption(
+                            "⚠️ **Lưu ý**: Đây là **observation tag** — KHÔNG cộng/trừ điểm. "
+                            "Có thể là trap nếu vol giảm + downtrend mạnh. Tự đánh giá kèm các tín hiệu khác."
+                        )
+                        if bb_touch.get('touched_lower'):
+                            ago_str = "hôm nay" if bb_touch['lower_days_ago'] == 0 else f"{bb_touch['lower_days_ago']} phiên trước"
+                            st.info(
+                                f"📍 **Vừa chạm BB Lower** ({ago_str}) "
+                                f"— BB Lower: {bb_touch['current_bb_lower']:,.2f}, "
+                                f"giá hiện: {bb_touch['current_close']:,.2f} "
+                                f"({bb_touch['distance_to_lower_pct']:+.2f}% so BB Lower)\\n\\n"
+                                "→ Oversold mạnh, có thể bật mạnh — nhưng cũng có thể tiếp tục giảm nếu xu hướng vẫn xấu"
+                            )
+                        if bb_touch.get('touched_middle'):
+                            ago_str = "hôm nay" if bb_touch['middle_days_ago'] == 0 else f"{bb_touch['middle_days_ago']} phiên trước"
+                            st.info(
+                                f"📍 **Vừa chạm BB Middle (MA20)** ({ago_str}) "
+                                f"— MA20: {bb_touch['current_bb_middle']:,.2f}, "
+                                f"giá hiện: {bb_touch['current_close']:,.2f} "
+                                f"({bb_touch['distance_to_middle_pct']:+.2f}% so MA20)\\n\\n"
+                                "→ Test hỗ trợ động — nếu BẬT LÊN có thể là điểm vào tốt, nếu THỦNG là tín hiệu xấu"
+                            )
+            except Exception as _bb_err:
+                st.caption(f"[V48-BB lỗi]: {_bb_err}")
+
             # ── [V41-R1+V42] RÚT CHÂN DETECTOR ──
             try:
                 rc = detect_rut_chan(df)
@@ -10992,6 +11199,19 @@ with tab4:
                 except Exception:
                     row['RC Signal'] = None
                     row['RC Quality'] = 0
+
+                # [V48] BB Touch info (observation only — KHÔNG ảnh hưởng score)
+                try:
+                    _bb_r = detect_bb_touch(df_s, lookback=3, tolerance_pct=0.5)
+                    row['BB Touched Lower'] = _bb_r.get('touched_lower', False)
+                    row['BB Touched Middle'] = _bb_r.get('touched_middle', False)
+                    row['BB Lower Days Ago'] = _bb_r.get('lower_days_ago', -1)
+                    row['BB Middle Days Ago'] = _bb_r.get('middle_days_ago', -1)
+                except Exception:
+                    row['BB Touched Lower'] = False
+                    row['BB Touched Middle'] = False
+                    row['BB Lower Days Ago'] = -1
+                    row['BB Middle Days Ago'] = -1
                 # [V24-LIQ+F2] Đẩy mã LIQ_LOW xuống Tầng 4 (Quan sát) — không push 2 lần
                 try:
                     _liq_rd = calc_liquidity_tier_cached(t, date_key)
