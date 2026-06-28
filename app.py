@@ -22,6 +22,20 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V50 - Fix SSI Token (HTTP 400 "invalid connection")
+# ==============================================================================
+# BUG V49: Token request HTTP 400
+#   - SSI báo "This connection is invalid"
+#   - Có thể do endpoint sai HOẶC payload field names sai (camelCase vs PascalCase)
+#
+# FIX V50:
+#   - Thử endpoint MỚI: /AccessToken (bỏ /Market/) — theo docs SSI mới nhất
+#   - Thử payload PascalCase: ConsumerID, ConsumerSecret
+#   - Thêm Header Content-Type
+#   - Hiển thị ERROR DETAIL đầy đủ trong widget để debug
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V51
+# ==============================================================================
 # Quant System V49 - SSI FastConnect Data API Foundation (Phase 1 Light)
 # ==============================================================================
 # MỤC TIÊU:
@@ -7053,36 +7067,59 @@ def _ssi_get_credentials() -> dict:
 
 @st.cache_data(ttl=3300, show_spinner=False)  # cache 55 phút (token sống 60p)
 def ssi_get_token(date_key: str) -> dict:
-    """[V49] Lấy access token từ SSI FastConnect.
+    """[V49+V50-FIX] Lấy access token từ SSI FastConnect.
+
+    [V50 BUG FIX]:
+    - Đổi endpoint từ /Market/AccessToken → /AccessToken
+    - Đổi payload field: consumerID/consumerSecret → ConsumerID/ConsumerSecret (PascalCase)
+    - Thêm header Content-Type: application/json
 
     Args:
         date_key: dùng để cache invalidate theo giờ
     Returns:
-        dict {token, expires_at, error}
+        dict {token, expires_at, error, debug_url, debug_payload}
     """
-    result = {'token': None, 'expires_at': None, 'error': None}
+    result = {'token': None, 'expires_at': None, 'error': None,
+              'debug_url': None, 'debug_payload_keys': None, 'debug_status': None}
     creds = _ssi_get_credentials()
     if not creds:
         result['error'] = 'Chưa setup SSI_CONSUMER_ID/SECRET trong Streamlit Secrets'
         return result
 
+    # [V50] Thử endpoint mới + payload PascalCase
+    url = f"{SSI_BASE_URL}/AccessToken"
+    payload = {
+        'consumerID': creds['consumer_id'],     # SSI dùng camelCase trong body
+        'consumerSecret': creds['consumer_secret'],
+    }
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    result['debug_url'] = url
+    result['debug_payload_keys'] = list(payload.keys())
+
     try:
-        url = f"{SSI_BASE_URL}/Market/AccessToken"
-        payload = {
-            'consumerID': creds['consumer_id'],
-            'consumerSecret': creds['consumer_secret'],
-        }
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        result['debug_status'] = r.status_code
+
         if r.status_code != 200:
-            result['error'] = f'HTTP {r.status_code}: {r.text[:200]}'
+            result['error'] = f'HTTP {r.status_code}: {r.text[:300]}'
             return result
+
         data = r.json()
-        # SSI trả về dạng: {"status":200, "message":"Success", "data":{"accessToken":"xxx"}}
-        if data.get('status') == 200 and data.get('data', {}).get('accessToken'):
-            result['token'] = data['data']['accessToken']
+        # SSI có thể trả về nhiều format khác nhau, thử bóc tách
+        token = None
+        if data.get('status') == 200 or data.get('status') == 'Success':
+            token = (data.get('data', {}) or {}).get('accessToken') if isinstance(data.get('data'), dict) else None
+        elif data.get('accessToken'):
+            token = data.get('accessToken')
+
+        if token:
+            result['token'] = token
             result['expires_at'] = datetime.now(TZ_VN) + timedelta(minutes=55)
         else:
-            result['error'] = f"SSI response: {data.get('message', 'Unknown')[:200]}"
+            result['error'] = f"Không tìm thấy accessToken trong response: {str(data)[:300]}"
         return result
     except requests.exceptions.Timeout:
         result['error'] = 'Timeout (>15s) — SSI server chậm hoặc network lỗi'
@@ -8132,8 +8169,30 @@ with st.sidebar:
 
                 if st.button("🧪 Test Connection", key="v49_ssi_test_btn", type="primary"):
                     with st.spinner("Đang test SSI API (4 endpoints)..."):
+                        # [V50] Test token trước, hiện debug info
+                        _now_key_t = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H-%M')
+                        # Clear cache để test lại với endpoint mới
+                        try:
+                            ssi_get_token.clear()
+                        except Exception:
+                            pass
+                        tk_debug = ssi_get_token(_now_key_t)
+                        st.session_state['_v50_token_debug'] = tk_debug
+                        # Chạy full health check
                         hc = ssi_health_check()
                         st.session_state['_v49_ssi_hc'] = hc
+
+                # [V50] Hiển thị debug token info nếu có
+                tk_debug = st.session_state.get('_v50_token_debug')
+                if tk_debug:
+                    with st.expander("🔍 Debug Token (V50)", expanded=not tk_debug.get('token')):
+                        st.caption(f"**URL gọi:** `{tk_debug.get('debug_url', 'N/A')}`")
+                        st.caption(f"**Payload keys:** `{tk_debug.get('debug_payload_keys', [])}`")
+                        st.caption(f"**Status code:** `{tk_debug.get('debug_status', 'N/A')}`")
+                        if tk_debug.get('error'):
+                            st.error(f"❌ {tk_debug['error']}")
+                        if tk_debug.get('token'):
+                            st.success(f"✅ Token có (length {len(tk_debug['token'])})")
 
                 # Hiển thị kết quả test gần nhất
                 hc = st.session_state.get('_v49_ssi_hc')
