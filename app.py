@@ -22,6 +22,39 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V53 - SSI Token: ĐÚNG PATTERN từ Official Sample
+# ==============================================================================
+# PHÁT HIỆN từ official repo SSI-Securities-Corporation/python-fcdata:
+#   - URL: https://fc-data.ssi.com.vn/api/v2/Market/AccessToken (V49 đã đúng)
+#   - Payload field: consumerID/consumerSecret (camelCase)
+#   - Headers: Content-Type + Accept (V50 đã thêm)
+#   - **CÁCH GỌI KHÁC**: payload phải serialize thủ công bằng json.dumps()
+#       SSI sample: requests.post(url, json.dumps(payload), headers=headers)
+#       V49 sai:   requests.post(url, json=payload)  # → SSI từ chối
+#
+# FIX V53:
+#   - URL exact theo api.py: api/v2/Market/AccessToken
+#   - Payload: json.dumps() thủ công, gửi positional
+#   - Parse response: data.accessToken (status=200)
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V54 (wire SSI vào logic cũ nếu V53 PASS)
+# ==============================================================================
+# Quant System V52 - SSI Token: Fix parse Trading response
+# ==============================================================================
+# PHÁT HIỆN V51:
+#   ✅ V4 endpoint (Trading) trả về HTTP 200 — KEY ĐÚNG, server CHẤP NHẬN
+#   ❌ Nhưng response không có field 'accessToken' → parse sai
+#
+#   ❌ V1+V2 (Data endpoint) trả HTTP 400 "connection invalid"
+#      → Key có thể là FastConnect TRADING không phải DATA
+#
+# STRATEGY V52:
+#   - Ưu tiên Trading endpoint (V4) vì server chấp nhận
+#   - LOG RAW RESPONSE để biết format exact
+#   - Thử nhiều field name khả dĩ: accessToken, AccessToken, token, access_token
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V53
+# ==============================================================================
 # Quant System V51 - SSI Token: Thử nhiều URL variants
 # ==============================================================================
 # BUG V50: HTTP 404 với /api/v2/AccessToken
@@ -7085,9 +7118,18 @@ def _ssi_get_credentials() -> dict:
 
 @st.cache_data(ttl=3300, show_spinner=False)  # cache 55 phút (token sống 60p)
 def ssi_get_token(date_key: str) -> dict:
-    """[V49+V51] Lấy access token từ SSI FastConnect — thử nhiều variants.
+    """[V53] Lấy access token từ SSI — DÙNG PATTERN OFFICIAL từ SSI sample code.
 
-    [V51 STRATEGY]: Thử lần lượt nhiều URL + payload, return ngay khi success.
+    Pattern chuẩn (từ ssi_fc_data/fc_md_client.py):
+        payload = json.dumps({'consumerID': ..., 'consumerSecret': ...})
+        res = requests.post(url, payload, headers={'Content-Type': 'application/json'})
+        res_obj = res.json()
+        if res_obj['status'] == 200:
+            token = res_obj['data']['accessToken']
+
+    Khác biệt V49 (lỗi):
+        V49 dùng requests.post(url, json=payload)  ← SSI từ chối
+        V53 dùng json.dumps thủ công, gửi positional → đúng pattern SSI
     """
     result = {'token': None, 'expires_at': None, 'error': None,
               'debug_url': None, 'debug_payload_keys': None, 'debug_status': None,
@@ -7097,37 +7139,28 @@ def ssi_get_token(date_key: str) -> dict:
         result['error'] = 'Chưa setup SSI_CONSUMER_ID/SECRET trong Streamlit Secrets'
         return result
 
-    # [V51] Danh sách URL + payload variants để thử
+    # [V53] Variants theo thứ tự khả năng cao nhất → thấp
     variants = [
-        # V1: V49 original — Market prefix + camelCase
+        # V53-A: ĐÚNG PATTERN SSI (json.dumps thủ công)
         {
             'url': 'https://fc-data.ssi.com.vn/api/v2/Market/AccessToken',
             'payload': {'consumerID': creds['consumer_id'], 'consumerSecret': creds['consumer_secret']},
-            'label': 'V1: /api/v2/Market/AccessToken (camelCase)',
+            'label': 'V53-A: SSI Official Pattern (json.dumps thủ công)',
+            'method': 'manual_dumps',
         },
-        # V2: Market prefix + PascalCase
-        {
-            'url': 'https://fc-data.ssi.com.vn/api/v2/Market/AccessToken',
-            'payload': {'ConsumerID': creds['consumer_id'], 'ConsumerSecret': creds['consumer_secret']},
-            'label': 'V2: /api/v2/Market/AccessToken (PascalCase)',
-        },
-        # V3: V50 — không Market prefix
-        {
-            'url': 'https://fc-data.ssi.com.vn/api/v2/AccessToken',
-            'payload': {'consumerID': creds['consumer_id'], 'consumerSecret': creds['consumer_secret']},
-            'label': 'V3: /api/v2/AccessToken (no Market)',
-        },
-        # V4: tradeapi trading endpoint
+        # V53-B: Trading endpoint (V51 đã trả 200, có thể đây mới đúng)
         {
             'url': 'https://fc-tradeapi.ssi.com.vn/api/v2/Trading/AccessToken',
             'payload': {'consumerID': creds['consumer_id'], 'consumerSecret': creds['consumer_secret']},
-            'label': 'V4: tradeapi /Trading/AccessToken',
+            'label': 'V53-B: Trading endpoint (manual dumps)',
+            'method': 'manual_dumps',
         },
-        # V5: API v1
+        # V53-C: Old way (json=) — fallback so sánh
         {
-            'url': 'https://fc-data.ssi.com.vn/api/v1/Market/AccessToken',
+            'url': 'https://fc-data.ssi.com.vn/api/v2/Market/AccessToken',
             'payload': {'consumerID': creds['consumer_id'], 'consumerSecret': creds['consumer_secret']},
-            'label': 'V5: /api/v1/Market/AccessToken',
+            'label': 'V53-C: json= keyword (V49 cũ, để so sánh)',
+            'method': 'json_kwarg',
         },
     ]
     headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
@@ -7136,18 +7169,26 @@ def ssi_get_token(date_key: str) -> dict:
         attempt_log = {
             'label': variant['label'],
             'url': variant['url'],
+            'method': variant.get('method'),
             'status': None,
             'error': None,
             'response_snippet': None,
+            'response_keys': None,
         }
         try:
-            r = requests.post(variant['url'], json=variant['payload'],
-                                  headers=headers, timeout=12)
+            # [V53] Gửi theo method
+            if variant.get('method') == 'manual_dumps':
+                # ĐÚNG pattern SSI: serialize thủ công, gửi positional
+                payload_str = json.dumps(variant['payload'])
+                r = requests.post(variant['url'], payload_str, headers=headers, timeout=12)
+            else:
+                # Old way: json= keyword
+                r = requests.post(variant['url'], json=variant['payload'], headers=headers, timeout=12)
+
             attempt_log['status'] = r.status_code
-            attempt_log['response_snippet'] = r.text[:200]
+            attempt_log['response_snippet'] = r.text[:500]
 
             if r.status_code == 200:
-                # Thử parse token
                 try:
                     data = r.json()
                 except Exception:
@@ -7155,14 +7196,25 @@ def ssi_get_token(date_key: str) -> dict:
                     result['all_attempts'].append(attempt_log)
                     continue
 
-                # Bóc tách token theo nhiều format
+                if isinstance(data, dict):
+                    attempt_log['response_keys'] = list(data.keys())
+                    if isinstance(data.get('data'), dict):
+                        attempt_log['response_keys'] += [f"data.{k}" for k in data['data'].keys()]
+
+                # [V53] Parse theo SSI format chuẩn: data.accessToken
                 token = None
-                # Format 1: {status:200, data:{accessToken:...}}
-                if isinstance(data.get('data'), dict) and data['data'].get('accessToken'):
-                    token = data['data']['accessToken']
-                # Format 2: {accessToken:...} ở root
-                elif data.get('accessToken'):
-                    token = data.get('accessToken')
+                if isinstance(data.get('data'), dict):
+                    for key_try in ['accessToken', 'AccessToken', 'access_token', 'token', 'Token']:
+                        if data['data'].get(key_try):
+                            token = data['data'][key_try]
+                            attempt_log['token_field'] = f"data.{key_try}"
+                            break
+                if not token:
+                    for key_try in ['accessToken', 'AccessToken', 'access_token', 'token', 'Token']:
+                        if data.get(key_try):
+                            token = data[key_try]
+                            attempt_log['token_field'] = key_try
+                            break
 
                 if token:
                     result['token'] = token
@@ -7170,11 +7222,14 @@ def ssi_get_token(date_key: str) -> dict:
                     result['debug_url'] = variant['url']
                     result['debug_payload_keys'] = list(variant['payload'].keys())
                     result['debug_status'] = 200
-                    attempt_log['error'] = '✅ SUCCESS — Token có'
+                    attempt_log['error'] = f"✅ SUCCESS — Token có (field: {attempt_log.get('token_field', '?')})"
                     result['all_attempts'].append(attempt_log)
                     return result
                 else:
-                    attempt_log['error'] = f'Status 200 nhưng không thấy accessToken trong response'
+                    attempt_log['error'] = (
+                        f'Status 200 nhưng KHÔNG tìm thấy token. '
+                        f'Response keys: {attempt_log.get("response_keys", "N/A")}'
+                    )
             else:
                 attempt_log['error'] = f'HTTP {r.status_code}'
         except requests.exceptions.Timeout:
@@ -7184,7 +7239,6 @@ def ssi_get_token(date_key: str) -> dict:
 
         result['all_attempts'].append(attempt_log)
 
-    # Tất cả variants fail
     result['error'] = f"Tất cả {len(variants)} variants đều fail. Xem chi tiết bên dưới."
     return result
 
@@ -8256,17 +8310,25 @@ with st.sidebar:
                         else:
                             st.error(f"❌ {tk_debug.get('error', 'Unknown')}")
 
-                        # [V51] Hiển thị tất cả attempts
+                        # [V51+V52] Hiển thị tất cả attempts
                         attempts = tk_debug.get('all_attempts', [])
                         if attempts:
                             st.markdown("**📋 Tất cả attempts:**")
                             for i, att in enumerate(attempts, 1):
                                 status_emoji = '✅' if att.get('status') == 200 and 'SUCCESS' in (att.get('error') or '') else '❌'
+                                # Status 200 nhưng không có token → cảnh báo riêng
+                                if att.get('status') == 200 and 'SUCCESS' not in (att.get('error') or ''):
+                                    status_emoji = '⚠️'
                                 st.markdown(f"{status_emoji} **{att['label']}**")
                                 st.caption(f"  URL: `{att['url']}`")
                                 st.caption(f"  Status: `{att.get('status', 'no response')}` | Lý do: {att.get('error', 'N/A')}")
-                                if att.get('response_snippet') and att.get('status') != 200:
-                                    st.caption(f"  Response: `{att['response_snippet'][:120]}`")
+                                # [V52] Hiển thị response_keys nếu có
+                                if att.get('response_keys'):
+                                    st.caption(f"  Response keys: `{att['response_keys']}`")
+                                if att.get('response_snippet'):
+                                    # Hiển thị nhiều hơn cho V4 200 case
+                                    snippet_len = 500 if att.get('status') == 200 else 200
+                                    st.caption(f"  Response: `{att['response_snippet'][:snippet_len]}`")
 
                 # Hiển thị kết quả test gần nhất
                 hc = st.session_state.get('_v49_ssi_hc')
