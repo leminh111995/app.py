@@ -22,6 +22,35 @@
 # ==============================================================================
 # --- IMPORTS ---
 # ==============================================================================
+# Quant System V49 - SSI FastConnect Data API Foundation (Phase 1 Light)
+# ==============================================================================
+# MỤC TIÊU:
+#   Thêm module SSI helpers + widget Test Connection
+#   CHƯA wire vào logic cũ — vnstock vẫn là nguồn data chính
+#
+# 5 SSI HELPERS:
+#   ssi_get_token()                  - Lấy access token (cache 1h)
+#   ssi_get_securities_details(t)    - Lấy Free Float thật
+#   ssi_get_daily_stock_price(t,n)   - Giá EOD + foreign net thật
+#   ssi_get_vnindex(days)            - VN-Index thật
+#   ssi_health_check()               - Test connection toàn diện
+#
+# UI MỚI:
+#   Sidebar Tools → "🔌 SSI Status" widget
+#   [Test Connection] button → check tất cả 4 APIs
+#
+# SECRETS (Streamlit Cloud):
+#   SSI_CONSUMER_ID, SSI_CONSUMER_SECRET
+#   SSI_PUBLIC_KEY, SSI_PRIVATE_KEY (PEM format)
+#
+# NGUYÊN TẮC AN TOÀN:
+#   - Try/except cứng — fail không vỡ app
+#   - Cache token 1h, data 24h (giảm hit rate limit)
+#   - Đọc secrets qua st.secrets, KHÔNG hardcode
+#   - Nếu SSI fail → app cũ vẫn chạy 100% bình thường
+#
+# QUY TẮC VERSIONING: Update tiếp theo: V50 (wire SSI vào Float nếu V49 PASS)
+# ==============================================================================
 # Quant System V48 - BB Touch Notes (observation only)
 # ==============================================================================
 # TÍNH NĂNG MỚI: Phát hiện mã VỪA CHẠM BB Middle (vạch giữa) hoặc BB Lower (biên dưới)
@@ -6997,6 +7026,296 @@ def detect_bb_touch(df: pd.DataFrame, lookback: int = 3,
 
 # [V48 HELPER END]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [V49] SSI FastConnect Data API — Foundation Phase 1
+# ──────────────────────────────────────────────────────────────────────────────
+# Docs: https://guide.ssi.com.vn/ssi-products/v/fastconnect-data
+# Endpoint base: https://fc-data.ssi.com.vn/api/v2
+# ──────────────────────────────────────────────────────────────────────────────
+
+SSI_BASE_URL = "https://fc-data.ssi.com.vn/api/v2"
+
+
+def _ssi_get_credentials() -> dict:
+    """[V49] Đọc SSI credentials từ st.secrets — an toàn, không hardcode.
+
+    Returns: dict với consumer_id, consumer_secret, hoặc dict rỗng nếu chưa setup.
+    """
+    try:
+        cid = st.secrets.get("SSI_CONSUMER_ID", "")
+        csec = st.secrets.get("SSI_CONSUMER_SECRET", "")
+        if not cid or not csec:
+            return {}
+        return {'consumer_id': cid, 'consumer_secret': csec}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3300, show_spinner=False)  # cache 55 phút (token sống 60p)
+def ssi_get_token(date_key: str) -> dict:
+    """[V49] Lấy access token từ SSI FastConnect.
+
+    Args:
+        date_key: dùng để cache invalidate theo giờ
+    Returns:
+        dict {token, expires_at, error}
+    """
+    result = {'token': None, 'expires_at': None, 'error': None}
+    creds = _ssi_get_credentials()
+    if not creds:
+        result['error'] = 'Chưa setup SSI_CONSUMER_ID/SECRET trong Streamlit Secrets'
+        return result
+
+    try:
+        url = f"{SSI_BASE_URL}/Market/AccessToken"
+        payload = {
+            'consumerID': creds['consumer_id'],
+            'consumerSecret': creds['consumer_secret'],
+        }
+        r = requests.post(url, json=payload, timeout=15)
+        if r.status_code != 200:
+            result['error'] = f'HTTP {r.status_code}: {r.text[:200]}'
+            return result
+        data = r.json()
+        # SSI trả về dạng: {"status":200, "message":"Success", "data":{"accessToken":"xxx"}}
+        if data.get('status') == 200 and data.get('data', {}).get('accessToken'):
+            result['token'] = data['data']['accessToken']
+            result['expires_at'] = datetime.now(TZ_VN) + timedelta(minutes=55)
+        else:
+            result['error'] = f"SSI response: {data.get('message', 'Unknown')[:200]}"
+        return result
+    except requests.exceptions.Timeout:
+        result['error'] = 'Timeout (>15s) — SSI server chậm hoặc network lỗi'
+        return result
+    except Exception as e:
+        result['error'] = f'Lỗi: {str(e)[:200]}'
+        return result
+
+
+def _ssi_call_api(endpoint: str, params: dict = None) -> dict:
+    """[V49] Helper gọi SSI API có auth + try/except.
+
+    Returns: {data, error, status_code}
+    """
+    result = {'data': None, 'error': None, 'status_code': None}
+
+    # Lấy token
+    _now_key = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H')
+    token_res = ssi_get_token(_now_key)
+    if not token_res.get('token'):
+        result['error'] = f"Token fail: {token_res.get('error', 'Unknown')}"
+        return result
+
+    try:
+        url = f"{SSI_BASE_URL}{endpoint}"
+        headers = {'Authorization': f"Bearer {token_res['token']}"}
+        r = requests.get(url, headers=headers, params=params or {}, timeout=15)
+        result['status_code'] = r.status_code
+        if r.status_code != 200:
+            result['error'] = f'HTTP {r.status_code}: {r.text[:200]}'
+            return result
+        data = r.json()
+        if data.get('status') == 200:
+            result['data'] = data.get('data')
+        else:
+            result['error'] = f"API response: {data.get('message', 'Unknown')[:200]}"
+        return result
+    except requests.exceptions.Timeout:
+        result['error'] = 'Timeout (>15s)'
+        return result
+    except Exception as e:
+        result['error'] = f'Lỗi: {str(e)[:200]}'
+        return result
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def ssi_get_securities_details(ticker: str, date_key: str) -> dict:
+    """[V49] Lấy chi tiết mã (Free Float, Outstanding shares, room ngoại...).
+
+    Endpoint: /Market/SecuritiesDetails
+    """
+    result = {'available': False, 'error': None}
+    res = _ssi_call_api('/Market/SecuritiesDetails', {
+        'Market': 'HOSE',
+        'Symbol': ticker,
+        'PageIndex': 1,
+        'PageSize': 1,
+    })
+    if res.get('error'):
+        result['error'] = res['error']
+        return result
+    if not res.get('data'):
+        result['error'] = 'No data'
+        return result
+    try:
+        items = res['data'].get('repeatedInfoList', []) or res['data']
+        if isinstance(items, list) and len(items) > 0:
+            item = items[0]
+            # Lấy thông tin cơ bản
+            sd = item.get('SecurityDetail', item) if isinstance(item, dict) else {}
+            result.update({
+                'available': True,
+                'symbol': sd.get('Symbol', ticker),
+                'company_name': sd.get('SymbolName', ''),
+                'outstanding_shares': int(sd.get('Outstanding', 0) or 0),
+                'free_float_pct': float(sd.get('FreeFloat', 0) or 0),
+                'foreign_holding_pct': float(sd.get('ForeignerHolding', 0) or 0),
+                'max_foreign_holding_pct': float(sd.get('ForeignerMaxRoom', 0) or 0),
+                'listed_share': int(sd.get('ListedShare', 0) or 0),
+                'raw': sd,
+            })
+        else:
+            result['error'] = 'Empty response'
+    except Exception as e:
+        result['error'] = f'Parse error: {str(e)[:150]}'
+    return result
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def ssi_get_daily_stock_price(ticker: str, days: int, date_key: str) -> dict:
+    """[V49] Lấy giá EOD + foreign net qua N phiên.
+
+    Endpoint: /Market/DailyStockPrice
+    """
+    result = {'available': False, 'error': None, 'data': []}
+    end_d = datetime.now(TZ_VN)
+    start_d = end_d - timedelta(days=days * 2)  # buffer cho ngày nghỉ
+    res = _ssi_call_api('/Market/DailyStockPrice', {
+        'Symbol': ticker,
+        'FromDate': start_d.strftime('%d/%m/%Y'),
+        'ToDate': end_d.strftime('%d/%m/%Y'),
+        'PageIndex': 1,
+        'PageSize': days * 2,
+        'Market': 'HOSE',
+    })
+    if res.get('error'):
+        result['error'] = res['error']
+        return result
+    if not res.get('data'):
+        result['error'] = 'No data'
+        return result
+    try:
+        items = res['data'].get('dailyStockPriceList', res['data']) or []
+        if isinstance(items, list):
+            result['available'] = True
+            result['data'] = items
+            result['n_records'] = len(items)
+        else:
+            result['error'] = 'Unexpected format'
+    except Exception as e:
+        result['error'] = f'Parse error: {str(e)[:150]}'
+    return result
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def ssi_get_vnindex(days: int, date_key: str) -> dict:
+    """[V49] Lấy VN-Index thật qua N phiên.
+
+    Endpoint: /Market/DailyIndex (Symbol=VNINDEX)
+    """
+    result = {'available': False, 'error': None, 'data': []}
+    end_d = datetime.now(TZ_VN)
+    start_d = end_d - timedelta(days=days * 2)
+    res = _ssi_call_api('/Market/DailyIndex', {
+        'IndexId': 'VNINDEX',
+        'FromDate': start_d.strftime('%d/%m/%Y'),
+        'ToDate': end_d.strftime('%d/%m/%Y'),
+        'PageIndex': 1,
+        'PageSize': days * 2,
+        'OrderBy': 'TradingDate',
+        'Order': 'desc',
+    })
+    if res.get('error'):
+        result['error'] = res['error']
+        return result
+    if not res.get('data'):
+        result['error'] = 'No data'
+        return result
+    try:
+        items = res['data'].get('dailyIndex', res['data']) or []
+        if isinstance(items, list):
+            result['available'] = True
+            result['data'] = items
+            result['n_records'] = len(items)
+        else:
+            result['error'] = 'Unexpected format'
+    except Exception as e:
+        result['error'] = f'Parse error: {str(e)[:150]}'
+    return result
+
+
+def ssi_health_check() -> dict:
+    """[V49] Test toàn diện SSI connection.
+
+    Test 4 APIs: Token, SecuritiesDetails, DailyStockPrice, DailyIndex
+    """
+    results = {
+        'credentials_ok': False,
+        'token_ok': False,
+        'securities_ok': False,
+        'daily_price_ok': False,
+        'vnindex_ok': False,
+        'overall': False,
+        'details': [],
+    }
+    _now_key = datetime.now(TZ_VN).strftime('%Y-%m-%d-%H-%M')
+
+    # 1. Check credentials có chưa
+    creds = _ssi_get_credentials()
+    if not creds:
+        results['details'].append('❌ Credentials: chưa setup SSI_CONSUMER_ID/SECRET trong Streamlit Secrets')
+        return results
+    results['credentials_ok'] = True
+    results['details'].append(f"✅ Credentials: ConsumerID có ({creds['consumer_id'][:8]}...)")
+
+    # 2. Test Token
+    tk = ssi_get_token(_now_key)
+    if tk.get('token'):
+        results['token_ok'] = True
+        results['details'].append(f"✅ Token: OK (hết hạn ~{tk.get('expires_at').strftime('%H:%M') if tk.get('expires_at') else 'unknown'})")
+    else:
+        results['details'].append(f"❌ Token: {tk.get('error', 'Unknown')}")
+        return results
+
+    # 3. Test SecuritiesDetails với ACB
+    sd = ssi_get_securities_details('ACB', _now_key)
+    if sd.get('available'):
+        results['securities_ok'] = True
+        results['details'].append(
+            f"✅ Securities Details (ACB): Float {sd.get('free_float_pct', 0):.1f}%, "
+            f"Outstanding {sd.get('outstanding_shares', 0):,}"
+        )
+    else:
+        results['details'].append(f"❌ Securities Details (ACB): {sd.get('error', 'Unknown')}")
+
+    # 4. Test DailyStockPrice với ACB
+    dp = ssi_get_daily_stock_price('ACB', 5, _now_key)
+    if dp.get('available'):
+        results['daily_price_ok'] = True
+        results['details'].append(f"✅ Daily Stock Price (ACB): {dp.get('n_records', 0)} phiên gần nhất")
+    else:
+        results['details'].append(f"❌ Daily Stock Price (ACB): {dp.get('error', 'Unknown')}")
+
+    # 5. Test VN-Index
+    vni = ssi_get_vnindex(5, _now_key)
+    if vni.get('available'):
+        results['vnindex_ok'] = True
+        results['details'].append(f"✅ VN-Index: {vni.get('n_records', 0)} phiên gần nhất")
+    else:
+        results['details'].append(f"❌ VN-Index: {vni.get('error', 'Unknown')}")
+
+    # Overall
+    results['overall'] = (
+        results['token_ok'] and
+        (results['securities_ok'] or results['daily_price_ok'] or results['vnindex_ok'])
+    )
+
+    return results
+
+
+# [V49 SSI FOUNDATION END]
+
+
 
 
 def detect_rut_chan(df: pd.DataFrame) -> dict:
@@ -7795,6 +8114,54 @@ with st.sidebar:
 
     # ─── TAB 2: TOOLS ───
     with sb_tab_tools:
+        # ── [V49] SSI FastConnect Status ──
+        with st.expander("🔌 SSI FastConnect Status (V49)", expanded=False):
+            st.caption(
+                "Test kết nối SSI Data API. "
+                "Setup ConsumerID + ConsumerSecret trong Streamlit Secrets trước khi test."
+            )
+            _creds_check = _ssi_get_credentials()
+            if not _creds_check:
+                st.error(
+                    "❌ Chưa setup SSI credentials trong Streamlit Secrets.\\n\\n"
+                    "Cần thêm: `SSI_CONSUMER_ID`, `SSI_CONSUMER_SECRET` vào "
+                    "Settings → Secrets"
+                )
+            else:
+                st.success(f"✅ Credentials đã setup (ID: `{_creds_check['consumer_id'][:8]}...`)")
+
+                if st.button("🧪 Test Connection", key="v49_ssi_test_btn", type="primary"):
+                    with st.spinner("Đang test SSI API (4 endpoints)..."):
+                        hc = ssi_health_check()
+                        st.session_state['_v49_ssi_hc'] = hc
+
+                # Hiển thị kết quả test gần nhất
+                hc = st.session_state.get('_v49_ssi_hc')
+                if hc:
+                    if hc.get('overall'):
+                        st.success("✅ **SSI Connection: PASS**")
+                    else:
+                        st.warning("⚠️ **SSI Connection: Một số endpoint fail**")
+
+                    # Detail mỗi endpoint
+                    for d in hc.get('details', []):
+                        st.caption(d)
+
+                    # Status badges
+                    s1, s2 = st.columns(2)
+                    s1.metric("Token", "✅" if hc.get('token_ok') else "❌")
+                    s2.metric("Securities", "✅" if hc.get('securities_ok') else "❌")
+                    s3, s4 = st.columns(2)
+                    s3.metric("Daily Price", "✅" if hc.get('daily_price_ok') else "❌")
+                    s4.metric("VN-Index", "✅" if hc.get('vnindex_ok') else "❌")
+
+                    if not hc.get('overall'):
+                        st.caption(
+                            "💡 Nếu fail: 1) check credentials đúng chưa, "
+                            "2) check Streamlit Cloud IP có bị SSI block không (giống FireAnt cũ), "
+                            "3) check gói FastConnect Data đã active chưa."
+                        )
+
         with st.expander("🧮 Position & SL/TP Calculator", expanded=False):
             st.caption("Tính shares + SL/TP cho BẤT KỲ mã nào.")
             slc_capital = st.number_input("Vốn (đồng)", min_value=1_000_000,
